@@ -1,26 +1,17 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "System/Information/ProcessInformation.h"
+#include "Native/Syscall.h"
 
 #define NEXT_SYSTEM_PROCESS_ENTRY(pCurrent) ReCa<SYSTEM_PROCESS_INFORMATION *>(ReCa<BYTE *>(pCurrent) + pCurrent->NextEntryOffset)
 
 ProcessInformation::ProcessInformation()
 {
-	KC_WSTR_DECL(ntdll_name, L"ntdll.dll");
-	HINSTANCE hNTDLL = GetModuleHandleW(ntdll_name.c_str());
-	if (!hNTDLL)
-	{
-		return;
-	}
-
-	LOG(3, "Creating ProcessInformation\n");
-
-	auto name_proc = XOR_STR_A("NtQueryInformationProcess");
-	auto name_sys = XOR_STR_A("NtQuerySystemInformation");
-	auto name_thread = XOR_STR_A("NtQueryInformationThread");
-	m_pNtQueryInformationProcess	= ReCa<f_NtQueryInformationProcess>	(GetProcAddress(hNTDLL, name_proc.get()));
-	m_pNtQuerySystemInformation		= ReCa<f_NtQuerySystemInformation>	(GetProcAddress(hNTDLL, name_sys.get()));
-	m_pNtQueryInformationThread		= ReCa<f_NtQueryInformationThread>	(GetProcAddress(hNTDLL, name_thread.get()));
+	// Resolved from the locally built stubs rather than through GetProcAddress, so the enumeration of a
+	// process tree never touches a public ntdll entry point.
+	m_pNtQueryInformationProcess	= ReCa<f_NtQueryInformationProcess>	(SyscallStub(SC_NtQueryInformationProcess));
+	m_pNtQuerySystemInformation		= ReCa<f_NtQuerySystemInformation>	(SyscallStub(SC_NtQuerySystemInformation));
+	m_pNtQueryInformationThread		= ReCa<f_NtQueryInformationThread>	(SyscallStub(SC_NtQueryInformationThread));
 
 	if (!m_pNtQueryInformationProcess || !m_pNtQuerySystemInformation || !m_pNtQueryInformationThread)
 	{
@@ -65,7 +56,7 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 
 	m_hCurrentProcess = hTargetProc;
 
-	ULONG_PTR PID = GetProcessId(m_hCurrentProcess);
+	ULONG_PTR PID = ScGetProcessId(m_hCurrentProcess);
 	if (!PID)
 	{
 		m_hCurrentProcess = nullptr;
@@ -73,6 +64,7 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 	}
 
 	m_pCurrentProcess = m_pFirstProcess;
+	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
 
 	for (;;)
 	{
@@ -83,6 +75,12 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 
 		auto pNext = NEXT_SYSTEM_PROCESS_ENTRY(m_pCurrentProcess);
 		if (pNext == m_pCurrentProcess)
+		{
+			break;
+		}
+
+		// Bounds check: ensure next entry is within buffer
+		if (ReCa<BYTE *>(pNext) + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer_end)
 		{
 			break;
 		}
@@ -114,7 +112,16 @@ bool ProcessInformation::NextThread()
 		return false;
 	}
 
-	m_pCurrentThread = &m_pCurrentProcess->Threads[++m_CurrentThreadIndex];
+	// Bounds check: ensure the next thread entry is within the allocated buffer
+	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
+	BYTE * next_thread_ptr = ReCa<BYTE *>(&m_pCurrentProcess->Threads[m_CurrentThreadIndex + 1]);
+	if (next_thread_ptr + sizeof(SYSTEM_THREAD_INFORMATION) > buffer_end)
+	{
+		return false;
+	}
+
+	m_pCurrentThread = ReCa<SYSTEM_THREAD_INFORMATION *>(next_thread_ptr);
+	++m_CurrentThreadIndex;
 
 	return true;
 }
@@ -233,7 +240,7 @@ void * ProcessInformation::GetTEB()
 
 	const HANDLE borrowed = BorrowCurrentThreadHandle(MDWD(m_pCurrentThread->ClientId.UniqueThread));
 	const bool owns_handle = borrowed == nullptr;
-	HANDLE hThread = borrowed ? borrowed : OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, MDWD(m_pCurrentThread->ClientId.UniqueThread));
+	HANDLE hThread = borrowed ? borrowed : ScOpenThread(MDWD(m_pCurrentThread->ClientId.UniqueThread), THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION);
 	if (!hThread)
 	{
 		return nullptr;
@@ -275,7 +282,7 @@ bool ProcessInformation::IsThreadWorkerThread()
 	}
 
 	USHORT TebInfo = 0;
-	if (ReadProcessMemory(m_hCurrentProcess, teb + g_DynamicOffsets.TebSameTebFlags, &TebInfo, sizeof(TebInfo), nullptr))
+	if (ScReadProcessMemory(m_hCurrentProcess, teb + g_DynamicOffsets.TebSameTebFlags, &TebInfo, sizeof(TebInfo), nullptr))
 	{
 		return ((TebInfo & g_DynamicOffsets.SameTebFlagsLoaderWorkerMask) != 0);
 	}

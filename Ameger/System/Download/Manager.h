@@ -2,7 +2,7 @@
 
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
-class DownloadManager
+class Manager
 {
 
     std::atomic<ULONGLONG>  m_ullDeadline{0};
@@ -20,12 +20,12 @@ class DownloadManager
 
 public:
 
-    DownloadManager();
+    Manager();
 
-    ~DownloadManager();
+    ~Manager();
 
-    DownloadManager(const DownloadManager &) = delete;
-    DownloadManager & operator=(const DownloadManager &) = delete;
+    Manager(const Manager &) = delete;
+    Manager & operator=(const Manager &) = delete;
 
     bool SetTimeout(DWORD milliseconds);
     void StopTimeout();

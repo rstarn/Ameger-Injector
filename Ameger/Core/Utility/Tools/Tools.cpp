@@ -380,6 +380,62 @@ void DeleteSymbolCacheRoot(const std::wstring & root)
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 {
+	// IsWow64Process only answers "WOW64 or not", which is sufficient on an x64 host but misreports a
+	// native ARM64 process on an ARM64 host. IsWow64Process2 reports the target's machine type and the
+	// host's native machine, so the target's effective machine can be compared against the machine this
+	// build targets. It is resolved dynamically because it does not exist before Windows 10 1709.
+	using f_IsWow64Process2 = BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *);
+
+	static f_IsWow64Process2 pIsWow64Process2 = []() -> f_IsWow64Process2
+	{
+		auto kernel32_name = XOR_STR_W(L"kernel32.dll");
+		HMODULE hKernel32 = GetModuleHandleW(kernel32_name.get());
+		if (!hKernel32)
+		{
+			return nullptr;
+		}
+
+		auto proc_name = XOR_STR_A("IsWow64Process2");
+		return ReCa<f_IsWow64Process2>(GetProcAddress(hKernel32, proc_name.get()));
+	}();
+
+#if defined(_M_ARM64)
+	constexpr USHORT kHostMachine = IMAGE_FILE_MACHINE_ARM64;
+#elif defined(_M_AMD64)
+	constexpr USHORT kHostMachine = IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_IX86)
+	constexpr USHORT kHostMachine = IMAGE_FILE_MACHINE_I386;
+#else
+	constexpr USHORT kHostMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+#endif
+
+	if (pIsWow64Process2)
+	{
+		USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+		USHORT native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+
+		if (!pIsWow64Process2(hTargetProc, &process_machine, &native_machine))
+		{
+			if (error_code)
+			{
+				*error_code = GetLastError();
+			}
+
+			return false;
+		}
+
+		if (error_code)
+		{
+			*error_code = ERROR_SUCCESS;
+		}
+
+		// A process that runs natively reports IMAGE_FILE_MACHINE_UNKNOWN for its own machine and the
+		// host's native machine instead; either way the effective machine is the one that matters.
+		const USHORT effective = process_machine != IMAGE_FILE_MACHINE_UNKNOWN ? process_machine : native_machine;
+
+		return effective == kHostMachine;
+	}
+
 	BOOL bWOW64 = FALSE;
 	if (!IsWow64Process(hTargetProc, &bWOW64))
 	{
@@ -399,6 +455,19 @@ bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 	return !bWOW64;
 }
 
+bool AllowDirectHandleFallback()
+{
+	static const bool allowed = []() -> bool
+	{
+		wchar_t buffer[8] = {};
+		auto env_name = XOR_STR_W(L"INJ_ALLOW_DIRECT_FALLBACK");
+		const DWORD got = GetEnvironmentVariableW(env_name.get(), buffer, 4);
+		return (got == 1 && buffer[0] == L'1');
+	}();
+
+	return allowed;
+}
+
 namespace
 {
 	constexpr size_t kErrorRingCapacity = 16;
@@ -409,8 +478,6 @@ namespace
 		DWORD AdvErrorCode = 0;
 		int Line = 0;
 		DWORD Flags = 0;
-		INJECTION_MODE InjectionMode = INJECTION_MODE::IM_ManualMap;
-		LAUNCH_METHOD LaunchMethod = LAUNCH_METHOD::LM_HijackThread;
 		int bNative = 0;
 		wchar_t DllFileName[MAX_PATH] = {};
 		wchar_t TargetProcessExeFileName[MAX_PATH] = {};
@@ -435,8 +502,6 @@ void ErrorLog(const ERROR_INFO & info)
 	redacted.AdvErrorCode = info.AdvErrorCode;
 	redacted.Line = info.Line;
 	redacted.Flags = info.Flags;
-	redacted.InjectionMode = info.InjectionMode;
-	redacted.LaunchMethod = info.LaunchMethod;
 	redacted.bNative = info.bNative;
 
 	const std::wstring dll_name = BasenameOnly(info.DllFileName);
@@ -452,9 +517,8 @@ void ErrorLog(const ERROR_INFO & info)
 	}
 	ReleaseSRWLockExclusive(&g_ErrorLogLock);
 
-	LOG(1, "Load failed: code=%08X adv=%08X flags=%08X mode=%d method=%d\n",
-		info.ErrorCode, info.AdvErrorCode, info.Flags,
-		static_cast<int>(info.InjectionMode), static_cast<int>(info.LaunchMethod));
+	LOG(1, "Load failed: code=%08X adv=%08X flags=%08X\n",
+		info.ErrorCode, info.AdvErrorCode, info.Flags);
 }
 
 DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
@@ -490,8 +554,6 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 	Out->AdvErrorCode = snapshot.AdvErrorCode;
 	Out->Line = snapshot.Line;
 	Out->Flags = snapshot.Flags;
-	Out->InjectionMode = static_cast<int>(snapshot.InjectionMode);
-	Out->LaunchMethod = static_cast<int>(snapshot.LaunchMethod);
 	Out->bNative = snapshot.bNative;
 
 	wcsncpy_s(Out->DllFileName, _countof(Out->DllFileName), snapshot.DllFileName, _TRUNCATE);

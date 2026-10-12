@@ -1,9 +1,10 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
+
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "Injection.h"
 #include "Injection/ManualMapping/ManualMappingCore.h"
 #include "System/Handle/HandleHijack.h"
-
+#include "Native/Syscall.h"
 DWORD __stdcall InitializeRuntime();
 
 namespace
@@ -30,8 +31,8 @@ namespace
 					Stats.SponsorValidated = 1;
 					Stats.DonorHandle = PtrToUlong(Sponsor);
 					HANDLE Duplicated = nullptr;
-					bool duplicate_ok = DuplicateHandle(GetCurrentProcess(), Sponsor, GetCurrentProcess(),
-						&Duplicated, AccessMask, FALSE, 0) && Duplicated && ValidateProcessDonorHandle(Duplicated, Pid, AccessMask);
+					bool duplicate_ok = NT_SUCCESS(ScNtDuplicateObject(GetCurrentProcess(), Sponsor, GetCurrentProcess(),
+						&Duplicated, AccessMask, FALSE, 0)) && Duplicated && ValidateProcessDonorHandle(Duplicated, Pid, AccessMask);
 					const bool roundtrip_ok = duplicate_ok &&
 						((Flags & INJ_SKIP_SPONSOR_ROUNDTRIP) != 0 || ProbeMemoryRoundtrip(Duplicated));
 					if (duplicate_ok && roundtrip_ok)
@@ -93,15 +94,21 @@ namespace
 
 			Stats.Source = static_cast<DWORD>(HijackSource::Scan);
 			RecordHijackOutcome(Stats, false);
-			LOG(0, "Handle acquisition found no donor; refusing (no direct fallback)\n");
-			INIT_ERROR_DATA(ErrorData, Stats.FailCode ? Stats.FailCode : static_cast<DWORD>(INJ_ERR_HANDLE_HIJACK_FAILED));
-			return INJ_ERR_HANDLE_HIJACK_FAILED;
+
+			if (!AllowDirectHandleFallback())
+			{
+				LOG(0, "Handle acquisition found no donor; refusing (no direct fallback)\n");
+				INIT_ERROR_DATA(ErrorData, Stats.FailCode ? Stats.FailCode : static_cast<DWORD>(INJ_ERR_HANDLE_HIJACK_FAILED));
+				return INJ_ERR_HANDLE_HIJACK_FAILED;
+			}
+
+			LOG(0, "Handle acquisition found no donor; direct fallback enabled by INJ_ALLOW_DIRECT_FALLBACK\n");
 		}
 
-		Out.reset(OpenProcess(AccessMask, FALSE, Pid));
+		Out.reset(ScOpenProcess(Pid, AccessMask));
 		if (!Out)
 		{
-			INIT_ERROR_DATA(ErrorData, GetLastError());
+			INIT_ERROR_DATA(ErrorData, INJ_ERR_ADVANCED_NOT_DEFINED);
 			return INJ_ERR_CANT_OPEN_PROCESS;
 		}
 
@@ -148,8 +155,6 @@ DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD Err
 		info.DllFileName				= Data.DllPath;
 		info.TargetProcessExeFileName	= Data.TargetProcessExeFileName;
 		info.TargetProcessId			= Data.ProcessID;
-		info.InjectionMode				= Data.Mode;
-		info.LaunchMethod				= Data.Method;
 		info.Flags						= Data.Flags;
 		info.HandleValue				= Data.hHandleValue;
 		info.bNative					= Native;
@@ -232,20 +237,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		return InitErrorStruct(Data, -1, INJ_ERR_IMPORT_HANDLER_NOT_DONE, error_data);
 	}
 
-	pData->Mode = INJECTION_MODE::IM_ManualMap;
-	pData->Flags |= INJ_MM_MAP_FROM_MEMORY;
-	Data.Mode = INJECTION_MODE::IM_ManualMap;
-	Data.Flags |= INJ_MM_MAP_FROM_MEMORY;
-
-	if (Data.Method != LAUNCH_METHOD::LM_HijackThread)
-	{
-		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-		LOG(0, "Only thread acquisition is supported in this build\n");
-
-		return InitErrorStruct(Data, -1, INJ_ERR_INVALID_INJ_METHOD, error_data);
-	}
-
 	if (!Data.ProcessID)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -289,12 +280,11 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	LOG(0, "Attached to target process\n");
 
 	wchar_t szExePath[MAX_PATH * 2]{ 0 };
-	DWORD size_inout = sizeof(szExePath) / sizeof(szExePath[0]);
-	if (!QueryFullProcessImageNameW(hTargetProc, NULL, szExePath, &size_inout))
+	if (!ScGetProcessImageName(hTargetProc, szExePath, static_cast<DWORD>(sizeof(szExePath) / sizeof(szExePath[0]))))
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(0, "QueryFullProcessImageNameW failed: %08X\n", (DWORD)error_data.AdvErrorCode);
+		LOG(0, "Could not resolve the target image path\n");
 
 		return InitErrorStruct(Data, -1, INJ_ERR_CANT_GET_EXE_FILENAME, error_data);
 	}
@@ -349,7 +339,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	Source.RawData		= Data.RawData;
 	Source.RawSize		= Data.RawSize;
 
-	RetVal = MMAP_NATIVE::ManualMap(Source, hTargetProc, Data.Method, Data.Flags, hOut, Data.Timeout, Data.hThreadHandleValue, Data.TargetTid, error_data);
+	RetVal = MMAP_NATIVE::ManualMap(Source, hTargetProc, Data.Flags, hOut, Data.Timeout, Data.hThreadHandleValue, Data.TargetTid, error_data);
 
 	LOG(0, "Load finished\n");
 
@@ -370,8 +360,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		ERROR_INFO info{ };
 		info.TargetProcessId			= pData->ProcessID;
-		info.InjectionMode				= pData->Mode;
-		info.LaunchMethod				= pData->Method;
 		info.Flags						= pData->Flags;
 		info.HandleValue				= pData->hHandleValue;
 		info.RawData					= pData->RawData;
@@ -474,8 +462,6 @@ INJECTIONDATA_INTERNAL::INJECTIONDATA_INTERNAL(const MEMORY_INJECTIONDATA * pDat
 	RawData				= pData->RawData;
 	RawSize				= pData->RawSize;
 	ProcessID			= pData->ProcessID;
-	Mode				= pData->Mode;
-	Method				= pData->Method;
 	Flags				= pData->Flags;
 	Timeout				= pData->Timeout;
 	hHandleValue		= pData->hHandleValue;

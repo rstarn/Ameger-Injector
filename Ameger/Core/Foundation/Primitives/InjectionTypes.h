@@ -2,23 +2,8 @@
 
 #include <Windows.h>
 
-#ifndef AMEGER_INJECTION_MODE_DEFINED
-#define AMEGER_INJECTION_MODE_DEFINED
-
-enum class INJECTION_MODE
-{
-	IM_ManualMap
-};
-#endif
-
-#ifndef AMEGER_LAUNCH_METHOD_DEFINED
-#define AMEGER_LAUNCH_METHOD_DEFINED
-
-enum class LAUNCH_METHOD
-{
-	LM_HijackThread
-};
-#endif
+// The build has exactly one injection mode (manual map) and one launch method (thread hijack), so the
+// former mode/method selectors are gone: there is no choice to make and no branch to take.
 
 #define INJ_HANDLE_HIJACKING			0x0040
 

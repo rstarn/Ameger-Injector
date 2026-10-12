@@ -34,6 +34,7 @@ set "MUTATE_SCRIPT=%SCRIPTS_DIR%\BuildPE.ps1"
 set "SEED_SCRIPT=%SCRIPTS_DIR%\CreateSeeds.ps1"
 set "CONFIG_SCRIPT=%SCRIPTS_DIR%\ProtectConfig.ps1"
 set "VERIFY_SCRIPT=%SCRIPTS_DIR%\VerifyEmbedMagic.ps1"
+set "VERIFY_SYSCALL_SCRIPT=%SCRIPTS_DIR%\VerifySyscallsLayer.ps1"
 set "NAMES_SCRIPT=%SCRIPTS_DIR%\ShuffleNaming.ps1"
 set "RENAME_SCRIPT=%SCRIPTS_DIR%\ShuffleExports.ps1"
 set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinPayload.ps1"
@@ -168,7 +169,21 @@ if errorlevel 1 goto :names_state_error
 where powershell.exe >nul 2>&1
 if errorlevel 1 goto :hash_error
 set "RUNTIME_SHA256="
-for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -Command "$h=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes('%RUNTIME_STOCK_DLL%'))) -replace '-',''); Write-Output ('RUNTIME_SHA256=' + $h); Write-Output ('H0=0x' + $h.Substring(0,8)); Write-Output ('H1=0x' + $h.Substring(8,8)); Write-Output ('H2=0x' + $h.Substring(16,8)); Write-Output ('H3=0x' + $h.Substring(24,8)); Write-Output ('H4=0x' + $h.Substring(32,8)); Write-Output ('H5=0x' + $h.Substring(40,8)); Write-Output ('H6=0x' + $h.Substring(48,8)); Write-Output ('H7=0x' + $h.Substring(56,8))"`) do set "%%A=%%B"
+set "RTSHA_TMP=%TEMP%\amg_rtsha_%RANDOM%%RANDOM%"
+set "RTSHA_B64=%RTSHA_TMP%.b64"
+set "RTSHA_PS1=%RTSHA_TMP%.ps1"
+set "RTSHA_OUT=%RTSHA_TMP%.out"
+>"%RTSHA_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%RTSHA_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkNCiRoID0gKFtCaXRDb252ZXJ0ZXJdOjpUb1N0cmluZyhbU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlNIQTI1Nl06OkNyZWF0ZSgpLkNvbXB1dGVIYXNoKFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKSkpIC1yZXBsYWNlICctJywnJykNCldyaXRlLU91dHB1dCAoJ1JVTlRJTUVfU0hBMjU2PScgKyAkaCkNCldyaXRlLU91dHB1dCAoJ0gwPTB4JyArICRoLlN1YnN0cmluZygwLDgpKQ0KV3JpdGUtT3V0cHV0ICgnSDE9MHgnICsgJGguU3Vic3RyaW5nKDgsOCkpDQpXcml0ZS1PdXRwdXQgKCdIMj0weCcgKyAkaC5TdWJzdHJpbmcoMTYsOCkpDQpXcml0ZS1PdXRwdXQgKCdIMz0weCcgKyAkaC5TdWJzdHJpbmcoMjQsOCkpDQpXcml0ZS1PdXRwdXQgKCdIND0weCcgKyAkaC5TdWJzdHJpbmcoMzIsOCkpDQpXcml0ZS1PdXRwdXQgKCdINT0weCcgKyAkaC5TdWJzdHJpbmcoNDAsOCkpDQpXcml0ZS1PdXRwdXQgKCdINj0weCcgKyAkaC5TdWJzdHJpbmcoNDgsOCkpDQpXcml0ZS1PdXRwdXQgKCdINz0weCcgKyAkaC5TdWJzdHJpbmcoNTYsOCkpDQo=
+>>"%RTSHA_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%RTSHA_B64%" "%RTSHA_PS1%" >nul 2>&1
+if errorlevel 1 goto :rtsha_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%RTSHA_PS1%" -Path "%RUNTIME_STOCK_DLL%" >"%RTSHA_OUT%" 2>&1
+for /f "usebackq tokens=1,2 delims==" %%A in ("%RTSHA_OUT%") do set "%%A=%%B"
+:rtsha_cleanup
+if exist "%RTSHA_PS1%" del /f /q "%RTSHA_PS1%" >nul 2>&1
+if exist "%RTSHA_B64%" del /f /q "%RTSHA_B64%" >nul 2>&1
+if exist "%RTSHA_OUT%" del /f /q "%RTSHA_OUT%" >nul 2>&1
 if not defined RUNTIME_SHA256 goto :hash_error
 if not defined H0 goto :hash_error
 if not defined H1 goto :hash_error
@@ -225,6 +240,17 @@ call :verify_config_keys
 if errorlevel 1 goto :verify_content_error
 call :verify "%RUNTIME_DLL%" "x64 runtime"
 if errorlevel 1 goto :verify_error
+call :verify_syscall_stub
+if errorlevel 1 goto :verify_content_error
+call :verify_syscall_payload
+if errorlevel 1 goto :verify_content_error
+call :verify_syscall_stealth
+if errorlevel 1 goto :verify_content_error
+echo.
+echo   %C_GREEN%[+]%C_RESET% SyscallStub         = %C_GREEN%OK%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% SyscallPayload      = %C_GREEN%OK%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% SyscallStealth      = %C_GREEN%OK%C_RESET%
+echo.
 call :remove_import_artifacts "%DEPS_RELEASE%"
 if errorlevel 1 goto :cleanup_error
 call :remove_import_artifacts "%DLL_DIR%"
@@ -342,6 +368,13 @@ if /i "%RUNTIME_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%EXE_NAME%"=="%DLLDIR_NAME%" exit /b 1
 if /i "%EXE_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%DLLDIR_NAME%"=="%CONFIG_NAME%" exit /b 1
+echo   %C_GREEN%[+]%C_RESET% PayloadName = %C_GREEN%%PAYLOAD_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% RuntimeName = %C_GREEN%%RUNTIME_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% ConfigMagic = %C_GREEN%%CONFIG_MAGIC%%C_RESET%
+echo.
 exit /b 0
 
 :rename_exports
@@ -419,6 +452,23 @@ if not defined CONFIG_MAGIC exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigKeys -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
+REM Confirms the stealth critical plumbing is actually compiled into the shipped runtime. These are
+REM static checks on the built image; the live behaviour is covered by the runtime verify tool.
+:verify_syscall_stub
+if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Stub -Path "%RUNTIME_DLL%"
+exit /b %ERRORLEVEL%
+
+:verify_syscall_payload
+if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Payload -Path "%RUNTIME_DLL%"
+exit /b %ERRORLEVEL%
+
+:verify_syscall_stealth
+if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Stealth -Path "%RUNTIME_DLL%"
+exit /b %ERRORLEVEL%
+
 :remove_import_artifacts
 for %%F in ("%~1\*.lib" "%~1\*.exp") do if exist "%%~F" (
   del /f /q "%%~F"
@@ -485,7 +535,7 @@ if errorlevel 1 (
   echo   %C_RED%ERROR: config encryption failed; refusing to ship a plaintext config.%C_RESET%
   exit /b 1
 )
-echo   %C_GREEN%[+]%C_RESET% Configuration encrypted for deployment.
+echo   %C_GREEN%[+]%C_RESET% Config encrypted  = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 exit /b 0
 
 :deploy_payload
@@ -509,7 +559,21 @@ if errorlevel 1 (
   exit /b 1
 )
 set "DEPLOYED_SHA="
-for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$h=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes('%PAYLOAD_DEST%'))) -replace '-',''); Write-Output ('DEPLOYED_SHA=' + $h)"`) do set "%%A=%%B"
+set "DSHA_TMP=%TEMP%\amg_dsha_%RANDOM%%RANDOM%"
+set "DSHA_B64=%DSHA_TMP%.b64"
+set "DSHA_PS1=%DSHA_TMP%.ps1"
+set "DSHA_OUT=%DSHA_TMP%.out"
+>"%DSHA_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%DSHA_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkNCiRoID0gKFtCaXRDb252ZXJ0ZXJdOjpUb1N0cmluZyhbU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlNIQTI1Nl06OkNyZWF0ZSgpLkNvbXB1dGVIYXNoKFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKSkpIC1yZXBsYWNlICctJywnJykNCldyaXRlLU91dHB1dCAoJ0RFUExPWUVEX1NIQT0nICsgJGgpDQo=
+>>"%DSHA_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%DSHA_B64%" "%DSHA_PS1%" >nul 2>&1
+if errorlevel 1 goto :dsha_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DSHA_PS1%" -Path "%PAYLOAD_DEST%" >"%DSHA_OUT%" 2>&1
+for /f "usebackq tokens=1,2 delims==" %%A in ("%DSHA_OUT%") do set "%%A=%%B"
+:dsha_cleanup
+if exist "%DSHA_PS1%" del /f /q "%DSHA_PS1%" >nul 2>&1
+if exist "%DSHA_B64%" del /f /q "%DSHA_B64%" >nul 2>&1
+if exist "%DSHA_OUT%" del /f /q "%DSHA_OUT%" >nul 2>&1
 if not defined DEPLOYED_SHA (
   echo   %C_RED%ERROR: unable to hash the deployed payload.%C_RESET%
   exit /b 1
@@ -534,8 +598,21 @@ exit /b 0
 
 :write_section_manifest
 set "MANIFEST=%RELEASE_CACHE%\pe-sections.txt"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$out=@(); foreach($p in @('%INTERFACE_EXE%','%PAYLOAD_DEST%')){ if(-not (Test-Path -LiteralPath $p)){exit 1}; $b=[IO.File]::ReadAllBytes($p); $e=[BitConverter]::ToInt32($b,0x3C); $c=$e+4; $n=[BitConverter]::ToUInt16($b,$c+2); $z=[BitConverter]::ToUInt16($b,$c+16); $s=$c+20+$z; $names=@(); for($i=0;$i -lt $n;$i++){ $o=$s+40*$i; $nm=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0); $x=[BitConverter]::ToUInt32($b,$o+36); if($x -band 0x20000000){ $names += ($nm + '+X') } else { $names += $nm } }; $out += ([IO.Path]::GetFileName($p) + ':' + ($names -join ',')) }; [IO.File]::WriteAllLines('%MANIFEST%',$out)"
-if errorlevel 1 exit /b 1
+set "MANIF_TMP=%TEMP%\amg_manif_%RANDOM%%RANDOM%"
+set "MANIF_B64=%MANIF_TMP%.b64"
+set "MANIF_PS1=%MANIF_TMP%.ps1"
+set "MANIF_RC=1"
+>"%MANIF_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%MANIF_B64%" echo cGFyYW0oW3N0cmluZ10kSW50ZXJmYWNlRXhlLCBbc3RyaW5nXSRQYXlsb2FkLCBbc3RyaW5nXSRNYW5pZmVzdCkNCiRvdXQgPSBAKCkNCmZvcmVhY2ggKCRwIGluIEAoJEludGVyZmFjZUV4ZSwgJFBheWxvYWQpKSB7DQogICAgaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJHApKSB7IGV4aXQgMSB9DQogICAgJGIgPSBbSU8uRmlsZV06OlJlYWRBbGxCeXRlcygkcCkNCiAgICAkZSA9IFtCaXRDb252ZXJ0ZXJdOjpUb0ludDMyKCRiLCAweDNDKQ0KICAgICRjID0gJGUgKyA0DQogICAgJG4gPSBbQml0Q29udmVydGVyXTo6VG9VSW50MTYoJGIsICRjICsgMikNCiAgICAkeiA9IFtCaXRDb252ZXJ0ZXJdOjpUb1VJbnQxNigkYiwgJGMgKyAxNikNCiAgICAkcyA9ICRjICsgMjAgKyAkeg0KICAgICRuYW1lcyA9IEAoKQ0KICAgIGZvciAoJGkgPSAwOyAkaSAtbHQgJG47ICRpKyspIHsNCiAgICAgICAgJG8gPSAkcyArIDQwICogJGkNCiAgICAgICAgJG5tID0gW1RleHQuRW5jb2RpbmddOjpBU0NJSS5HZXRTdHJpbmcoJGIsICRvLCA4KS5UcmltKFtjaGFyXTApDQogICAgICAgICR4ID0gW0JpdENvbnZlcnRlcl06OlRvVUludDMyKCRiLCAkbyArIDM2KQ0KICAgICAgICBpZiAoJHggLWJhbmQgMHgyMDAwMDAwMCkgeyAkbmFtZXMgKz0gKCRubSArICcrWCcpIH0gZWxzZSB7ICRuYW1lcyArPSAkbm0gfQ0KICAgIH0NCiAgICAkb3V0ICs9IChbSU8uUGF0aF06OkdldEZpbGVOYW1lKCRwKSArICc6JyArICgkbmFtZXMgLWpvaW4gJywnKSkNCn0NCltJTy5GaWxlXTo6V3JpdGVBbGxMaW5lcygkTWFuaWZlc3QsICRvdXQpDQo=
+>>"%MANIF_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%MANIF_B64%" "%MANIF_PS1%" >nul 2>&1
+if errorlevel 1 goto :manif_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MANIF_PS1%" -InterfaceExe "%INTERFACE_EXE%" -Payload "%PAYLOAD_DEST%" -Manifest "%MANIFEST%"
+set "MANIF_RC=%ERRORLEVEL%"
+:manif_cleanup
+if exist "%MANIF_PS1%" del /f /q "%MANIF_PS1%" >nul 2>&1
+if exist "%MANIF_B64%" del /f /q "%MANIF_B64%" >nul 2>&1
+if not "%MANIF_RC%"=="0" exit /b 1
 if not exist "%MANIFEST%" exit /b 1
 exit /b 0
 
@@ -619,7 +696,7 @@ echo %C_RED%ERROR: one or more expected binaries are missing.%C_RESET%
 goto :failure
 
 :verify_content_error
-echo %C_RED%ERROR: embedded runtime hash, config magic, deployed pin or per-build config key verification failed.%C_RESET%
+echo %C_RED%ERROR: content verification failed (embedded runtime hash, config magic, deployed pin, per-build config key, or syscall/stealth layer).%C_RESET%
 goto :failure
 
 :cleanup_error

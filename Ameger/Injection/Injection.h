@@ -19,8 +19,6 @@ struct INJECTIONDATA_INTERNAL
 	DWORD			RawSize;
 
 	DWORD			ProcessID;
-	INJECTION_MODE	Mode;
-	LAUNCH_METHOD	Method;
 	DWORD			Flags;
 	DWORD			Timeout;
 	ULONG_PTR		hHandleValue;

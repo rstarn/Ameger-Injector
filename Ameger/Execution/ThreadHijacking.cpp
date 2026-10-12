@@ -7,6 +7,7 @@
 #include "Execution/Routine/StartRoutine.h"
 #include "System/Handle/HandleHijack.h"
 #include "Injection/Injection.h"
+#include "Native/Syscall.h"
 
 static THREAD_EXEC_STATS g_ThreadExecStats{};
 
@@ -40,34 +41,9 @@ namespace
 		}
 	}
 
-	void ScrubRemoteRegion(HANDLE hTargetProc, void * base, SIZE_T size)
-	{
-		if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE || !base || !size)
-		{
-			return;
-		}
-
-		DWORD old_protect = 0;
-		if (!VirtualProtectEx(hTargetProc, base, size, PAGE_READWRITE, &old_protect))
-		{
-			return;
-		}
-
-		BYTE zeros[0x2000] = { 0 };
-		BYTE * cursor = ReCa<BYTE *>(base);
-		SIZE_T remaining = size;
-		while (remaining)
-		{
-			const SIZE_T chunk = remaining < sizeof(zeros) ? remaining : sizeof(zeros);
-			if (!WriteProcessMemory(hTargetProc, cursor, zeros, chunk, nullptr))
-			{
-				return;
-			}
-
-			cursor += chunk;
-			remaining -= chunk;
-		}
-	}
+	// The shared scrub helper lives in the syscall layer. The trampoline is at most a couple of pages,
+	// so it is wiped in 8 KiB chunks, matching the stack buffer the previous local copy used.
+	constexpr SIZE_T kScrubChunk = 0x2000;
 
 	constexpr DWORD kMaxHandleProbes = 4;
 
@@ -91,30 +67,18 @@ namespace
 		{
 			return true;
 		}
-		UniqueHandle hThread(OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
+		UniqueHandle hThread(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
 		if (!hThread)
 		{
 			return true;
 		}
-		auto ntdll_name = KC_WSTR(L"ntdll.dll");
-		HMODULE hNtdll = GetModuleHandleW(ntdll_name.c_str());
-		if (!hNtdll)
-		{
-			return true;
-		}
-		auto api_name = XOR_STR_A("NtQueryInformationThread");
-		auto query = ReCa<f_NtQueryInformationThread>(GetProcAddress(hNtdll, api_name.get()));
-		if (!query)
-		{
-			return true;
-		}
 		THREAD_BASIC_INFORMATION tbi{ 0 };
-		if (NT_FAIL(query(hThread.get(), THREADINFOCLASS::ThreadBasicInformation, &tbi, sizeof(tbi), nullptr)) || !tbi.TebBaseAddress)
+		if (NT_FAIL(ScNtQueryInformationThread(hThread.get(), THREADINFOCLASS::ThreadBasicInformation, &tbi, sizeof(tbi), nullptr)) || !tbi.TebBaseAddress)
 		{
 			return true;
 		}
 		USHORT flags = 0;
-		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(tbi.TebBaseAddress) + g_DynamicOffsets.TebSameTebFlags, &flags, sizeof(flags), nullptr))
+		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(tbi.TebBaseAddress) + g_DynamicOffsets.TebSameTebFlags, &flags, sizeof(flags), nullptr))
 		{
 			return true;
 		}
@@ -157,10 +121,6 @@ namespace
 				}
 			}
 		}
-		auto ntdll_name = KC_WSTR(L"ntdll.dll");
-		HMODULE hNtdll = GetModuleHandleW(ntdll_name.c_str());
-		auto api_name = XOR_STR_A("NtQueryInformationThread");
-		auto query = hNtdll ? ReCa<f_NtQueryInformationThread>(GetProcAddress(hNtdll, api_name.get())) : nullptr;
 		UniqueHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
 		if (!snap || snap.get() == INVALID_HANDLE_VALUE)
 		{
@@ -196,13 +156,13 @@ namespace
 				continue;
 			}
 			bool exe_start = false;
-			if (query && exe_base && exe_size)
+			if (exe_base && exe_size)
 			{
-				UniqueHandle ht(OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
+				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
 				if (ht)
 				{
 					PVOID start = nullptr;
-					if (!NT_FAIL(query(ht.get(), static_cast<THREADINFOCLASS>(9), &start, sizeof(start), nullptr)) && start)
+					if (!NT_FAIL(ScNtQueryInformationThread(ht.get(), static_cast<THREADINFOCLASS>(9), &start, sizeof(start), nullptr)) && start)
 					{
 						const auto addr = ReCa<ULONG_PTR>(start);
 						exe_start = addr >= exe_base && addr < exe_base + exe_size;
@@ -379,14 +339,14 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	if ((Flags & INJ_HANDLE_HIJACKING) && SponsorThread && SponsorTid)
 	{
 		const HANDLE Sponsor = ReCa<HANDLE>(SponsorThread);
-		const DWORD TargetPidForSponsor = GetProcessId(hTargetProc);
-		const DWORD SponsorTidActual = GetThreadId(Sponsor);
+		const DWORD TargetPidForSponsor = ScGetProcessId(hTargetProc);
+		const DWORD SponsorTidActual = ScGetThreadId(Sponsor);
 		bool sponsor_usable = false;
 		HANDLE Duplicated = nullptr;
-		if (TargetPidForSponsor && SponsorTidActual && GetProcessIdOfThread(Sponsor) == TargetPidForSponsor
+		if (TargetPidForSponsor && SponsorTidActual && ScGetProcessIdOfThread(Sponsor) == TargetPidForSponsor
 			&& SponsorTidActual == SponsorTid && SponsorTidActual != GetCurrentThreadId()
-			&& DuplicateHandle(GetCurrentProcess(), Sponsor, GetCurrentProcess(),
-				&Duplicated, hijackAccess, FALSE, 0) && Duplicated)
+			&& NT_SUCCESS(ScNtDuplicateObject(GetCurrentProcess(), Sponsor, GetCurrentProcess(),
+				&Duplicated, hijackAccess, FALSE, 0)) && Duplicated)
 		{
 
 			sponsor_usable = false;
@@ -498,7 +458,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				Stats.DonorHandle = PtrToUlong(Sponsor);
 				Stats.GrantedAccess = hijackAccess;
 				Stats.NewHandle = PtrToUlong(hThread.get());
-
 				Stats.SponsorValidated = 1;
 
 				Stats.SponsorProbed = 0;
@@ -633,11 +592,16 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				Stats.Source = static_cast<DWORD>(HijackSource::Scan);
 				RecordHijackOutcome(Stats, true);
 
-				INIT_ERROR_DATA(error_data, INJ_ERR_HANDLE_HIJACK_FAILED);
+				if (!AllowDirectHandleFallback())
+				{
+					INIT_ERROR_DATA(error_data, INJ_ERR_HANDLE_HIJACK_FAILED);
 
-				LOG(2, "Thread handle acquisition found no donor; refusing (no direct fallback)\n");
+					LOG(2, "Thread handle acquisition found no donor; refusing (no direct fallback)\n");
 
-				return SR_HT_ERR_OPEN_REFUSED;
+					return SR_HT_ERR_OPEN_REFUSED;
+				}
+
+				LOG(2, "Thread handle acquisition found no donor; direct fallback enabled by INJ_ALLOW_DIRECT_FALLBACK\n");
 			}
 		}
 		else
@@ -653,33 +617,38 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	if (!hThread)
 	{
 
-		hThread.reset(OpenThread(threadAccess, FALSE, ThreadID));
+		hThread.reset(ScOpenThread(ThreadID, threadAccess));
 	}
 	if (!hThread)
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "OpenThread failed: %08X\n", error_data.AdvErrorCode);
+		LOG(2, "OpenThread failed\n");
 
 		return SR_HT_ERR_OPEN_THREAD_FAIL;
 	}
 
-constexpr size_t kWxCodePage = 0x1000;
-constexpr size_t kWxAllocSize = 0x2000;
+	constexpr size_t kWxCodePage = 0x1000;
+	constexpr size_t kWxAllocSize = 0x2000;
 
-static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
-	"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
+	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
+		"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
 
 	const size_t pre_shellcode_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
 	const size_t pre_state_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
 	const size_t pre_data_size = pre_shellcode_size > pre_state_offset ? pre_shellcode_size - pre_state_offset : 0;
 	std::vector<BYTE> shellcode(pre_shellcode_size);
-	std::vector<BYTE> staged(kWxCodePage + pre_data_size, 0xCC);
 
-	void * pMem = VirtualAllocEx(hTargetProc, nullptr, kWxAllocSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	// The pad behind the stub is filled with zeroes rather than breakpoints. An executable page carrying
+	// a long unbroken run of 0xCC is the signature of a breakpoint trampoline, which is precisely the
+	// construct an anti-cheat that emulates INT3 inside its own vectored handler looks for. Zeroed tail
+	// is what a normally allocated and partially written page looks like.
+	std::vector<BYTE> staged(kWxCodePage + pre_data_size, 0x00);
+
+	void * pMem = ScAllocateMemory(hTargetProc, kWxAllocSize, PAGE_READWRITE);
 	if (!pMem)
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
 		return SR_HT_ERR_CANT_ALLOC_MEM;
 	}
@@ -689,7 +658,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 	auto scrub_guard = MakeScopeExit([&]() noexcept {
 		if (allocation_guard.get())
 		{
-			ScrubRemoteRegion(hTargetProc, pMem, kWxAllocSize);
+			ScrubRemoteRegion(hTargetProc, pMem, kWxAllocSize, kScrubChunk);
 		}
 	});
 
@@ -804,12 +773,12 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		}
 	}
 
-	const DWORD sr_suspend = SuspendThread(hThread);
-	if (sr_suspend == (DWORD)-1)
+	ULONG sr_suspend = 0;
+	if (NT_FAIL(ScNtSuspendThread(hThread, &sr_suspend)))
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "SuspendThread failed: %08X\n", error_data.AdvErrorCode);
+		LOG(2, "SuspendThread failed\n");
 
 		return SR_HT_ERR_SUSPEND_FAIL;
 	}
@@ -818,7 +787,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 	{
 		LOG(2, "Thread was already suspended (previous count %u); skipping it\n", sr_suspend);
 
-		ResumeThread(hThread);
+		ScNtResumeThread(hThread, nullptr);
 
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -833,13 +802,13 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 	StoreThreadExecStat(g_ThreadExecStats.Attempted, 1);
 	StoreThreadExecStat(g_ThreadExecStats.HijackedTid, ThreadID);
 
-	if (!GetThreadContext(hThread, &OldContext))
+	if (NT_FAIL(ScNtGetContextThread(hThread, &OldContext)))
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "GetThreadContext failed: %08X\n", error_data.AdvErrorCode);
+		LOG(2, "GetThreadContext failed\n");
 
-		ResumeThread(hThread);
+		ScNtResumeThread(hThread, nullptr);
 
 		return SR_HT_ERR_GET_CONTEXT_FAIL;
 	}
@@ -869,90 +838,80 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 	LOG(3, "pRoutine = %p\n", pRemoteFunc);
 	LOG(3, "pArg     = %p\n", pArg);
 
-	if (!WriteProcessMemory(hTargetProc, pMem, staged.data(), staged.size(), nullptr))
+	if (!ScWriteProcessMemory(hTargetProc, pMem, staged.data(), staged.size(), nullptr))
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "WriteProcessMemory failed: %08X\n", error_data.AdvErrorCode);
+		LOG(2, "WriteProcessMemory failed\n");
 
-		ResumeThread(hThread);
+		ScNtResumeThread(hThread, nullptr);
 
 		return SR_HT_ERR_WPM_FAIL;
 	}
 
 	{
-		DWORD old_protect = 0;
-		if (!VirtualProtectEx(hTargetProc, pCode, kWxCodePage, PAGE_EXECUTE_READ, &old_protect))
+		if (!ScProtectMemory(hTargetProc, pCode, kWxCodePage, PAGE_EXECUTE_READ))
 		{
-			INIT_ERROR_DATA(error_data, GetLastError());
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "VirtualProtectEx(RX) failed: %08X\n", error_data.AdvErrorCode);
+			LOG(2, "Protect(RX) failed\n");
 
-			ResumeThread(hThread);
+			ScNtResumeThread(hThread, nullptr);
 
 			return SR_HT_ERR_WPM_FAIL;
 		}
 
 		if (!FlushInstructionCache(hTargetProc, pCode, code_size))
 		{
-			LOG(2, "FlushInstructionCache failed: %08X\n", GetLastError());
+			LOG(2, "FlushInstructionCache failed\n");
 		}
 		LOG(2, "Acquired code promoted RW->RX, state stays RW\n");
 	}
 
-	if (!SetThreadContext(hThread, &OldContext))
+	if (NT_FAIL(ScNtSetContextThread(hThread, &OldContext)))
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "SetThreadContext failed: %08X\n", error_data.AdvErrorCode);
+		LOG(2, "SetThreadContext failed\n");
 
-		ResumeThread(hThread);
+		ScNtResumeThread(hThread, nullptr);
 
 		return SR_HT_ERR_SET_CONTEXT_FAIL;
 	}
 
 	LOG(2, "RIP replaced\n");
 
-	const DWORD sr_resume = ResumeThread(hThread);
-	if (sr_resume == (DWORD)-1)
 	{
-		INIT_ERROR_DATA(error_data, GetLastError());
-
-		LOG(2, "ResumeThread failed: %08X\n", error_data.AdvErrorCode);
-
-		OldContext.Rip = OldRIP;
-		if (!SetThreadContext(hThread, &OldContext))
+		ULONG sr_resume = 0;
+		if (NT_FAIL(ScNtResumeThread(hThread, &sr_resume)))
 		{
-			LOG(2, "Thread context recovery failed; remote allocation retained\n");
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			allocation_guard.release();
-			return SR_HT_ERR_RECOVERY_REQUIRED;
-		}
+			LOG(2, "ResumeThread failed\n");
 
-		if (ResumeThread(hThread) == (DWORD)-1)
-		{
-			INIT_ERROR_DATA(error_data, GetLastError());
+			OldContext.Rip = OldRIP;
+			if (NT_FAIL(ScNtSetContextThread(hThread, &OldContext)))
+			{
+				LOG(2, "Thread context recovery failed; remote allocation retained\n");
 
-			LOG(2, "Recovered thread could not be resumed: %08X\n", error_data.AdvErrorCode);
+				allocation_guard.release();
+				return SR_HT_ERR_RECOVERY_REQUIRED;
+			}
+
+			if (NT_FAIL(ScNtResumeThread(hThread, nullptr)))
+			{
+				INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+
+				LOG(2, "Recovered thread could not be resumed\n");
+
+				return SR_HT_ERR_RESUME_FAIL;
+			}
 
 			return SR_HT_ERR_RESUME_FAIL;
 		}
-
-		return SR_HT_ERR_RESUME_FAIL;
 	}
 
 	LOG(2, "Thread resumed\n");
-
-	if (!PostThreadMessageW(ThreadID, WM_NULL, 0, 0))
-	{
-		const DWORD post_error = GetLastError();
-		LOG(2, "PostThreadMessageW(WM_NULL) failed for TID %06X (0x%08X); "
-			   "the victim may have no message queue and will rely on the poll alone\n",
-			ThreadID, post_error);
-		INIT_ERROR_DATA(error_data, post_error);
-	}
-
-	Sleep(SR_REMOTE_DELAY);
 
 	SR_REMOTE_DATA data{ };
 	data.State			= SR_REMOTE_STATE::SR_RS_ExecutionPending;
@@ -961,7 +920,11 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 
 	LOG(2, "Entering wait state\n");
 
-	constexpr int kForceRestorePolls = 3;
+	// The stub restores the victim's registers itself and then jumps back to the original RIP, so a
+	// forced restore only has to cover the window between suspending the thread and that return. The
+	// retry window is deliberately generous, with a short backoff, because a single missed poll used
+	// to leak the trampoline and leave the victim inside the stub.
+	constexpr int kForceRestorePolls = 24;
 	auto ForceRestoreContext = [&](bool & restored, bool & resumed) -> void
 	{
 		restored = false;
@@ -974,10 +937,12 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		{
 			if (poll > 0)
 			{
-				Sleep(2);
+				// Short at first so a fast return is noticed immediately, then a steady cadence so a
+				// slow one is not polled in a tight spin.
+				Sleep(poll < 8 ? 2 : 10);
 			}
 
-			if (SuspendThread(hThread) == (DWORD)-1)
+			if (NT_FAIL(ScNtSuspendThread(hThread, nullptr)))
 			{
 
 				return;
@@ -986,12 +951,12 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 			CONTEXT ctx{ 0 };
 			ctx.ContextFlags = CONTEXT_CONTROL;
 			bool settled = false;
-			if (GetThreadContext(hThread, &ctx))
+			if (NT_SUCCESS(ScNtGetContextThread(hThread, &ctx)))
 			{
 
 				SR_REMOTE_DATA fresh{ };
 				fresh.State = SR_REMOTE_STATE::SR_RS_ExecutionPending;
-				const BOOL fresh_ok = ReadProcessMemory(hTargetProc, pState, &fresh, sizeof(fresh), nullptr);
+				const bool fresh_ok = ScReadProcessMemory(hTargetProc, pState, &fresh, sizeof(fresh), nullptr);
 				const bool finished = fresh_ok && fresh.State == SR_REMOTE_STATE::SR_RS_ExecutionFinished;
 
 				if (ctx.Rip < code_base || ctx.Rip >= code_end)
@@ -1008,13 +973,13 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 				{
 
 					ctx.Rip = OldRIP;
-					restored = SetThreadContext(hThread, &ctx) != FALSE;
+					restored = NT_SUCCESS(ScNtSetContextThread(hThread, &ctx)) != FALSE;
 					settled = true;
 				}
 
 			}
 
-			resumed = ResumeThread(hThread) != (DWORD)-1;
+			resumed = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
 			if (!resumed)
 			{
 				restored = false;
@@ -1028,16 +993,67 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		}
 	};
 
+	// Decides whether the trampoline can be reclaimed safely after an unrecoverable restore failure.
+	// That is only true once the victim can no longer be executing inside the stub: either it has
+	// exited, or its instruction pointer has left the code page. Otherwise freeing the region would
+	// take the victim's instruction pointer with it, so it is deliberately retained.
+	auto StubRegionFreeToRelease = [&]() -> bool
+	{
+		if (WaitForSingleObject(hThread, 0) == WAIT_OBJECT_0)
+		{
+			return true;
+		}
+
+		CONTEXT probe{ 0 };
+		probe.ContextFlags = CONTEXT_CONTROL;
+		if (!NT_SUCCESS(ScNtGetContextThread(hThread, &probe)))
+		{
+			return false;
+		}
+
+		const ULONG_PTR code_base = ReCa<ULONG_PTR>(pCode);
+
+		return probe.Rip < code_base || probe.Rip >= code_base + kWxCodePage;
+	};
+
+	// Releases the trampoline when the victim is provably out of it, and retains it only when the
+	// victim may still be executing inside. On the failure paths this is the last chance to avoid
+	// leaking the allocation; the returned error code is unaffected.
+	auto ReclaimOrRetainTrampoline = [&](bool context_restored) -> void
+	{
+		if (context_restored)
+		{
+			return;
+		}
+
+		if (StubRegionFreeToRelease())
+		{
+			LOG(2, "Thread is no longer inside the stub; remote allocation reclaimed\n");
+			return;
+		}
+
+		LOG(2, "Thread context recovery failed; remote allocation retained\n");
+		allocation_guard.release();
+	};
+
 	auto Timer = GetTickCount64();
 	DWORD consecutive_read_failures = 0;
 
 	DWORD poll_wait_ms = 1;
+
+	// The victim thread is only ever nudged when it has visibly failed to be scheduled. A message posted
+	// unconditionally lands in the target's queue and is visible to any queue monitor, and the fixed
+	// pre-poll delay cost the victim a guaranteed multi tens of milliseconds of wall time, which is
+	// exactly the shape a delta based timing check is written to catch.
+	bool nudge_sent = false;
+	DWORD nudge_after_ms = 250;
+
 	while (GetTickCount64() - Timer < Timeout)
 	{
 		auto dwWaitRet = WaitForSingleObject(g_hInterruptEvent, poll_wait_ms);
 		poll_wait_ms = poll_wait_ms < 5 ? 5 : 25;
 
-		BOOL bRet = ReadProcessMemory(hTargetProc, pState, &data, sizeof(data), nullptr);
+		BOOL bRet = ScReadProcessMemory(hTargetProc, pState, &data, sizeof(data), nullptr);
 		if (bRet)
 		{
 			consecutive_read_failures = 0;
@@ -1049,13 +1065,28 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 				break;
 			}
 
-			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending &&
-				GetTickCount64() - Timer >= kStartupProbeMs)
+			const ULONGLONG waited = GetTickCount64() - Timer;
+
+			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending && waited >= kStartupProbeMs)
 			{
 				LOG(2, "Stub not scheduled within %u ms (sampled state was %s); failing fast\n",
 					kStartupProbeMs, selected_was_running ? "Running" : "Waiting");
 
 				break;
+			}
+
+			if (!nudge_sent && data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending && waited >= nudge_after_ms)
+			{
+				nudge_sent = true;
+
+				if (!PostThreadMessageW(ThreadID, WM_NULL, 0, 0))
+				{
+					LOG(2, "Wake nudge failed for TID %06X; relying on the poll alone\n", ThreadID);
+				}
+				else
+				{
+					LOG(2, "Stub unscheduled for %u ms; wake nudge sent\n", nudge_after_ms);
+				}
 			}
 		}
 
@@ -1072,11 +1103,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 				ForceRestoreContext(context_restored, resumed);
 			}
 
-			if (!context_restored)
-			{
-				LOG(2, "Thread context recovery failed; remote allocation retained\n");
-				allocation_guard.release();
-			}
+			ReclaimOrRetainTrampoline(context_restored);
 
 			StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 			StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? error_data.AdvErrorCode : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1089,7 +1116,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		if (!bRet)
 		{
 			DWORD target_exit = 0;
-			if (GetExitCodeProcess(hTargetProc, &target_exit) && target_exit != STILL_ACTIVE)
+			if (ScGetExitCodeProcess(hTargetProc, target_exit) && target_exit != STILL_ACTIVE)
 			{
 				INIT_ERROR_DATA(error_data, target_exit);
 
@@ -1105,9 +1132,9 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 				continue;
 			}
 
-			INIT_ERROR_DATA(error_data, GetLastError());
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "ReadProcessMemory failed: %08X\n", error_data.AdvErrorCode);
+			LOG(2, "ReadProcessMemory failed\n");
 
 			bool context_restored = false;
 			bool resumed = false;
@@ -1116,11 +1143,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 				ForceRestoreContext(context_restored, resumed);
 			}
 
-		if (!context_restored)
-		{
-			LOG(2, "Thread context recovery failed; remote allocation retained\n");
-			allocation_guard.release();
-		}
+		ReclaimOrRetainTrampoline(context_restored);
 
 		StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 		StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_RPM_FAIL : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1142,11 +1165,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 			ForceRestoreContext(context_restored, resumed);
 		}
 
-		if (!context_restored)
-		{
-			LOG(2, "Thread context recovery failed; remote allocation retained\n");
-			allocation_guard.release();
-		}
+		ReclaimOrRetainTrampoline(context_restored);
 
 		StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 		StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_REMOTE_PENDING_TIMEOUT : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1171,7 +1190,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 			Sleep(10);
 		}
 
-		if (SuspendThread(hThread) == (DWORD)-1)
+		if (NT_FAIL(ScNtSuspendThread(hThread, nullptr)))
 		{
 
 			if (WaitForSingleObject(hThread, 0) == WAIT_OBJECT_0)
@@ -1186,7 +1205,7 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		check_context.ContextFlags = CONTEXT_CONTROL;
 
 		bool resumed_check = false;
-		if (GetThreadContext(hThread, &check_context))
+		if (NT_SUCCESS(ScNtGetContextThread(hThread, &check_context)))
 		{
 			const ULONG_PTR check_rip = check_context.Rip;
 			const ULONG_PTR code_base = ReCa<ULONG_PTR>(pCode);
@@ -1201,14 +1220,14 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 			{
 
 				check_context.Rip = OldRIP;
-				context_restored = SetThreadContext(hThread, &check_context) != FALSE;
+				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 
-			resumed_check = ResumeThread(hThread) != (DWORD)-1;
+			resumed_check = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
 		}
 		else
 		{
-			resumed_check = ResumeThread(hThread) != (DWORD)-1;
+			resumed_check = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
 		}
 
 		if (!resumed_check)
@@ -1221,11 +1240,8 @@ static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 	{
 		LOG(2, "Thread context restored automatically\n");
 	}
-	else
-	{
-		LOG(2, "Thread context recovery failed; remote allocation retained\n");
-		allocation_guard.release();
-	}
+
+	ReclaimOrRetainTrampoline(context_restored);
 
 	StoreThreadExecStat(g_ThreadExecStats.Success, context_restored ? 1 : 0);
 	StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? ERROR_SUCCESS : SR_HT_ERR_RECOVERY_REQUIRED);

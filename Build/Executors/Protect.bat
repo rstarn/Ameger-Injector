@@ -105,16 +105,16 @@ if /i "%EXE_RESULT%"=="failed" goto :stage_failed
 echo Protection completed successfully.
 echo.
 if defined PAYLOAD_DEST (
-  echo Payload:     %C_GREEN%%PAYLOAD_DEST%%PAYLOAD_NAME%%C_RESET%
+  echo   Payload      = %C_GREEN%%PAYLOAD_DEST%%PAYLOAD_NAME%%C_RESET%
 ) else if defined PAYLOAD_NAME (
-  echo Payload:     %C_GREEN%%OUT_ROOT%\%PAYLOAD_NAME%%C_RESET%
+  echo   Payload      = %C_GREEN%%OUT_ROOT%\%PAYLOAD_NAME%%C_RESET%
 ) else (
-  echo Payload:     %C_YELLOW%deployed name state unavailable; see the payload stage above%C_RESET%
+  echo   Payload      = %C_YELLOW%deployed name state unavailable; see the payload stage above%C_RESET%
 )
 if defined EXE_NAME (
-  echo Interface x64: %C_GREEN%%OUT_ROOT%\%EXE_NAME%.exe%C_RESET%
+  echo   Interface x64 = %C_GREEN%%OUT_ROOT%\%EXE_NAME%.exe%C_RESET%
 ) else (
-  echo Interface x64: %C_GREEN%%OUT_ROOT%\*.exe%C_RESET%
+  echo   Interface x64 = %C_GREEN%%OUT_ROOT%\*.exe%C_RESET%
 )
 echo.
 if not defined STAGE if exist "%NAMES_STATE%" del /f /q "%NAMES_STATE%" >nul 2>&1

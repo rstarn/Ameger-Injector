@@ -2,6 +2,7 @@
 #include <unordered_set>
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "System/Handle/HandleHijack.h"
+#include "Native/Syscall.h"
 
 namespace
 {
@@ -14,7 +15,12 @@ namespace
 	constexpr size_t kMaxEnumBytes = 64ULL * 1024ULL * 1024ULL;
 
 	constexpr size_t kMaxForeignOwners = 16;
-	constexpr size_t kMaxDupAttempts = 512;
+
+	// A donor thread handle is only found by duplicating candidates and asking the kernel which thread
+	// each one actually refers to, so a rejected candidate costs an attempt. The cap is sized so that a
+	// busy system, where thousands of unrelated thread handles are live at once, still reaches the
+	// handful of handles that point at the wanted thread.
+	constexpr size_t kMaxDupAttempts = 4096;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
 	{
@@ -68,20 +74,11 @@ namespace
 
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
-
-		wchar_t ntdll_mod[10];
-		do {
-			constexpr auto stack_key = KC_STACK_KEY_;
-			KC_SWC_10(ntdll_mod, stack_key, L'n', L't', L'd', L'l', L'l', L'.', L'd', L'l', L'l', L'\0');
-		} while (0);
-		HMODULE ntdll = GetModuleHandleW(ntdll_mod);
-		if (!ntdll)
-		{
-			return false;
-		}
-
-		Out.NtQuerySystemInformation = ReCa<f_NtQuerySystemInformationLocal>(GetProcAddress(ntdll, XOR_STR_A("NtQuerySystemInformation").get()));
-		Out.NtDuplicateObject = ReCa<f_NtDuplicateObjectLocal>(GetProcAddress(ntdll, XOR_STR_A("NtDuplicateObject").get()));
+		// Only the locally built syscall stubs are needed from here on. Nothing in this file resolves a
+		// system routine through a public ntdll export, so an inline hook has no entry point to sit on
+		// and no stack to walk backwards from.
+		Out.NtQuerySystemInformation = ReCa<f_NtQuerySystemInformationLocal>(SyscallStub(SC_NtQuerySystemInformation));
+		Out.NtDuplicateObject = ReCa<f_NtDuplicateObjectLocal>(SyscallStub(SC_NtDuplicateObject));
 
 		return Out.NtQuerySystemInformation && Out.NtDuplicateObject;
 	}
@@ -297,35 +294,34 @@ namespace
 
 	bool ProbeQueryUsable(HANDLE Candidate, DWORD TargetPid)
 	{
-		if (GetProcessId(Candidate) != TargetPid)
+		if (ScGetProcessId(Candidate) != TargetPid)
 		{
 			return false;
 		}
 
 		wchar_t Name[MAX_PATH * 2]{ 0 };
-		DWORD Length = static_cast<DWORD>(sizeof(Name) / sizeof(Name[0]));
-		return QueryFullProcessImageNameW(Candidate, 0, Name, &Length) != FALSE && Length > 0;
+		return ScGetProcessImageName(Candidate, Name, static_cast<DWORD>(sizeof(Name) / sizeof(Name[0]))) != 0;
 	}
 
 	bool ProbeVmOperation(HANDLE Candidate)
 	{
-		void * Page = VirtualAllocEx(Candidate, nullptr, 0x1000, MEM_RESERVE, PAGE_NOACCESS);
+		// Reservation only, no commit. A probe that never materialises a page leaves the target's
+		// address space untouched, and the reservation is released immediately afterwards.
+		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
 		if (!Page)
 		{
 			return false;
 		}
 
-	for (int attempt = 0; attempt < 2; ++attempt)
-	{
-		if (VirtualFreeEx(Candidate, Page, 0, MEM_RELEASE))
+		if (ScFreeMemory(Candidate, Page))
 		{
 			return true;
 		}
-	}
 
-	LOG(1, "ProbeVmOperation: release failed twice (%lu)\n", GetLastError());
-	return false;
-}
+		LOG(1, "ProbeVmOperation: release failed\n");
+
+		return false;
+	}
 
 	bool VerifyProcessDonor(HANDLE Candidate, DWORD TargetPid)
 	{
@@ -344,7 +340,7 @@ namespace
 			return false;
 		}
 
-		return GetThreadId(Candidate) == TargetTid && GetProcessIdOfThread(Candidate) == TargetPid;
+		return ScGetThreadId(Candidate) == TargetTid && ScGetProcessIdOfThread(Candidate) == TargetPid;
 	}
 
 	HANDLE OpenOwnerCached(std::vector<std::pair<DWORD, UniqueHandle>> & Owners, DWORD OwnerPid)
@@ -357,11 +353,11 @@ namespace
 			}
 		}
 
-		UniqueHandle Owner(OpenProcess(PROCESS_DUP_HANDLE, FALSE, OwnerPid));
+		UniqueHandle Owner(ScOpenProcess(OwnerPid, PROCESS_DUP_HANDLE));
 		if (!Owner)
 		{
 			EnsureSeDebugPrivilege();
-			Owner.reset(OpenProcess(PROCESS_DUP_HANDLE, FALSE, OwnerPid));
+			Owner.reset(ScOpenProcess(OwnerPid, PROCESS_DUP_HANDLE));
 		}
 
 		HANDLE Raw = Owner ? Owner.get() : nullptr;
@@ -432,8 +428,8 @@ namespace
 			if (OwnerPid == SelfPid)
 			{
 				HANDLE DirectRaw = nullptr;
-				if (!DuplicateHandle(GetCurrentProcess(), SourceValue, GetCurrentProcess(),
-					&DirectRaw, DesiredAccess, FALSE, 0) || !DirectRaw)
+				if (!NtOk(Ntdll.NtDuplicateObject(GetCurrentProcess(), SourceValue, GetCurrentProcess(),
+					&DirectRaw, DesiredAccess, 0, 0)) || !DirectRaw)
 				{
 					++DupDenied;
 					if (DirectRaw)
@@ -728,11 +724,11 @@ namespace
 		{
 			if (ThreadScan)
 			{
-				SelfThread.reset(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentThreadId()));
+				SelfThread.reset(ScOpenThread(GetCurrentThreadId(), THREAD_QUERY_LIMITED_INFORMATION));
 			}
 			else
 			{
-				SelfProc.reset(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, SelfPid));
+				SelfProc.reset(ScOpenProcess(SelfPid, PROCESS_QUERY_LIMITED_INFORMATION));
 			}
 		}
 
@@ -818,7 +814,7 @@ namespace
 		return false;
 	}
 
-	const DWORD ActualPid = GetProcessId(Candidate);
+	const DWORD ActualPid = ScGetProcessId(Candidate);
 	if (ActualPid != TargetPid)
 	{
 		LOG(1, "ValidateSponsor: pid mismatch (actual=%lu want=%lu)\n", ActualPid, TargetPid);
@@ -826,10 +822,9 @@ namespace
 	}
 
 	wchar_t Name[MAX_PATH * 2]{ 0 };
-	DWORD Length = static_cast<DWORD>(sizeof(Name) / sizeof(Name[0]));
-	if (!QueryFullProcessImageNameW(Candidate, 0, Name, &Length) || !Length)
+	if (!ScGetProcessImageName(Candidate, Name, static_cast<DWORD>(sizeof(Name) / sizeof(Name[0]))))
 	{
-		LOG(1, "ValidateSponsor: name query failed (pid=%lu, err=%lu)\n", TargetPid, GetLastError());
+		LOG(1, "ValidateSponsor: name query failed (pid=%lu)\n", TargetPid);
 		return false;
 	}
 
@@ -843,42 +838,45 @@ namespace
 
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
-	void * Page = VirtualAllocEx(Candidate, nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-	if (!Page)
-	{
-		LOG(1, "ProbeRoundtrip: alloc failed (%lu)\n", GetLastError());
-		return false;
-	}
-
-	BYTE Written = 0xA5;
-	BYTE Readout = 0;
-	SIZE_T Done = 0;
-	const bool Ok = WriteProcessMemory(Candidate, Page, &Written, sizeof(Written), &Done) && Done == sizeof(Written)
-		&& ReadProcessMemory(Candidate, Page, &Readout, sizeof(Readout), &Done) && Done == sizeof(Readout)
-		&& Readout == Written;
-
-	bool released = false;
-	for (int attempt = 0; attempt < 2; ++attempt)
-	{
-		if (VirtualFreeEx(Candidate, Page, 0, MEM_RELEASE))
+		// This is the strongest probe in the file and it is also the loudest, so it is only reached when
+	// the sponsor path is actually in play. A commit, a one byte write, a read back and a release is
+	// indistinguishable from real use of the handle, which is the point.
+		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
+		if (!Page)
 		{
-			released = true;
-			break;
+			LOG(1, "ProbeRoundtrip: alloc failed\n");
+			return false;
 		}
-	}
-	if (!released)
-	{
-		LOG(1, "ProbeRoundtrip: release failed twice (%lu)\n", GetLastError());
-		return false;
-	}
 
-	if (!Ok)
-	{
-		LOG(1, "ProbeRoundtrip: read/write mismatch\n");
-	}
+		BYTE Written = 0xA5;
+		BYTE Readout = 0;
+		SIZE_T Done = 0;
+		const bool Ok = ScWriteProcessMemory(Candidate, Page, &Written, sizeof(Written), &Done) && Done == sizeof(Written)
+			&& ScReadProcessMemory(Candidate, Page, &Readout, sizeof(Readout), &Done) && Done == sizeof(Readout)
+			&& Readout == Written;
 
-	return Ok;
-}
+		bool released = false;
+		for (int attempt = 0; attempt < 2; ++attempt)
+		{
+			if (ScFreeMemory(Candidate, Page))
+			{
+				released = true;
+				break;
+			}
+		}
+		if (!released)
+		{
+			LOG(1, "ProbeRoundtrip: release failed twice\n");
+			return false;
+		}
+
+		if (!Ok)
+		{
+			LOG(1, "ProbeRoundtrip: read/write mismatch\n");
+		}
+
+		return Ok;
+	}
 
 void ResetHijackStats()
 {

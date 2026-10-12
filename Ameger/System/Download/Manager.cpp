@@ -1,21 +1,21 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
-#include "System/Download/DownloadManager.h"
+#include "System/Download/Manager.h"
 
 #include <process.h>
 
 unsigned __stdcall DownloadWatchdogEntry(void * param)
 {
-    static_cast<DownloadManager *>(param)->WatchdogProc();
+    static_cast<Manager *>(param)->WatchdogProc();
 
     return 0;
 }
 
-DownloadManager::DownloadManager()
+Manager::Manager()
 {
 }
 
-DownloadManager::~DownloadManager()
+Manager::~Manager()
 {
     StopTimeout();
 
@@ -26,7 +26,7 @@ DownloadManager::~DownloadManager()
     }
 }
 
-bool DownloadManager::StartWatchdog()
+bool Manager::StartWatchdog()
 {
     if (m_hWatchdog)
     {
@@ -38,7 +38,7 @@ bool DownloadManager::StartWatchdog()
         m_hWatchdogWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!m_hWatchdogWake)
         {
-            LOG(2, "DownloadManager: failed to create watchdog event: %08X\n", GetLastError());
+            LOG(2, "Manager: failed to create watchdog event: %08X\n", GetLastError());
 
             return false;
         }
@@ -49,7 +49,7 @@ bool DownloadManager::StartWatchdog()
     const uintptr_t thread_handle = _beginthreadex(nullptr, 0, DownloadWatchdogEntry, this, 0, nullptr);
     if (!thread_handle)
     {
-        LOG(2, "DownloadManager: failed to start download watchdog\n");
+        LOG(2, "Manager: failed to start download watchdog\n");
 
         return false;
     }
@@ -59,7 +59,7 @@ bool DownloadManager::StartWatchdog()
     return true;
 }
 
-void DownloadManager::StopWatchdog()
+void Manager::StopWatchdog()
 {
     if (!m_hWatchdog)
     {
@@ -78,7 +78,7 @@ void DownloadManager::StopWatchdog()
     m_hWatchdog = nullptr;
 }
 
-void DownloadManager::WatchdogProc()
+void Manager::WatchdogProc()
 {
     while (!m_bWatchdogStop.load())
     {
@@ -97,7 +97,7 @@ void DownloadManager::WatchdogProc()
     }
 }
 
-bool DownloadManager::SetTimeout(DWORD milliseconds)
+bool Manager::SetTimeout(DWORD milliseconds)
 {
     m_bTimedOut.store(false);
     m_dwTimeoutMs.store(milliseconds);
@@ -115,18 +115,18 @@ bool DownloadManager::SetTimeout(DWORD milliseconds)
     return StartWatchdog();
 }
 
-void DownloadManager::StopTimeout()
+void Manager::StopTimeout()
 {
     m_ullDeadline.store(0);
     StopWatchdog();
 }
 
-bool DownloadManager::TimedOut() const
+bool Manager::TimedOut() const
 {
     return m_bTimedOut.load();
 }
 
-void DownloadManager::TouchDeadline()
+void Manager::TouchDeadline()
 {
     const DWORD timeout = m_dwTimeoutMs.load();
     if (timeout)

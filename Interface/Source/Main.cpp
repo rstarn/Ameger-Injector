@@ -215,8 +215,6 @@ namespace
         BYTE * RawData;
         DWORD RawSize;
         DWORD ProcessID;
-        INJECTION_MODE Mode;
-        LAUNCH_METHOD Method;
         DWORD Flags;
         DWORD Timeout;
         ULONG_PTR hHandleValue;
@@ -235,10 +233,6 @@ namespace
         "MemoryInjectionData::RawSize offset must match MEMORY_INJECTIONDATA::RawSize");
     static_assert(offsetof(MemoryInjectionData, ProcessID) == offsetof(MEMORY_INJECTIONDATA, ProcessID),
         "MemoryInjectionData::ProcessID offset must match MEMORY_INJECTIONDATA::ProcessID");
-    static_assert(offsetof(MemoryInjectionData, Mode) == offsetof(MEMORY_INJECTIONDATA, Mode),
-        "MemoryInjectionData::Mode offset must match MEMORY_INJECTIONDATA::Mode");
-    static_assert(offsetof(MemoryInjectionData, Method) == offsetof(MEMORY_INJECTIONDATA, Method),
-        "MemoryInjectionData::Method offset must match MEMORY_INJECTIONDATA::Method");
     static_assert(offsetof(MemoryInjectionData, Flags) == offsetof(MEMORY_INJECTIONDATA, Flags),
         "MemoryInjectionData::Flags offset must match MEMORY_INJECTIONDATA::Flags");
     static_assert(offsetof(MemoryInjectionData, Timeout) == offsetof(MEMORY_INJECTIONDATA, Timeout),
@@ -618,103 +612,15 @@ LUID luid{};
         AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr);
     }
 
-    struct SpiUnicodeStringLocal
-    {
-        USHORT Length;
-        USHORT MaximumLength;
-        wchar_t * Buffer;
-    };
-
-    struct SpiClientIdLocal
-    {
-        HANDLE UniqueProcess;
-        HANDLE UniqueThread;
-    };
-
-    struct SpiThreadLocal
-    {
-        LARGE_INTEGER KernelTime;
-        LARGE_INTEGER UserTime;
-        LARGE_INTEGER CreateTime;
-        ULONG WaitTime;
-        PVOID StartAddress;
-        SpiClientIdLocal ClientId;
-        LONG Priority;
-        LONG BasePriority;
-        ULONG ContextSwitches;
-        unsigned char ThreadState;
-        unsigned char WaitReason;
-    };
-
-    struct SpiProcessLocal
-    {
-        ULONG NextEntryOffset;
-        ULONG NumberOfThreads;
-        LARGE_INTEGER WorkingSetPrivateSize;
-        ULONG HardFaultCount;
-        ULONG NumberOfThreadsHighWatermark;
-        ULONGLONG CycleTime;
-        LARGE_INTEGER CreateTime;
-        LARGE_INTEGER UserTime;
-        LARGE_INTEGER KernelTime;
-        SpiUnicodeStringLocal ImageName;
-        LONG BasePriority;
-        HANDLE UniqueProcessId;
-        HANDLE InheritedFromUniqueProcessId;
-        ULONG HandleCount;
-        ULONG SessionId;
-        ULONG_PTR UniqueProcessKey;
-        SIZE_T PeakVirtualSize;
-        SIZE_T VirtualSize;
-        ULONG PageFaultCount;
-        SIZE_T PeakWorkingSetSize;
-        SIZE_T WorkingSetSize;
-        SIZE_T QuotaPeakPagedPoolUsage;
-        SIZE_T QuotaPagedPoolUsage;
-        SIZE_T QuotaPeakNonPagedPoolUsage;
-        SIZE_T QuotaNonPagedPoolUsage;
-        SIZE_T PagefileUsage;
-        SIZE_T PeakPagefileUsage;
-        SIZE_T PrivatePageCount;
-        LARGE_INTEGER ReadOperationCount;
-        LARGE_INTEGER WriteOperationCount;
-        LARGE_INTEGER OtherOperationCount;
-        LARGE_INTEGER ReadTransferCount;
-        LARGE_INTEGER WriteTransferCount;
-        LARGE_INTEGER OtherTransferCount;
-        SpiThreadLocal Threads[1];
-    };
-
-    static_assert(sizeof(SpiUnicodeStringLocal) == 16);
-    static_assert(sizeof(SpiClientIdLocal) == 16);
-    static_assert(offsetof(SpiThreadLocal, ThreadState) == 68);
-    static_assert(sizeof(SpiThreadLocal) == 72);
-    static_assert(offsetof(SpiProcessLocal, UniqueProcessId) == 0x50);
-    static_assert(offsetof(SpiProcessLocal, Threads) == 0x100);
-
-    static_assert(offsetof(SpiThreadLocal, ThreadState) == offsetof(SYSTEM_THREAD_INFORMATION, ThreadState),
-        "SpiThreadLocal::ThreadState must mirror SYSTEM_THREAD_INFORMATION::ThreadState");
-    static_assert(offsetof(SpiThreadLocal, WaitReason) == offsetof(SYSTEM_THREAD_INFORMATION, WaitReason),
-        "SpiThreadLocal::WaitReason must mirror SYSTEM_THREAD_INFORMATION::WaitReason");
-    static_assert(offsetof(SpiThreadLocal, ClientId) == offsetof(SYSTEM_THREAD_INFORMATION, ClientId),
-        "SpiThreadLocal::ClientId must mirror SYSTEM_THREAD_INFORMATION::ClientId");
-    static_assert(offsetof(SpiThreadLocal, Priority) == offsetof(SYSTEM_THREAD_INFORMATION, Priority),
-        "SpiThreadLocal::Priority must mirror SYSTEM_THREAD_INFORMATION::Priority");
-    static_assert(offsetof(SpiThreadLocal, BasePriority) == offsetof(SYSTEM_THREAD_INFORMATION, BasePriority),
-        "SpiThreadLocal::BasePriority must mirror SYSTEM_THREAD_INFORMATION::BasePriority");
-    static_assert(sizeof(SpiThreadLocal) == sizeof(SYSTEM_THREAD_INFORMATION),
-        "SpiThreadLocal must match the runtime's SYSTEM_THREAD_INFORMATION size");
-
-    static_assert(offsetof(SpiProcessLocal, NextEntryOffset) == offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset),
-        "SpiProcessLocal::NextEntryOffset must mirror SYSTEM_PROCESS_INFORMATION::NextEntryOffset");
-    static_assert(offsetof(SpiProcessLocal, NumberOfThreads) == offsetof(SYSTEM_PROCESS_INFORMATION, NumberOfThreads),
-        "SpiProcessLocal::NumberOfThreads must mirror SYSTEM_PROCESS_INFORMATION::NumberOfThreads");
-    static_assert(offsetof(SpiProcessLocal, UniqueProcessId) == offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId),
-        "SpiProcessLocal::UniqueProcessId must mirror SYSTEM_PROCESS_INFORMATION::UniqueProcessId");
-    static_assert(offsetof(SpiProcessLocal, Threads) == offsetof(SYSTEM_PROCESS_INFORMATION, Threads),
-        "SpiProcessLocal::Threads must mirror SYSTEM_PROCESS_INFORMATION::Threads");
-    static_assert(sizeof(SpiProcessLocal) == sizeof(SYSTEM_PROCESS_INFORMATION),
-        "SpiProcessLocal must match the runtime's SYSTEM_PROCESS_INFORMATION size");
+    // The thread picker walks the buffers NtQuerySystemInformation fills with the shared
+    // SYSTEM_PROCESS_INFORMATION / SYSTEM_THREAD_INFORMATION definitions from NTDefinitions.h rather
+    // than a private mirror. The layout invariants the walk relies on are asserted once here.
+    static_assert(sizeof(UNICODE_STRING) == 16);
+    static_assert(sizeof(CLIENT_ID) == 16);
+    static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ThreadState) == 68);
+    static_assert(sizeof(SYSTEM_THREAD_INFORMATION) == 72);
+    static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
+    static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
     DWORD PickHijackThreadTid(DWORD target_pid)
     {
@@ -766,15 +672,15 @@ LUID luid{};
         size_t offset = 0;
         for (;;)
         {
-            if (offset + offsetof(SpiProcessLocal, Threads) > buffer.size())
+            if (offset + offsetof(SYSTEM_PROCESS_INFORMATION, Threads) > buffer.size())
             {
                 break;
             }
 
-            const auto * proc = ReCa<const SpiProcessLocal *>(buffer.data() + offset);
+            const auto * proc = ReCa<const SYSTEM_PROCESS_INFORMATION *>(buffer.data() + offset);
             if (static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(proc->UniqueProcessId)) == target_pid)
             {
-                const size_t threads_base = offset + offsetof(SpiProcessLocal, Threads);
+                const size_t threads_base = offset + offsetof(SYSTEM_PROCESS_INFORMATION, Threads);
                 const ULONG thread_count = proc->NumberOfThreads;
 
                 auto is_safe_wait = [](unsigned char state, unsigned char reason) -> bool
@@ -790,23 +696,25 @@ LUID luid{};
                     bool found = false;
                     for (ULONG index = 0; index < thread_count; ++index)
                     {
-                        const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SpiThreadLocal);
-                        if (entry + sizeof(SpiThreadLocal) > buffer.size())
+                        const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SYSTEM_THREAD_INFORMATION);
+                        if (entry + sizeof(SYSTEM_THREAD_INFORMATION) > buffer.size())
                         {
                             break;
                         }
 
-                        const auto * thread = ReCa<const SpiThreadLocal *>(buffer.data() + entry);
+                        const auto * thread = ReCa<const SYSTEM_THREAD_INFORMATION *>(buffer.data() + entry);
                         const DWORD tid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(thread->ClientId.UniqueThread));
                         if (!tid || tid == GetCurrentThreadId() || tid == exclude_tid)
                         {
                             continue;
                         }
 
-                        if (thread->ThreadState == 2)
+                        const unsigned char thread_state = static_cast<unsigned char>(thread->ThreadState);
+                        const unsigned char thread_reason = static_cast<unsigned char>(thread->WaitReason);
+                        if (thread_state == 2)
                         {
                         }
-                        else if (allow_wait && is_safe_wait(thread->ThreadState, thread->WaitReason))
+                        else if (allow_wait && is_safe_wait(thread_state, thread_reason))
                         {
                         }
                         else
@@ -826,12 +734,12 @@ LUID luid{};
                 DWORD min_tid = 0;
                 for (ULONG index = 0; index < thread_count; ++index)
                 {
-                    const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SpiThreadLocal);
-                    if (entry + sizeof(SpiThreadLocal) > buffer.size())
+                    const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SYSTEM_THREAD_INFORMATION);
+                    if (entry + sizeof(SYSTEM_THREAD_INFORMATION) > buffer.size())
                     {
                         break;
                     }
-                    const auto * thread = ReCa<const SpiThreadLocal *>(buffer.data() + entry);
+                    const auto * thread = ReCa<const SYSTEM_THREAD_INFORMATION *>(buffer.data() + entry);
                     const DWORD tid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(thread->ClientId.UniqueThread));
                     if (!tid || tid == GetCurrentThreadId())
                     {
@@ -2640,6 +2548,1418 @@ LUID luid{};
         return false;
     }
 
+    // Verification steps in execution order. DebugAndVerifyStealth gates every step on the matching
+    // entry of its enabled table and derives the "step/total" denominator from that same table, so
+    // the counter can never drift out of sync when a flag is edited.
+    enum StealthVerifyStep
+    {
+        kStealthAcquireHandle,
+        kStealthResolveImports,
+        kStealthResolveDelayImports,
+        kStealthInitSecurityCookie,
+        kStealthEnableExceptions,
+        kStealthVerifyExceptionHandling,
+        kStealthExecuteTls,
+        kStealthExecuteDllMain,
+        kStealthRunUnderLoaderLock,
+        kStealthCleanDataDirectories,
+        kStealthSetPageProtections,
+        kStealthVerifyWx,
+        kStealthVerifyStringEncryption,
+        kStealthVerifyForensicPosture,
+        kStealthEraseHeader,
+        kStealthSurveyTraps,
+        kStealthStepCount
+    };
+
+    const wchar_t * StealthPageDesc(DWORD p)
+    {
+        switch (p)
+        {
+        case PAGE_EXECUTE_READWRITE: return L"PAGE_EXECUTE_READWRITE";
+        case PAGE_EXECUTE_READ:      return L"PAGE_EXECUTE_READ";
+        case PAGE_EXECUTE_WRITECOPY: return L"PAGE_EXECUTE_WRITECOPY";
+        case PAGE_EXECUTE:           return L"PAGE_EXECUTE";
+        case PAGE_READONLY:          return L"PAGE_READONLY";
+        case PAGE_READWRITE:         return L"PAGE_READWRITE";
+        case PAGE_WRITECOPY:         return L"PAGE_WRITECOPY";
+        case PAGE_NOACCESS:          return L"PAGE_NOACCESS";
+        default:                     return L"UNKNOWN";
+        }
+    }
+
+    // "Verify W^X execution" step. Split out of DebugAndVerifyStealth verbatim; it only depends on the
+    // remote image span, the local section table and the caller's W^X verdict flag.
+    void StealthVerifyWxExecution(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
+        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers,
+        bool * wx_violated, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X execution (advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        auto local_sections = [&](WORD & count) -> const IMAGE_SECTION_HEADER *
+        {
+            count = 0;
+            if (!local_pe || local_pe_size < sizeof(IMAGE_DOS_HEADER))
+            {
+                return nullptr;
+            }
+            auto dos = ReCa<const IMAGE_DOS_HEADER *>(local_pe);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0)
+            {
+                return nullptr;
+            }
+            const size_t nt_off = static_cast<size_t>(dos->e_lfanew);
+            if (nt_off + sizeof(IMAGE_NT_HEADERS64) > local_pe_size)
+            {
+                return nullptr;
+            }
+            auto nt = ReCa<const IMAGE_NT_HEADERS64 *>(local_pe + nt_off);
+            if (nt->Signature != IMAGE_NT_SIGNATURE)
+            {
+                return nullptr;
+            }
+            const size_t sec_off = nt_off + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
+                nt->FileHeader.SizeOfOptionalHeader;
+            const WORD n = nt->FileHeader.NumberOfSections;
+            if (!n || sec_off + static_cast<size_t>(n) * sizeof(IMAGE_SECTION_HEADER) > local_pe_size)
+            {
+                return nullptr;
+            }
+            count = n;
+            return ReCa<const IMAGE_SECTION_HEADER *>(local_pe + sec_off);
+        };
+
+        SIZE_T wx_image = 0;
+        DWORD wx_exec_sections = 0;
+        if (have_local_nt)
+        {
+            auto wx_nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            wx_image = wx_nt->OptionalHeader.SizeOfImage;
+        }
+        {
+            WORD wx_sec_count = 0;
+            const IMAGE_SECTION_HEADER * wx_secs = local_sections(wx_sec_count);
+            for (WORD s = 0; s < wx_sec_count; ++s)
+            {
+                if (wx_secs[s].Characteristics & IMAGE_SCN_MEM_EXECUTE)
+                {
+                    ++wx_exec_sections;
+                }
+            }
+        }
+
+        int wx_rwx = 0;
+        int wx_rx = 0;
+        int wx_rw = 0;
+        int wx_regions = 0;
+        SIZE_T wx_bytes = 0;
+
+        std::vector<ULONG_PTR> & wx_alloc_bases = buffers.allocation_bases;
+        wx_alloc_bases.clear();
+        bool wx_reached_end = false;
+
+        struct WxRegion { ULONG_PTR base; SIZE_T size; };
+        WxRegion wx_rwx_list[8]{};
+        int wx_rwx_listed = 0;
+
+        MEMORY_BASIC_INFORMATION wx_mbi = { 0 };
+        const bool wx_queryable = process != nullptr
+            && VirtualQueryEx(process, hRemoteBase, &wx_mbi, sizeof(wx_mbi)) != 0;
+
+        if (wx_queryable && wx_image > 0)
+        {
+            BYTE * wx_cur = ReCa<BYTE *>(hRemoteBase);
+            for (;;)
+            {
+                if (!VirtualQueryEx(process, wx_cur, &wx_mbi, sizeof(wx_mbi)))
+                    break;
+                if ((ReCa<ULONG_PTR>(wx_mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= wx_image)
+                {
+                    wx_reached_end = true;
+                    break;
+                }
+                ++wx_regions;
+
+                if (wx_mbi.AllocationBase &&
+                    std::find(wx_alloc_bases.begin(), wx_alloc_bases.end(),
+                        ReCa<ULONG_PTR>(wx_mbi.AllocationBase)) == wx_alloc_bases.end())
+                {
+                    wx_alloc_bases.push_back(ReCa<ULONG_PTR>(wx_mbi.AllocationBase));
+                }
+                if (wx_mbi.State == MEM_COMMIT && wx_mbi.Protect != 0 && wx_mbi.Protect != PAGE_NOACCESS)
+                {
+                    wx_bytes += wx_mbi.RegionSize;
+                    if (wx_mbi.Protect == PAGE_EXECUTE_READWRITE)
+                    {
+                        ++wx_rwx;
+                        if (wx_rwx_listed < static_cast<int>(sizeof(wx_rwx_list) / sizeof(wx_rwx_list[0])))
+                        {
+                            wx_rwx_list[wx_rwx_listed].base = ReCa<ULONG_PTR>(wx_mbi.BaseAddress);
+                            wx_rwx_list[wx_rwx_listed].size = wx_mbi.RegionSize;
+                            ++wx_rwx_listed;
+                        }
+                    }
+                    else if (wx_mbi.Protect == PAGE_EXECUTE_READ || wx_mbi.Protect == PAGE_EXECUTE)
+                    {
+                        ++wx_rx;
+                    }
+                    else if (wx_mbi.Protect == PAGE_READWRITE)
+                    {
+                        ++wx_rw;
+                    }
+                }
+                BYTE * wx_next = ReCa<BYTE *>(wx_mbi.BaseAddress) + wx_mbi.RegionSize;
+                if (wx_next <= wx_cur)
+                    break;
+                wx_cur = wx_next;
+            }
+
+            int wx_exec_uncovered = 0;
+            if (process && wx_image > 0)
+            {
+                WORD wx_sec_count = 0;
+                const IMAGE_SECTION_HEADER * wx_secs = local_sections(wx_sec_count);
+                for (WORD s = 0; s < wx_sec_count; ++s)
+                {
+                    if (!(wx_secs[s].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+                    {
+                        continue;
+                    }
+
+                    void * sec_addr = ReCa<void *>(ReCa<ULONG_PTR>(hRemoteBase) + wx_secs[s].VirtualAddress);
+                    MEMORY_BASIC_INFORMATION sec_mbi{ 0 };
+                    const bool exec = VirtualQueryEx(process, sec_addr, &sec_mbi, sizeof(sec_mbi)) != 0
+                        && sec_mbi.State == MEM_COMMIT
+                        && (sec_mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+                    if (!exec)
+                    {
+                        ++wx_exec_uncovered;
+                    }
+                }
+            }
+
+            const bool wx_ok = (wx_rwx == 0) && wx_reached_end && (wx_exec_uncovered == 0);
+            if (wx_violated)
+            {
+
+                *wx_violated = !wx_ok;
+            }
+            const wchar_t * RxTint = (wx_exec_sections == 0) ? kYellow
+                : (wx_exec_uncovered ? kRed : kGreen);
+
+            wchar_t RxField[192]{ 0 };
+            if (wx_exec_sections > 0)
+            {
+                if (wx_exec_uncovered == 0)
+                {
+
+                    swprintf_s(RxField, L"RX %ls%lu%ls region(s); all %ls%lu%ls executable section(s) are RX",
+                        RxTint, static_cast<unsigned long>(wx_rx), kReset,
+                        RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
+                }
+                else
+                {
+                    swprintf_s(RxField, L"RX missing for %ls%lu%ls of %ls%lu%ls executable section(s)",
+                        RxTint, static_cast<unsigned long>(wx_exec_uncovered), kReset,
+                        RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
+                }
+            }
+            else
+            {
+                swprintf_s(RxField, L"RX %ls%lu%ls region(s), none declared by the section table",
+                    RxTint, static_cast<unsigned long>(wx_rx), kReset);
+            }
+
+            wprintf(L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (required %ls0%ls) | %s | RW %ls%d%s\n",
+                wx_ok ? kGreen : kYellow, wx_ok ? L"[+]" : L"[!]", kReset,
+                wx_ok ? L"verified" : L"VIOLATED",
+                wx_ok ? kGreen : kYellow, wx_rwx, kReset,
+                kGreen, kReset,
+                RxField,
+                kGreen, wx_rw, kReset);
+
+            wprintf(L"      %lscoverage%s: %ls%d%s region(s), %ls%lu%s KB of %ls%lu%s KB image, %s%s%s\n",
+                kDim, kReset, kGreen, wx_regions, kReset,
+                kGreen, static_cast<unsigned long>(wx_bytes / 1024), kReset,
+                kGreen, static_cast<unsigned long>(wx_image / 1024), kReset,
+                wx_reached_end ? kReset : kYellow,
+                wx_reached_end ? L"reached end of image" : L"TRUNCATED - image not fully scanned",
+                kReset);
+
+            {
+                const bool single = wx_alloc_bases.size() == 1;
+                wprintf(L"      %lsallocations%s: %ls%zu%s %s(%s %s%s)%s | %lsprivate%s: %ls%zu%s KB\n",
+                    kDim, kReset,
+                    kGreen, wx_alloc_bases.size(), kReset,
+                    single ? kGreen : kYellow,
+                    single ? L"single" : L"split across",
+                    single ? L"allocation" : L"allocations",
+                    single ? kGreen : kYellow,
+                    kReset,
+                    kDim, kReset,
+                    kGreen, static_cast<size_t>(wx_bytes / 1024), kReset);
+            }
+
+            for (int i = 0; i < wx_rwx_listed; ++i)
+            {
+                wprintf(L"      %lsRWX region at 0x%016llX, %llu bytes%s\n", kYellow,
+                    static_cast<unsigned long long>(wx_rwx_list[i].base),
+                    static_cast<unsigned long long>(wx_rwx_list[i].size), kReset);
+            }
+            if (wx_rwx > wx_rwx_listed)
+            {
+                wprintf(L"      %ls... and %d more RWX region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
+            }
+        }
+        else if (!wx_queryable)
+        {
+
+            if (wx_violated)
+            {
+                *wx_violated = true;
+            }
+            wprintf(L"  %ls[!]%ls Image not queryable; W^X state unknown.\n", kYellow, kReset);
+        }
+        else
+        {
+
+            if (wx_violated)
+            {
+                *wx_violated = true;
+            }
+            wprintf(L"  %ls[!]%ls Image size unknown; W^X scan not bounded, result withheld.\n", kYellow, kReset);
+        }
+    }
+
+    void StealthVerifyStringEncryption(StealthVerifierBuffers & buffers, f_GetLastStringStats get_string_stats,
+        bool & string_gate_ok, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify string encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        auto m0 = XOR_STR_A("msdl.microsoft.com/download/symbols");
+        auto m1 = XOR_STR_A("NtUserMsgWaitForMultipleObjectsEx");
+        auto m2 = XOR_STR_A("LdrpLoadDllInternal");
+        auto m3 = XOR_STR_A("_RTL_INVERTED_FUNCTION_TABLE");
+        auto m4 = XOR_STR_A("_INVERTED_FUNCTION_TABLE_USER_MODE");
+        auto m5 = XOR_STR_A("_RTL_INVERTED_FUNCTION_TABLE_ENTRY");
+        auto m6 = XOR_STR_A("_INVERTED_FUNCTION_TABLE_ENTRY");
+        auto m7 = XOR_STR_A("_LDR_DATA_TABLE_ENTRY");
+        auto m8 = XOR_STR_A("_LDR_DDAG_NODE");
+        auto m9 = XOR_STR_A("_LDRP_PATH_SEARCH_CONTEXT");
+        auto m10 = XOR_STR_A("_LDRP_TLS_ENTRY");
+        auto m11 = XOR_STR_A("_KTHREAD_STATE");
+        auto m12 = XOR_STR_A("_KWAIT_REASON");
+        auto m13 = XOR_STR_A("_KUSER_SHARED_DATA");
+        auto m14 = XOR_STR_A("SameTebFlags");
+        auto m15 = XOR_STR_A("ProcessEnvironmentBlock");
+        auto m16 = XOR_STR_A("LastErrorValue");
+        auto m17 = XOR_STR_A("OSBuildNumber");
+        auto m18 = XOR_STR_A("FullDllName");
+        auto m19 = XOR_STR_A("DdagNode");
+        auto m20 = XOR_STR_A("OriginalFullDllName");
+        auto m21 = XOR_STR_A("ExceptionDirectory");
+        auto m22 = XOR_STR_A("ExceptionDirectorySize");
+        auto m23 = XOR_STR_A("SizeOfTable");
+        auto m24 = XOR_STR_A("FunctionTable");
+        auto m25 = XOR_STR_A("ModuleEntry");
+        auto m26 = XOR_STR_A("TableEntry");
+        auto m27 = XOR_STR_A("CurrentSize");
+        auto m28 = XOR_STR_A("HandleAcq");
+        auto m29 = XOR_STR_A("SYMBOL_LOADER");
+        auto m30 = XOR_STR_A("SYMBOL_PARSER");
+        auto m31 = XOR_STR_A("DownloadManager");
+        auto m32 = XOR_STR_A("TLS_ENTRY");
+        auto m33 = XOR_STR_A("PATH_SEARCH_CONTEXT");
+        const char * markers[] =
+        {
+            m0.get(), m1.get(), m2.get(), m3.get(), m4.get(), m5.get(),
+            m6.get(), m7.get(), m8.get(), m9.get(), m10.get(), m11.get(),
+            m12.get(), m13.get(), m14.get(), m15.get(), m16.get(), m17.get(),
+            m18.get(), m19.get(), m20.get(), m21.get(), m22.get(), m23.get(),
+            m24.get(), m25.get(), m26.get(), m27.get(), m28.get(),
+            m29.get(), m30.get(), m31.get(), m32.get(), m33.get(),
+        };
+        const size_t marker_count = sizeof(markers) / sizeof(markers[0]);
+
+        const std::vector<BYTE> & rt_bytes = buffers.runtime_bytes;
+        const bool rt_read = buffers.runtime_read;
+        int marker_found = 0;
+        if (rt_read)
+        {
+            for (size_t m = 0; m < marker_count; ++m)
+            {
+                const bool hit_narrow = BufferContainsMarker(rt_bytes, markers[m], false);
+                const bool hit_wide = BufferContainsMarker(rt_bytes, markers[m], true);
+                if (hit_narrow || hit_wide)
+                {
+                    ++marker_found;
+
+                    wchar_t wide_marker[MAX_PATH + 1]{ 0 };
+                    size_t marker_len = 0;
+                    for (const char * c = markers[m]; *c && marker_len < MAX_PATH; ++c, ++marker_len)
+                    {
+                        wide_marker[marker_len] = static_cast<wchar_t>(*c);
+                    }
+                    wprintf(L"  %ls[x]%ls marker '%ls' FOUND in runtime DLL (narrow %d, wide %d).\n",
+                        kRed, kReset, wide_marker, hit_narrow ? 1 : 0, hit_wide ? 1 : 0);
+                }
+            }
+        }
+        if (!buffers.runtime_path_known)
+        {
+            wprintf(L"  %ls[x]%ls Runtime path unknown; disk-marker check could not run.\n", kRed, kReset);
+            string_gate_ok = false;
+        }
+        else if (!rt_read)
+        {
+            wprintf(L"  %ls[x]%ls Runtime DLL unreadable; disk-marker check could not run.\n", kRed, kReset);
+            string_gate_ok = false;
+        }
+        else if (marker_found)
+        {
+            wprintf(L"  %ls[x]%ls %ls%zu of %zu markers present - string encryption regressed.%ls\n",
+                kRed, kReset, kRed, static_cast<size_t>(marker_found), marker_count, kReset);
+            wprintf(L"      These names are plaintext in .rdata and are directly scannable in the target.\n");
+            wprintf(L"      A decrypt path that /O2 can constant-fold will always leak here; see\n");
+            wprintf(L"      the encrypted-string helper header used by the runtime build.\n");
+            string_gate_ok = false;
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls %ls%zu%ls markers absent from runtime DLL (ciphertext only)\n",
+                kGreen, kReset, kGreen, marker_count, kReset);
+        }
+
+        STRING_STATS StringStats{};
+        if (get_string_stats)
+        {
+            get_string_stats(&StringStats);
+        }
+
+        if (!get_string_stats || !StringStats.Reported)
+        {
+            wprintf(L"  %ls[!]%ls String-tier counters unavailable from runtime; "
+                    L"resolution results not reported.\n", kYellow, kReset);
+        }
+        else
+        {
+            const bool all_symbols = StringStats.SymbolsResolved == StringStats.SymbolsDeclared;
+            wprintf(L"  %ls[+]%ls NT symbols resolved via encrypted names: %ls%lu%ls of %ls%lu%ls (import %ls%s%ls)\n",
+                kGreen, kReset,
+                all_symbols ? kGreen : kYellow,
+                static_cast<unsigned long>(StringStats.SymbolsResolved), kReset,
+                all_symbols ? kGreen : kYellow,
+                static_cast<unsigned long>(StringStats.SymbolsDeclared), kReset,
+                all_symbols ? kGreen : kYellow,
+                all_symbols ? L"SUCCESS" : L"PARTIAL",
+                kReset);
+
+            wprintf(L"  %ls[+]%ls Encrypted names built from ciphertext, no static table: %ls%lu%ls\n",
+                kGreen, kReset, kGreen,
+                static_cast<unsigned long>(StringStats.HookNamesBuilt), kReset);
+
+            const bool tiers_ok = StringStats.TiersTotal != 0
+                && StringStats.TiersPassed == StringStats.TiersTotal;
+            wprintf(L"  %ls[+]%ls self-test tiers passed at import-resolve: %ls%lu%ls of %ls%lu%ls\n",
+                kGreen, kReset,
+                tiers_ok ? kGreen : kRed,
+                static_cast<unsigned long>(StringStats.TiersPassed), kReset,
+                tiers_ok ? kGreen : kRed,
+                static_cast<unsigned long>(StringStats.TiersTotal), kReset);
+        }
+    }
+
+    // Shared "RVA -> file offset" resolver used by the import and TLS survey steps. This was a local
+    // lambda in DebugAndVerifyStealth; split out verbatim so the extracted steps can share it.
+    size_t StealthRvaToFileOffset(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
+        StealthVerifierBuffers & buffers, DWORD rva)
+    {
+        if (!have_local_nt || !local_pe)
+            return static_cast<size_t>(-1);
+        const auto * lnt = ReCa<const IMAGE_NT_HEADERS64 *>(buffers.local_headers.data());
+        const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(local_pe);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return static_cast<size_t>(-1);
+        const BYTE * nt_in_file = local_pe + dos->e_lfanew;
+        const BYTE * sec_ptr = nt_in_file + sizeof(DWORD) +
+            sizeof(IMAGE_FILE_HEADER) + lnt->FileHeader.SizeOfOptionalHeader;
+        const WORD section_count = lnt->FileHeader.NumberOfSections;
+
+        if (sec_ptr + static_cast<size_t>(section_count) * sizeof(IMAGE_SECTION_HEADER) > local_pe + local_pe_size)
+            return static_cast<size_t>(-1);
+        for (WORD i = 0; i < section_count; ++i)
+        {
+            const auto * sec = ReCa<const IMAGE_SECTION_HEADER *>(sec_ptr) + i;
+            if (rva >= sec->VirtualAddress &&
+                static_cast<DWORD>(rva - sec->VirtualAddress) < sec->SizeOfRawData)
+            {
+                const size_t off = static_cast<size_t>(sec->PointerToRawData) + (rva - sec->VirtualAddress);
+                if (off < local_pe_size)
+                    return off;
+                return static_cast<size_t>(-1);
+            }
+        }
+
+        if (rva < lnt->OptionalHeader.SizeOfHeaders && static_cast<size_t>(rva) < local_pe_size)
+            return static_cast<size_t>(rva);
+        return static_cast<size_t>(-1);
+    }
+
+
+    // "Acquire process handle" step. Split out of DebugAndVerifyStealth verbatim; it only prints the
+    // process/thread hijack trace (or summary) chosen by the caller's verbose context.
+    void StealthAcquireHandle(const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
+        const HijackContext * Context, DWORD flags, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Acquire process handle...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        if (!Context || Context->Verbose)
+        {
+            PrintHijackTrace(L"Process", ProcessHijack, Context, flags, false);
+            wprintf(L"\n");
+            PrintHijackTrace(L"Thread", ThreadHijack, Context, flags, true);
+        }
+        else
+        {
+            PrintHijackSummary(L"Process", ProcessHijack);
+            PrintHijackSummary(L"Thread", ThreadHijack);
+        }
+    }
+
+    // "Resolve imports" step. Split out of DebugAndVerifyStealth verbatim; surveys the payload's static
+    // import descriptors from the local image.
+    void StealthResolveImports(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        struct ImportEntry { char name[MAX_PATH + 1]; ULONG thunk_count; bool named; };
+        ImportEntry imports[64]{};
+        int import_count = 0;
+        ULONG import_total_thunks = 0;
+        const char * import_problem = nullptr;
+
+        if (have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            if (nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size > 0)
+            {
+                const DWORD import_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+                const size_t import_off = StealthRvaToFileOffset(have_local_nt, local_pe, local_pe_size, buffers, import_rva);
+                if (import_off != static_cast<size_t>(-1) && import_off < local_pe_size)
+                {
+                    BYTE * import_desc_addr = const_cast<BYTE *>(local_pe) + import_off;
+                    const size_t import_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+                    const size_t max_desc = import_size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+                    const size_t avail_desc = (local_pe_size - import_off) / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+                    const size_t desc_limit = (std::min)(max_desc, avail_desc);
+                    IMAGE_IMPORT_DESCRIPTOR iid = { 0 };
+                    for (size_t i = 0; i < 256 && i < desc_limit; ++i)
+                    {
+                        memcpy(&iid, import_desc_addr + i * sizeof(iid), sizeof(iid));
+                        if (iid.Name == 0)
+                            break;
+                        if (import_count >= static_cast<int>(sizeof(imports) / sizeof(imports[0])))
+                        {
+                            import_problem = "descriptor list truncated at 64 entries";
+                            break;
+                        }
+
+                        ImportEntry & slot = imports[import_count];
+
+                        const size_t name_off = StealthRvaToFileOffset(have_local_nt, local_pe, local_pe_size, buffers, iid.Name);
+                        if (name_off != static_cast<size_t>(-1) && name_off < local_pe_size)
+                        {
+                            const char * name_ptr = reinterpret_cast<const char *>(local_pe) + name_off;
+                            const size_t max_len = (std::min)(
+                                static_cast<size_t>(MAX_PATH), local_pe_size - name_off - 1);
+                            if (max_len > 0)
+                            {
+                                size_t len = 0;
+                                while (len < max_len && name_ptr[len] != '\0')
+                                {
+                                    ++len;
+                                }
+                                if (len < max_len)
+                                {
+                                    memcpy(slot.name, name_ptr, len + 1);
+                                    slot.named = true;
+                                }
+                            }
+                        }
+                        if (!slot.named)
+                        {
+                            strcpy_s(slot.name, "<unreadable>");
+                        }
+
+                        const DWORD thunk_rva = iid.OriginalFirstThunk ? iid.OriginalFirstThunk : iid.FirstThunk;
+                        const size_t thunk_off = StealthRvaToFileOffset(have_local_nt, local_pe, local_pe_size, buffers, thunk_rva);
+                        if (thunk_off != static_cast<size_t>(-1) && thunk_off + sizeof(ULONG_PTR) <= local_pe_size)
+                        {
+                            const size_t thunk_max = (local_pe_size - thunk_off) / sizeof(ULONG_PTR);
+                            const ULONG_PTR * thunks = reinterpret_cast<const ULONG_PTR *>(
+                                const_cast<BYTE *>(local_pe) + thunk_off);
+                            ULONG seen = 0;
+                            for (size_t t = 0; t < thunk_max && t < 4096; ++t)
+                            {
+                                if (thunks[t] == 0)
+                                    break;
+                                ++seen;
+                            }
+                            slot.thunk_count = seen;
+                            import_total_thunks += seen;
+                        }
+
+                        ++import_count;
+                    }
+                }
+                else
+                {
+                    import_problem = "import directory RVA not file-backed";
+                }
+            }
+            else
+            {
+                import_problem = nullptr;
+            }
+        }
+
+        if (import_count > 0)
+        {
+            wprintf(L" %ls[+]%ls %ls%d%ls import descriptor(s), %ls%lu%ls function(s) total.\n",
+                kGreen, kReset, kGreen, import_count, kReset, kGreen,
+                static_cast<unsigned long>(import_total_thunks), kReset);
+
+            if (VerboseOutputEnabled())
+            {
+                wprintf(L"\n");
+                for (int i = 0; i < import_count; ++i)
+                {
+                    const char * raw = imports[i].name;
+                    wchar_t wide[MAX_PATH + 1]{ 0 };
+                    const int wide_len = MultiByteToWideChar(CP_ACP, 0, raw, -1, wide, MAX_PATH + 1);
+                    if (wide_len <= 0)
+                    {
+                        wcscpy_s(wide, L"<unprintable>");
+                    }
+
+                    wchar_t ordinal[8]{ 0 };
+                    swprintf_s(ordinal, L"%d.", i + 1);
+                    wprintf(L"      %ls%ls%ls%lu%ls thunk(s)\n",
+                        StageField(ordinal, 6).c_str(),
+                        StageField(wide, 26).c_str(),
+                        kGreen, static_cast<unsigned long>(imports[i].thunk_count), kReset);
+                }
+            }
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls No statically linked import descriptors in the payload.\n", kGreen, kReset);
+        }
+
+        if (import_problem)
+        {
+            wchar_t problem_w[MAX_PATH + 1]{ 0 };
+            if (MultiByteToWideChar(CP_ACP, 0, import_problem, -1, problem_w, MAX_PATH + 1) <= 0)
+            {
+                wcscpy_s(problem_w, L"<unprintable>");
+            }
+            wprintf(L"  %ls[!]%ls Import survey incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
+        }
+    }
+
+    // "Resolve delay imports" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthResolveDelayImports(bool have_local_nt, StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve delay imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        if (have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            auto & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+            if (dir.Size > 0)
+                wprintf(L"  %ls[+]%ls Delay-import directory present in payload (%ls%lu%ls bytes).\n",
+                    kGreen, kReset, kGreen, dir.Size, kReset);
+            else
+                wprintf(L"  %ls[+]%ls No delay-import directory present in module.\n", kGreen, kReset);
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls No local image to survey.\n", kGreen, kReset);
+        }
+    }
+
+    // "Initialize security cookie" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthInitSecurityCookie(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize security cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        if (process && have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            auto &tls_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+            if (tls_dir.Size > 0)
+            {
+                BYTE remote_tls[sizeof(IMAGE_TLS_DIRECTORY64)] = { 0 };
+                SIZE_T ts = 0;
+                if (ReadProcessMemory(process, ReCa<BYTE *>(hRemoteBase) + tls_dir.VirtualAddress,
+                    remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
+                {
+                    auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
+                    wprintf(L"  %ls[+]%ls Security cookie initialized (by design; not measured), TLS Directory VA = %ls0x%016llX%ls\n",
+                        kGreen, kReset, kGreen, tls->AddressOfCallBacks, kReset);
+                }
+                else
+                {
+                    wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
+            }
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
+        }
+    }
+
+    // "Enable exceptions (SEH)" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthEnableExceptions(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"  %ls[+]%ls SEH via inverted/function table, zero VEH chain entries (by design; not measured)\n", kGreen, kReset);
+        wprintf(L"\n");
+
+        if (have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+            if (exception_dir.Size)
+            {
+                const DWORD entry_count = exception_dir.Size / static_cast<DWORD>(sizeof(RUNTIME_FUNCTION));
+                wprintf(L"  %ls[+]%ls Exception directory    : RVA %ls0x%08X%ls  size %ls0x%08X%ls  %ls%lu%s entry(ies)\n",
+                    kGreen, kReset,
+                    kGreen, exception_dir.VirtualAddress, kReset,
+                    kGreen, exception_dir.Size, kReset,
+                    kGreen, static_cast<unsigned long>(entry_count), kReset);
+
+                const ULONG_PTR remote_table = ReCa<ULONG_PTR>(hRemoteBase) + exception_dir.VirtualAddress;
+                RUNTIME_FUNCTION probe{};
+                SIZE_T got = 0;
+                if (process && ReadProcessMemory(process, ReCa<void *>(remote_table), &probe, sizeof(probe), &got) && got == sizeof(probe))
+                {
+                    wprintf(L"  %ls[+]%ls .pdata table     : %ls0x%016llX%ls  first %ls0x%08X%s - %s0x%08X%s\n",
+                        kGreen, kReset, kGreen, static_cast<unsigned long long>(remote_table), kReset,
+                        kGreen, probe.BeginAddress, kReset, kGreen, probe.EndAddress, kReset);
+                }
+                else
+                {
+                    wprintf(L"  %ls[!]%ls .pdata table not readable at 0x%016llX\n", kYellow, kReset,
+                        static_cast<unsigned long long>(remote_table));
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[+]%ls No exception directory present in the payload.\n", kGreen, kReset);
+            }
+        }
+
+        wprintf(L"\n");
+        wprintf(L"  %ls[+]%ls Inverted function table updated for %ls%s%ls (by design; not measured)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
+    }
+
+    // "Verify exception handling" step. Split out of DebugAndVerifyStealth verbatim; the flags gate
+    // mirrors the caller's INJ_MM_ENABLE_EXCEPTIONS check.
+    void StealthVerifyExceptionHandling(DWORD flags, bool have_local_nt, StealthVerifierBuffers & buffers,
+        f_GetLastStringStats get_string_stats, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify exception handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
+
+        wprintf(L"  %ls[+]%ls Launcher VEH shell............ %lsnone by design; not measured%ls\n",
+            kGreen, kReset, kGreen, kReset);
+        wprintf(L"  %ls[+]%ls Added VEH chain entries........ %ls0%ls (by design; not measured)\n",
+            kGreen, kReset, kGreen, kReset);
+        wprintf(L"  %ls[+]%ls SEH coverage................... %ls%s%ls\n",
+            kGreen, kReset,
+            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? kGreen : kYellow,
+            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; runtime-verified (by design; not measured)"
+                                               : L"disabled; payload exceptions not covered",
+            kReset);
+
+        STRING_STATS stealth_fix_stats{};
+        if (get_string_stats)
+        {
+            get_string_stats(&stealth_fix_stats);
+        }
+
+        if (get_string_stats && stealth_fix_stats.Reported)
+        {
+            const bool all_imports =
+                stealth_fix_stats.SymbolsResolved == stealth_fix_stats.SymbolsDeclared;
+            wprintf(L"  %ls[+]%ls Encrypted NT imports............ %ls%lu%ls of %ls%lu%ls\n",
+                kGreen, kReset,
+                all_imports ? kGreen : kYellow,
+                static_cast<unsigned long>(stealth_fix_stats.SymbolsResolved), kReset,
+                all_imports ? kGreen : kYellow,
+                static_cast<unsigned long>(stealth_fix_stats.SymbolsDeclared), kReset);
+            wprintf(L"  %ls[+]%ls Self-test tiers................. %ls%lu%ls of %ls%lu%ls\n",
+                kGreen, kReset,
+                stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
+                static_cast<unsigned long>(stealth_fix_stats.TiersPassed), kReset,
+                stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
+                static_cast<unsigned long>(stealth_fix_stats.TiersTotal), kReset);
+        }
+        else
+        {
+            wprintf(L"  %ls[!]%ls Encrypted NT import counters.... %lsUNAVAILABLE%ls (cannot verify VEH import removal from runtime)\n",
+                kYellow, kReset, kYellow, kReset);
+        }
+
+        if (have_local_nt && isActive(INJ_MM_ENABLE_EXCEPTIONS))
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+            if (exception_dir.Size)
+            {
+                wprintf(L"  %ls[+]%ls Payload exception data.......... RVA %ls0x%08X%ls, %ls%lu%ls entries\n",
+                    kGreen, kReset,
+                    kGreen, exception_dir.VirtualAddress, kReset,
+                    kGreen, static_cast<unsigned long>(exception_dir.Size / sizeof(RUNTIME_FUNCTION)), kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Payload exception data.......... none; SEH-only cannot unwind payload exceptions\n",
+                    kYellow, kReset);
+            }
+        }
+    }
+
+    // "Execute TLS" step. Split out of DebugAndVerifyStealth verbatim; it only surveys the payload's
+    // TLS callback table from the local image.
+    void StealthExecuteTls(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute TLS...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        int tls_callbacks = 0;
+        if (have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            auto &tls_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+            if (tls_dir.Size > 0)
+            {
+                BYTE local_tls[sizeof(IMAGE_TLS_DIRECTORY64)] = { 0 };
+                SIZE_T copy_size = sizeof(IMAGE_TLS_DIRECTORY64);
+                if (tls_dir.Size < copy_size)
+                    copy_size = static_cast<SIZE_T>(tls_dir.Size);
+                const size_t tls_off = StealthRvaToFileOffset(have_local_nt, local_pe, local_pe_size, buffers, tls_dir.VirtualAddress);
+                if (tls_off != static_cast<size_t>(-1) && tls_off + copy_size <= local_pe_size)
+                {
+                    memcpy(&local_tls, local_pe + tls_off, copy_size);
+                    auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(local_tls);
+                    if (tls->AddressOfCallBacks)
+                    {
+
+                        const ULONGLONG image_base = nt->OptionalHeader.ImageBase;
+                        const size_t cb_off = tls->AddressOfCallBacks >= image_base
+                            ? StealthRvaToFileOffset(have_local_nt, local_pe, local_pe_size, buffers, static_cast<DWORD>(tls->AddressOfCallBacks - image_base))
+                            : static_cast<size_t>(-1);
+                        if (cb_off != static_cast<size_t>(-1))
+                        {
+                            ULONGLONG * cb_array = ReCa<ULONGLONG *>(const_cast<BYTE *>(local_pe + cb_off));
+                            const size_t max_cb = (local_pe_size - cb_off) / sizeof(ULONGLONG);
+                            for (size_t i = 0; i < 256 && i < max_cb; ++i)
+                            {
+                                if (cb_array[i] == 0 || cb_array[i] == 0xFFFFFFFF)
+                                    break;
+                                ++tls_callbacks;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (tls_callbacks > 0)
+            wprintf(L"  %ls[+]%ls %ls%d%ls TLS callback(s) found (execution by design; not measured).\n",
+                kGreen, kReset, kGreen, tls_callbacks, kReset);
+        else
+
+            wprintf(L"  %ls[+]%ls No TLS callbacks present (callback array empty or absent).\n",
+                kGreen, kReset);
+    }
+
+    // "Execute DllMain" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthExecuteDllMain(int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"  %ls[+]%ls %lsDllMain(DLL_PROCESS_ATTACH)%ls invocation by design; success inferred from the operation result.\n", kGreen, kReset, kGreen, kReset);
+        wprintf(L"  %ls[+]%ls DllMain return value: %lsTRUE%ls (by design; not measured)\n", kGreen, kReset, kGreen, kReset);
+    }
+
+    // "Run under loader lock" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthRunUnderLoaderLock(int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run under loader lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrLockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
+        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrUnlockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
+    }
+
+    // "Clean data directories" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthCleanDataDirectories(const MAP_STATS * MapStats, bool have_remote_nt, BYTE * nt_data, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Clean data directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        const bool have_shell_report = MapStats &&
+            (MapStats->CleanedMask || MapStats->ImportSize || MapStats->DelayImportSize ||
+             MapStats->RelocSize || MapStats->TlsSize || MapStats->DebugSize || MapStats->ExportSize);
+
+        if (have_shell_report)
+        {
+
+            wprintf(L"  %ls[+]%ls Import = %ls%d%ls | DelayImport = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Debug = %ls%d%ls | Export = %ls%d%ls\n",
+                kGreen, kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_IMPORT) & 1), kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT) & 1), kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_BASERELOC) & 1), kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_TLS) & 1), kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DEBUG) & 1), kReset,
+                kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_EXPORT) & 1), kReset);
+            wprintf(L"  %ls[+]%ls Pre-clean sizes: Import %ls0x%08X%ls | DelayImport %ls0x%08X%ls | Reloc %ls0x%08X%ls | TLS %ls0x%08X%ls | Debug %ls0x%08X%ls | Export %ls0x%08X%ls\n",
+                kGreen, kReset,
+                kGreen, MapStats->ImportSize, kReset,
+                kGreen, MapStats->DelayImportSize, kReset,
+                kGreen, MapStats->RelocSize, kReset,
+                kGreen, MapStats->TlsSize, kReset,
+                kGreen, MapStats->DebugSize, kReset,
+                kGreen, MapStats->ExportSize, kReset);
+            wprintf(L"\n  %ls[+]%ls All data directories zeroed successfully.\n", kGreen, kReset);
+            if (MapStats->Verified)
+            {
+                wprintf(L"  %ls[+]%ls Payload-side re-read confirms all 6 directories are zero "
+                        L"(verified before header cloak).\n", kGreen, kReset);
+            }
+            else if (MapStats->ResidualMask)
+            {
+                wprintf(L"  %ls[!]%ls Re-read found %d directory entry/entries still non-zero "
+                        L"(mask 0x%08X).\n",
+                    kYellow, kReset, static_cast<int>(MapStats->ResidualMask), MapStats->ResidualMask);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Payload reported success but performed no read-back "
+                        L"verification.\n", kYellow, kReset);
+            }
+            if (have_remote_nt && nt_data)
+            {
+                auto nt = ReCa<IMAGE_NT_HEADERS *>(nt_data);
+                auto & dd = nt->OptionalHeader.DataDirectory;
+                const bool all_zero =
+                    dd[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0 &&
+                    dd[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size == 0 &&
+                    dd[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_EXPORT].Size == 0 &&
+                    dd[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_DEBUG].Size == 0 &&
+                    dd[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0 &&
+                    dd[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0;
+                if (all_zero)
+                {
+                    wprintf(L"  %ls[+]%ls Remote directories confirmed zeroed post-clean.\n", kGreen, kReset);
+                }
+                else
+                {
+                    wprintf(L"  %ls[!]%ls Remote directories retain entries post-clean.\n", kYellow, kReset);
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[+]%ls Cross-process re-read not applicable: the header is "
+                        L"intentionally cloaked by the mapper before control returns.\n", kGreen, kReset);
+            }
+        }
+        else if (nt_data)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(nt_data);
+            wprintf(L"  %ls[+]%ls Import = %ls%d%ls  Reloc = %ls%d%ls  TLS = %ls%d%ls  Exception = %ls%d%ls  Security = %ls%d%ls  Debug = %ls%d%ls  GlobalPtr = %ls%d%ls\n",
+                kGreen, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size == 0 ? 0 : 1, kReset,
+                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_GLOBALPTR].Size == 0 ? 0 : 1, kReset);
+            wprintf(L"  %ls[+]%ls All data directories zeroed to prevent static analysis.\n", kGreen, kReset);
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls All data directories zeroed (by design; not measured).\n", kGreen, kReset);
+        }
+    }
+
+    // "Set page protections" step. Split out of DebugAndVerifyStealth verbatim; it tallies the remote
+    // image's page protections.
+    void StealthSetPageProtections(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set page protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        MEMORY_BASIC_INFORMATION mbi = { 0 };
+        if (process && VirtualQueryEx(process, hRemoteBase, &mbi, sizeof(mbi)))
+        {
+            int rwx_count = 0;
+            int ro_count = 0;
+            int rw_count = 0;
+            int rx_count = 0;
+            int priv_exec_count = 0;
+
+            SIZE_T total_image_size = 0;
+            if (have_local_nt)
+            {
+                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+                total_image_size = nt->OptionalHeader.SizeOfImage;
+            }
+
+            BYTE * current = ReCa<BYTE *>(hRemoteBase);
+            while (true)
+            {
+                if (!VirtualQueryEx(process, current, &mbi, sizeof(mbi)) || !mbi.RegionSize)
+                    break;
+                if (total_image_size > 0 &&
+                    (ReCa<ULONG_PTR>(mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= total_image_size)
+                    break;
+                if (mbi.Protect != PAGE_NOACCESS && mbi.Protect != 0)
+                {
+                    if (mbi.Protect == PAGE_EXECUTE_READWRITE) ++rwx_count;
+                    else if (mbi.Protect == PAGE_READONLY)      ++ro_count;
+                    else if (mbi.Protect == PAGE_READWRITE)     ++rw_count;
+                    else if (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE) ++rx_count;
+                    if (mbi.Type == MEM_PRIVATE &&
+                        (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE ||
+                         mbi.Protect == PAGE_EXECUTE_READWRITE || mbi.Protect == PAGE_EXECUTE_WRITECOPY)) ++priv_exec_count;
+                }
+
+                BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
+                if (next <= current)
+                    break;
+                current = next;
+            }
+            wprintf(L"  %ls[+]%ls %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls\n",
+                kGreen, kReset,
+                StealthPageDesc(PAGE_EXECUTE_READWRITE), kGreen, rwx_count, kReset,
+                StealthPageDesc(PAGE_READONLY), kGreen, ro_count, kReset,
+                StealthPageDesc(PAGE_READWRITE), kGreen, rw_count, kReset,
+                StealthPageDesc(PAGE_EXECUTE_READ), kGreen, rx_count, kReset);
+            wprintf(L"  %ls[+]%ls Private executable regions: %ls%d%ls\n",
+                kGreen, kReset, kGreen, priv_exec_count, kReset);
+        }
+        else
+        {
+            wprintf(L"  %ls[+]%ls Section permissions applied to all memory regions (by design; not measured).\n", kGreen, kReset);
+        }
+    }
+
+    // "Verify forensic posture" step. Split out of DebugAndVerifyStealth verbatim; it reports the
+    // runtime and on-disk posture and updates the caller's posture verdict.
+    void StealthVerifyForensicPosture(HANDLE process, HINSTANCE hRemoteBase, const BYTE * local_pe, size_t local_pe_size,
+        const WizardConfig & config, StealthVerifierBuffers & buffers, bool & posture_ok,
+        int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify forensic posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        const std::vector<BYTE> & posture_bytes = buffers.runtime_bytes;
+        const bool posture_read = buffers.runtime_read;
+        size_t export_neutral = 0;
+        size_t export_foreign = 0;
+        size_t standard_sections = 0;
+        DWORD debug_size = 0;
+        bool posture_parsed = false;
+        if (posture_read && posture_bytes.size() >= sizeof(IMAGE_DOS_HEADER))
+        {
+            const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(posture_bytes.data());
+            if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 &&
+                static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) <= posture_bytes.size())
+            {
+                const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(posture_bytes.data() + dos->e_lfanew);
+                if (nt->Signature == IMAGE_NT_SIGNATURE &&
+                    nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+                    nt->FileHeader.NumberOfSections <= 96)
+                {
+                    const auto * sections = ReCa<const IMAGE_SECTION_HEADER *>(
+                        ReCa<const BYTE *>(&nt->OptionalHeader) + nt->FileHeader.SizeOfOptionalHeader);
+                    const size_t table_end = static_cast<size_t>(dos->e_lfanew) + sizeof(DWORD) +
+                        sizeof(IMAGE_FILE_HEADER) + nt->FileHeader.SizeOfOptionalHeader +
+                        static_cast<size_t>(nt->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
+                    if (table_end <= posture_bytes.size())
+                    {
+                        static const char kStandard[][8] =
+                        {
+                            ".text", ".rdata", ".data", ".pdata",
+                            ".rsrc", ".reloc", ".edata", ".idata",
+                        };
+                        for (WORD s = 0; s < nt->FileHeader.NumberOfSections; ++s)
+                        {
+                            char name[9] = { 0 };
+                            memcpy(name, sections[s].Name, 8);
+                            for (size_t k = 0; k < sizeof(kStandard) / sizeof(kStandard[0]); ++k)
+                            {
+                                if (strcmp(name, kStandard[k]) == 0)
+                                {
+                                    ++standard_sections;
+                                    break;
+                                }
+                            }
+                        }
+                        debug_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+                        const DWORD export_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+                        const DWORD export_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+                        posture_parsed = true;
+                        if (export_rva && export_size)
+                        {
+                            auto rva_to_offset = [&](DWORD rva) -> size_t
+                            {
+                                for (WORD s = 0; s < nt->FileHeader.NumberOfSections; ++s)
+                                {
+                                    const DWORD va = sections[s].VirtualAddress;
+                                    const DWORD raw = sections[s].SizeOfRawData;
+                                    if (raw && rva >= va && rva - va < raw)
+                                    {
+                                        const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
+                                        if (off < posture_bytes.size())
+                                        {
+                                            return off;
+                                        }
+                                    }
+                                }
+                                return static_cast<size_t>(-1);
+                            };
+                            const size_t exp_off = rva_to_offset(export_rva);
+                            if (exp_off == static_cast<size_t>(-1) || exp_off + 40 > posture_bytes.size())
+                            {
+                                posture_parsed = false;
+                            }
+                            else
+                            {
+                                const DWORD num_names = *ReCa<const DWORD *>(posture_bytes.data() + exp_off + 24);
+                                const DWORD addr_names = *ReCa<const DWORD *>(posture_bytes.data() + exp_off + 32);
+                                if (num_names > 256)
+                                {
+                                    posture_parsed = false;
+                                }
+                                else
+                                {
+                                    for (DWORD i = 0; i < num_names; ++i)
+                                    {
+                                        const size_t slot = rva_to_offset(addr_names);
+                                        if (slot == static_cast<size_t>(-1) ||
+                                            slot + static_cast<size_t>(i) * 4 + 4 > posture_bytes.size())
+                                        {
+                                            posture_parsed = false;
+                                            break;
+                                        }
+                                        const DWORD name_rva = *ReCa<const DWORD *>(
+                                            posture_bytes.data() + slot + static_cast<size_t>(i) * 4);
+                                        const size_t name_off = rva_to_offset(name_rva);
+                                        if (name_off == static_cast<size_t>(-1))
+                                        {
+                                            posture_parsed = false;
+                                            break;
+                                        }
+                                        size_t len = 0;
+                                        while (name_off + len < posture_bytes.size() &&
+                                            posture_bytes[name_off + len] && len < 128)
+                                        {
+                                            ++len;
+                                        }
+                                        if (name_off + len >= posture_bytes.size())
+                                        {
+                                            posture_parsed = false;
+                                            break;
+                                        }
+                                        const char * nm = ReCa<const char *>(posture_bytes.data() + name_off);
+
+                                        if (IsOriginalExportName(config.export_map, nm))
+                                        {
+                                            ++export_foreign;
+                                        }
+                                        else
+                                        {
+                                            ++export_neutral;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!posture_read)
+        {
+            wprintf(L"  %ls[x]%ls Runtime DLL unreadable; posture unverified.\n", kRed, kReset);
+            posture_ok = false;
+        }
+        else if (!posture_parsed)
+        {
+            wprintf(L"  %ls[x]%ls Runtime image unparseable; posture unverified.\n", kRed, kReset);
+            posture_ok = false;
+        }
+        else
+        {
+
+            if (VerboseOutputEnabled())
+            {
+                wprintf(L"  %ls[+]%ls Export names: %ls%zu%ls neutral, %ls%zu%ls foreign\n",
+                    kGreen, kReset, kGreen, export_neutral, kReset, kGreen, export_foreign, kReset);
+                wprintf(L"  %ls[+]%ls Standard section names remaining: %ls%zu%ls\n",
+                    kGreen, kReset, kGreen, standard_sections, kReset);
+                wprintf(L"  %ls[+]%ls Debug directory size: %ls0x%lX%ls\n",
+                    kGreen, kReset, kGreen, static_cast<unsigned long>(debug_size), kReset);
+            }
+            if (export_foreign || standard_sections || debug_size)
+            {
+                wprintf(L"  %ls[x]%ls Forensic posture regressed; rebuild with mutation enabled.\n", kRed, kReset);
+                posture_ok = false;
+            }
+            else if (!VerboseOutputEnabled())
+            {
+                wprintf(XOR_STR_W(L"  %ls[+]%ls Forensic posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+            }
+        }
+
+        if (local_pe && local_pe_size)
+        {
+            PE_IMAGE::VIEW payload_view{};
+            const DWORD payload_check = PE_IMAGE::Validate(local_pe, local_pe_size,
+                IMAGE_FILE_MACHINE_AMD64, {}, payload_view);
+
+            size_t payload_exports = 0;
+            size_t payload_standard_sections = 0;
+            size_t payload_rwx_sections = 0;
+            DWORD payload_debug = 0;
+            const bool payload_ok = payload_check == FILE_ERR_SUCCESS && payload_view.NtHeaders != nullptr;
+            if (payload_ok)
+            {
+                static const char kStd[][8] =
+                {
+                    ".text", ".rdata", ".data", ".pdata",
+                    ".rsrc", ".reloc", ".edata", ".idata",
+                };
+                const IMAGE_SECTION_HEADER * sections = payload_view.Sections;
+                const WORD count = payload_view.NtHeaders->FileHeader.NumberOfSections;
+                for (WORD s = 0; s < count; ++s)
+                {
+                    char name[9] = { 0 };
+                    memcpy(name, sections[s].Name, 8);
+                    for (size_t k = 0; k < sizeof(kStd) / sizeof(kStd[0]); ++k)
+                    {
+                        if (strcmp(name, kStd[k]) == 0)
+                        {
+                            ++payload_standard_sections;
+                            break;
+                        }
+                    }
+                    if ((sections[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) &&
+                        (sections[s].Characteristics & IMAGE_SCN_MEM_WRITE))
+                    {
+                        ++payload_rwx_sections;
+                    }
+                }
+                payload_debug = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+
+                auto rva_to_offset = [&](DWORD rva) -> size_t
+                {
+                    for (WORD s = 0; s < count; ++s)
+                    {
+                        const DWORD va = sections[s].VirtualAddress;
+                        const DWORD raw = sections[s].SizeOfRawData;
+                        if (raw && rva >= va && rva - va < raw)
+                        {
+                            const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
+                            if (off < local_pe_size)
+                            {
+                                return off;
+                            }
+                        }
+                    }
+                    return static_cast<size_t>(-1);
+                };
+                const DWORD exp_rva = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+                if (exp_rva)
+                {
+                    const size_t exp_off = rva_to_offset(exp_rva);
+                    if (exp_off != static_cast<size_t>(-1) && exp_off + 40 <= local_pe_size)
+                    {
+                        payload_exports = *ReCa<const DWORD *>(local_pe + exp_off + 24);
+                    }
+                }
+            }
+
+    if (VerboseOutputEnabled())
+    {
+        wprintf(L"  %ls[+]%ls Payload export names: %ls%zu%ls | standard sections: %ls%zu%ls | RWX sections: %ls%zu%ls | debug: %ls0x%lX%ls\n",
+            kGreen, kReset,
+            kGreen, payload_exports, kReset,
+            kGreen, payload_standard_sections, kReset,
+            kGreen, payload_rwx_sections, kReset,
+            kGreen, static_cast<unsigned long>(payload_debug), kReset);
+    }
+    else if (payload_ok)
+    {
+        wprintf(XOR_STR_W(L"  %ls[+]%ls Payload on-disk posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+    }
+
+            if (!payload_ok)
+            {
+                wprintf(L"  %ls[!]%ls Payload image could not be re-parsed for a posture report.\n", kYellow, kReset);
+            }
+            else if (payload_rwx_sections)
+            {
+                wprintf(L"  %ls[!]%ls Payload declares RWX section(s); mapped regions may inherit that.\n", kYellow, kReset);
+            }
+        }
+
+        {
+            bool listed = false;
+            bool enum_ok = false;
+            HANDLE msnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(process));
+            if (msnap && msnap != INVALID_HANDLE_VALUE)
+            {
+                MODULEENTRY32W mod{};
+                mod.dwSize = sizeof(mod);
+                if (Module32FirstW(msnap, &mod))
+                {
+                    enum_ok = true;
+                    do
+                    {
+                        if (ReCa<ULONG_PTR>(mod.modBaseAddr) == ReCa<ULONG_PTR>(hRemoteBase))
+                        {
+                            listed = true;
+                            break;
+                        }
+                    } while (Module32NextW(msnap, &mod));
+                }
+                CloseHandle(msnap);
+            }
+            if (enum_ok && !listed)
+            {
+                wprintf(L"  %ls[+]%ls Loader lists clean: image not enumerated as a module.\n", kGreen, kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Loader-list check inconclusive (enum %ls, listed %ls).\n", kYellow, kReset,
+                    enum_ok ? L"ok" : L"failed", listed ? L"yes" : L"no");
+            }
+        }
+
+        {
+            PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
+            bool cfg_read = process &&
+                GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
+            if (cfg_read)
+            {
+                wprintf(L"  %ls[+]%ls Target CFG policy: enable %ls%lu%s strict %ls%lu%s.\n", kGreen, kReset,
+                    kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
+                    kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Target CFG policy unreadable.\n", kYellow, kReset);
+            }
+        }
+    }
+
+    // "Erase PE header" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthEraseHeader(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
+        StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        SIZE_T header_size = 0;
+        if (have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            header_size = nt->OptionalHeader.SizeOfHeaders;
+        }
+
+        constexpr size_t kProbeBytes = 16;
+        BYTE header_bytes[kProbeBytes] = { 0 };
+        SIZE_T bytesRead = 0;
+        const bool read_ok = process &&
+            ReadProcessMemory(process, hRemoteBase, header_bytes, kProbeBytes, &bytesRead) && bytesRead == kProbeBytes;
+
+        if (read_ok)
+        {
+            const ULONGLONG base = static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase));
+            wprintf(L"  %ls[+]%ls Image base      : %ls0x%016llX%ls\n",
+                kGreen, kReset, kGreen, base, kReset);
+
+            wchar_t hex[kProbeBytes * 3 + 1] = { 0 };
+            const wchar_t digits[] = L"0123456789ABCDEF";
+            for (size_t i = 0; i < kProbeBytes; ++i)
+            {
+                hex[i * 3 + 0] = digits[header_bytes[i] >> 4];
+                hex[i * 3 + 1] = digits[header_bytes[i] & 0x0F];
+                hex[i * 3 + 2] = L' ';
+            }
+            hex[kProbeBytes * 3] = L'\0';
+
+            const bool erased = !(header_bytes[0] == 0x4D && header_bytes[1] == 0x5A);
+            if (erased)
+            {
+                wprintf(L"  %ls[+]%ls First %u bytes  : %ls%ls%ls\n",
+                    kGreen, kReset, static_cast<unsigned>(kProbeBytes), kGreen, hex, kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls First %u bytes  : %ls%ls%ls\n",
+                    kYellow, kReset, static_cast<unsigned>(kProbeBytes), kYellow, hex, kReset);
+            }
+
+            if (header_size)
+            {
+
+                wprintf(L"  %ls[+]%ls Header region   : %ls0x%016llX%s - %ls0x%016llX%s (%ls0x%llX%s bytes)\n\n",
+                    kGreen, kReset, kGreen, base, kReset, kGreen, base + header_size, kReset,
+                    kGreen, static_cast<unsigned long long>(header_size), kReset);
+            }
+
+            if (erased)
+            {
+                wprintf(L"  %ls[+]%ls MZ header zeroed - signature scan evasion active.\n", kGreen, kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls MZ header still visible at image base.\n", kYellow, kReset);
+            }
+        }
+        else
+        {
+            wprintf(L"  %ls[!]%ls Image base not readable; header state unknown.\n", kYellow, kReset);
+        }
+    }
+
+    // "Survey target traps" step. Split out of DebugAndVerifyStealth verbatim.
+    void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Survey target traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        ReportGameTraps(process, survey_pid, buffers);
+        wprintf(L"\n");
+    }
+
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, const MAP_STATS * MapStats, f_GetLastStringStats get_string_stats,
@@ -2659,27 +3979,35 @@ LUID luid{};
         bool string_gate_ok = true;
         bool posture_ok = true;
 
+        // Single source of truth for both the step gates and the denominator. Indexed by StealthVerifyStep.
+        const bool step_enabled[kStealthStepCount] =
+        {
+            isActive(INJ_HANDLE_HIJACKING),
+            isActive(INJ_MM_RESOLVE_IMPORTS) || isActive(INJ_MM_RUN_DLL_MAIN),
+            isActive(INJ_MM_RESOLVE_DELAY_IMPORTS),
+            isActive(INJ_MM_INIT_SECURITY_COOKIE),
+            isActive(INJ_MM_ENABLE_EXCEPTIONS),
+            true,
+            isActive(INJ_MM_EXECUTE_TLS),
+            isActive(INJ_MM_RUN_DLL_MAIN),
+            isActive(INJ_MM_RUN_UNDER_LDR_LOCK),
+            isActive(INJ_MM_CLEAN_DATA_DIR),
+            isActive(INJ_MM_SET_PAGE_PROTECTIONS),
+            true,
+            true,
+            true,
+            isActive(INJ_ERASE_HEADER),
+            survey_game_traps,
+        };
+
         int total = 0;
-        if (isActive(INJ_HANDLE_HIJACKING)) ++total;
-        if (isActive(INJ_MM_RESOLVE_IMPORTS) || isActive(INJ_MM_RUN_DLL_MAIN)) ++total;
-        if (isActive(INJ_MM_RESOLVE_DELAY_IMPORTS)) ++total;
-        if (isActive(INJ_MM_INIT_SECURITY_COOKIE)) ++total;
-        if (isActive(INJ_MM_ENABLE_EXCEPTIONS)) ++total;
-
-        ++total;
-        if (isActive(INJ_MM_EXECUTE_TLS)) ++total;
-        if (isActive(INJ_MM_RUN_DLL_MAIN)) ++total;
-        if (isActive(INJ_MM_RUN_UNDER_LDR_LOCK)) ++total;
-        if (isActive(INJ_MM_CLEAN_DATA_DIR)) ++total;
-        if (isActive(INJ_MM_SET_PAGE_PROTECTIONS)) ++total;
-
-        ++total;
-
-        ++total;
-
-        ++total;
-        if (isActive(INJ_ERASE_HEADER)) ++total;
-        if (survey_game_traps) ++total;
+        for (bool enabled : step_enabled)
+        {
+            if (enabled)
+            {
+                ++total;
+            }
+        }
 
         int step = 0;
 
@@ -2731,1349 +4059,82 @@ LUID luid{};
         BYTE * nt_data = have_remote_nt ? buffers.remote_headers.data()
             : (have_local_nt ? buffers.local_headers.data() : nullptr);
 
-        auto rva_file_offset = [&](DWORD rva) -> size_t
+        if (step_enabled[kStealthAcquireHandle])
         {
-            if (!have_local_nt || !local_pe)
-                return static_cast<size_t>(-1);
-            const auto * lnt = ReCa<const IMAGE_NT_HEADERS64 *>(buffers.local_headers.data());
-            const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(local_pe);
-            if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-                return static_cast<size_t>(-1);
-            const BYTE * nt_in_file = local_pe + dos->e_lfanew;
-            const BYTE * sec_ptr = nt_in_file + sizeof(DWORD) +
-                sizeof(IMAGE_FILE_HEADER) + lnt->FileHeader.SizeOfOptionalHeader;
-            const WORD section_count = lnt->FileHeader.NumberOfSections;
-
-            if (sec_ptr + static_cast<size_t>(section_count) * sizeof(IMAGE_SECTION_HEADER) > local_pe + local_pe_size)
-                return static_cast<size_t>(-1);
-            for (WORD i = 0; i < section_count; ++i)
-            {
-                const auto * sec = ReCa<const IMAGE_SECTION_HEADER *>(sec_ptr) + i;
-                if (rva >= sec->VirtualAddress &&
-                    static_cast<DWORD>(rva - sec->VirtualAddress) < sec->SizeOfRawData)
-                {
-                    const size_t off = static_cast<size_t>(sec->PointerToRawData) + (rva - sec->VirtualAddress);
-                    if (off < local_pe_size)
-                        return off;
-                    return static_cast<size_t>(-1);
-                }
-            }
-
-            if (rva < lnt->OptionalHeader.SizeOfHeaders && static_cast<size_t>(rva) < local_pe_size)
-                return static_cast<size_t>(rva);
-            return static_cast<size_t>(-1);
-        };
-
-        auto desc = [](DWORD p) -> const wchar_t *
-        {
-            switch (p)
-            {
-            case PAGE_EXECUTE_READWRITE: return L"PAGE_EXECUTE_READWRITE";
-            case PAGE_EXECUTE_READ:      return L"PAGE_EXECUTE_READ";
-            case PAGE_EXECUTE_WRITECOPY: return L"PAGE_EXECUTE_WRITECOPY";
-            case PAGE_EXECUTE:           return L"PAGE_EXECUTE";
-            case PAGE_READONLY:          return L"PAGE_READONLY";
-            case PAGE_READWRITE:         return L"PAGE_READWRITE";
-            case PAGE_WRITECOPY:         return L"PAGE_WRITECOPY";
-            case PAGE_NOACCESS:          return L"PAGE_NOACCESS";
-            default:                     return L"UNKNOWN";
-            }
-        };
-
-        if (isActive(INJ_HANDLE_HIJACKING))
-        {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Acquire process handle...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            if (!Context || Context->Verbose)
-            {
-                PrintHijackTrace(L"Process", ProcessHijack, Context, flags, false);
-                wprintf(L"\n");
-                PrintHijackTrace(L"Thread", ThreadHijack, Context, flags, true);
-            }
-            else
-            {
-                PrintHijackSummary(L"Process", ProcessHijack);
-                PrintHijackSummary(L"Thread", ThreadHijack);
-            }
+            StealthAcquireHandle(ProcessHijack, ThreadHijack, Context, flags, step, total);
         }
 
-        if (isActive(INJ_MM_RESOLVE_IMPORTS) || isActive(INJ_MM_RUN_DLL_MAIN))
+        if (step_enabled[kStealthResolveImports])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            struct ImportEntry { char name[MAX_PATH + 1]; ULONG thunk_count; bool named; };
-            ImportEntry imports[64]{};
-            int import_count = 0;
-            ULONG import_total_thunks = 0;
-            const char * import_problem = nullptr;
-
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                if (nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size > 0)
-                {
-                    const DWORD import_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-                    const size_t import_off = rva_file_offset(import_rva);
-                    if (import_off != static_cast<size_t>(-1) && import_off < local_pe_size)
-                    {
-                        BYTE * import_desc_addr = const_cast<BYTE *>(local_pe) + import_off;
-                        const size_t import_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
-                        const size_t max_desc = import_size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
-                        const size_t avail_desc = (local_pe_size - import_off) / sizeof(IMAGE_IMPORT_DESCRIPTOR);
-                        const size_t desc_limit = (std::min)(max_desc, avail_desc);
-                        IMAGE_IMPORT_DESCRIPTOR iid = { 0 };
-                        for (size_t i = 0; i < 256 && i < desc_limit; ++i)
-                        {
-                            memcpy(&iid, import_desc_addr + i * sizeof(iid), sizeof(iid));
-                            if (iid.Name == 0)
-                                break;
-                            if (import_count >= static_cast<int>(sizeof(imports) / sizeof(imports[0])))
-                            {
-                                import_problem = "descriptor list truncated at 64 entries";
-                                break;
-                            }
-
-                            ImportEntry & slot = imports[import_count];
-
-                            const size_t name_off = rva_file_offset(iid.Name);
-                            if (name_off != static_cast<size_t>(-1) && name_off < local_pe_size)
-                            {
-                                const char * name_ptr = reinterpret_cast<const char *>(local_pe) + name_off;
-                                const size_t max_len = (std::min)(
-                                    static_cast<size_t>(MAX_PATH), local_pe_size - name_off - 1);
-                                if (max_len > 0)
-                                {
-                                    size_t len = 0;
-                                    while (len < max_len && name_ptr[len] != '\0')
-                                    {
-                                        ++len;
-                                    }
-                                    if (len < max_len)
-                                    {
-                                        memcpy(slot.name, name_ptr, len + 1);
-                                        slot.named = true;
-                                    }
-                                }
-                            }
-                            if (!slot.named)
-                            {
-                                strcpy_s(slot.name, "<unreadable>");
-                            }
-
-                            const DWORD thunk_rva = iid.OriginalFirstThunk ? iid.OriginalFirstThunk : iid.FirstThunk;
-                            const size_t thunk_off = rva_file_offset(thunk_rva);
-                            if (thunk_off != static_cast<size_t>(-1) && thunk_off + sizeof(ULONG_PTR) <= local_pe_size)
-                            {
-                                const size_t thunk_max = (local_pe_size - thunk_off) / sizeof(ULONG_PTR);
-                                const ULONG_PTR * thunks = reinterpret_cast<const ULONG_PTR *>(
-                                    const_cast<BYTE *>(local_pe) + thunk_off);
-                                ULONG seen = 0;
-                                for (size_t t = 0; t < thunk_max && t < 4096; ++t)
-                                {
-                                    if (thunks[t] == 0)
-                                        break;
-                                    ++seen;
-                                }
-                                slot.thunk_count = seen;
-                                import_total_thunks += seen;
-                            }
-
-                            ++import_count;
-                        }
-                    }
-                    else
-                    {
-                        import_problem = "import directory RVA not file-backed";
-                    }
-                }
-                else
-                {
-                    import_problem = nullptr;
-                }
-            }
-
-            if (import_count > 0)
-            {
-                wprintf(L" %ls[+]%ls %ls%d%ls import descriptor(s), %ls%lu%ls function(s) total.\n",
-                    kGreen, kReset, kGreen, import_count, kReset, kGreen,
-                    static_cast<unsigned long>(import_total_thunks), kReset);
-
-                if (VerboseOutputEnabled())
-                {
-                    wprintf(L"\n");
-                    for (int i = 0; i < import_count; ++i)
-                    {
-                        const char * raw = imports[i].name;
-                        wchar_t wide[MAX_PATH + 1]{ 0 };
-                        const int wide_len = MultiByteToWideChar(CP_ACP, 0, raw, -1, wide, MAX_PATH + 1);
-                        if (wide_len <= 0)
-                        {
-                            wcscpy_s(wide, L"<unprintable>");
-                        }
-
-                        wchar_t ordinal[8]{ 0 };
-                        swprintf_s(ordinal, L"%d.", i + 1);
-                        wprintf(L"      %ls%ls%ls%lu%ls thunk(s)\n",
-                            StageField(ordinal, 6).c_str(),
-                            StageField(wide, 26).c_str(),
-                            kGreen, static_cast<unsigned long>(imports[i].thunk_count), kReset);
-                    }
-                }
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls No statically linked import descriptors in the payload.\n", kGreen, kReset);
-            }
-
-            if (import_problem)
-            {
-                wchar_t problem_w[MAX_PATH + 1]{ 0 };
-                if (MultiByteToWideChar(CP_ACP, 0, import_problem, -1, problem_w, MAX_PATH + 1) <= 0)
-                {
-                    wcscpy_s(problem_w, L"<unprintable>");
-                }
-                wprintf(L"  %ls[!]%ls Import survey incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
-            }
+            StealthResolveImports(have_local_nt, local_pe, local_pe_size, buffers, step, total);
         }
 
-        if (isActive(INJ_MM_RESOLVE_DELAY_IMPORTS))
+        if (step_enabled[kStealthResolveDelayImports])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve delay imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                auto & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
-                if (dir.Size > 0)
-                    wprintf(L"  %ls[+]%ls Delay-import directory present in payload (%ls%lu%ls bytes).\n",
-                        kGreen, kReset, kGreen, dir.Size, kReset);
-                else
-                    wprintf(L"  %ls[+]%ls No delay-import directory present in module.\n", kGreen, kReset);
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls No local image to survey.\n", kGreen, kReset);
-            }
+            StealthResolveDelayImports(have_local_nt, buffers, step, total);
         }
 
-        if (isActive(INJ_MM_INIT_SECURITY_COOKIE))
+        if (step_enabled[kStealthInitSecurityCookie])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize security cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            if (process && have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                auto &tls_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-                if (tls_dir.Size > 0)
-                {
-                    BYTE remote_tls[sizeof(IMAGE_TLS_DIRECTORY64)] = { 0 };
-                    SIZE_T ts = 0;
-                    if (ReadProcessMemory(process, ReCa<BYTE *>(hRemoteBase) + tls_dir.VirtualAddress,
-                        remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
-                    {
-                        auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
-                        wprintf(L"  %ls[+]%ls Security cookie initialized (by design; not measured), TLS Directory VA = %ls0x%016llX%ls\n",
-                            kGreen, kReset, kGreen, tls->AddressOfCallBacks, kReset);
-                    }
-                    else
-                    {
-                        wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
-                    }
-                }
-                else
-                {
-                    wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
-                }
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
-            }
+            StealthInitSecurityCookie(process, hRemoteBase, have_local_nt, buffers, step, total);
         }
 
-        if (isActive(INJ_MM_ENABLE_EXCEPTIONS))
+        if (step_enabled[kStealthEnableExceptions])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            wprintf(L"  %ls[+]%ls SEH via inverted/function table, zero VEH chain entries (by design; not measured)\n", kGreen, kReset);
-            wprintf(L"\n");
-
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-                if (exception_dir.Size)
-                {
-                    const DWORD entry_count = exception_dir.Size / static_cast<DWORD>(sizeof(RUNTIME_FUNCTION));
-                    wprintf(L"  %ls[+]%ls Exception directory    : RVA %ls0x%08X%ls  size %ls0x%08X%ls  %ls%lu%s entry(ies)\n",
-                        kGreen, kReset,
-                        kGreen, exception_dir.VirtualAddress, kReset,
-                        kGreen, exception_dir.Size, kReset,
-                        kGreen, static_cast<unsigned long>(entry_count), kReset);
-
-                    const ULONG_PTR remote_table = ReCa<ULONG_PTR>(hRemoteBase) + exception_dir.VirtualAddress;
-                    RUNTIME_FUNCTION probe{};
-                    SIZE_T got = 0;
-                    if (process && ReadProcessMemory(process, ReCa<void *>(remote_table), &probe, sizeof(probe), &got) && got == sizeof(probe))
-                    {
-                        wprintf(L"  %ls[+]%ls .pdata table     : %ls0x%016llX%ls  first %ls0x%08X%s - %s0x%08X%s\n",
-                            kGreen, kReset, kGreen, static_cast<unsigned long long>(remote_table), kReset,
-                            kGreen, probe.BeginAddress, kReset, kGreen, probe.EndAddress, kReset);
-                    }
-                    else
-                    {
-                        wprintf(L"  %ls[!]%ls .pdata table not readable at 0x%016llX\n", kYellow, kReset,
-                            static_cast<unsigned long long>(remote_table));
-                    }
-                }
-                else
-                {
-                    wprintf(L"  %ls[+]%ls No exception directory present in the payload.\n", kGreen, kReset);
-                }
-            }
-
-            wprintf(L"\n");
-            wprintf(L"  %ls[+]%ls Inverted function table updated for %ls%s%ls (by design; not measured)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
+            StealthEnableExceptions(process, hRemoteBase, have_local_nt, buffers, step, total);
         }
 
+        if (step_enabled[kStealthVerifyExceptionHandling])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify exception handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            wprintf(L"  %ls[+]%ls Launcher VEH shell............ %lsnone by design; not measured%ls\n",
-                kGreen, kReset, kGreen, kReset);
-            wprintf(L"  %ls[+]%ls Added VEH chain entries........ %ls0%ls (by design; not measured)\n",
-                kGreen, kReset, kGreen, kReset);
-            wprintf(L"  %ls[+]%ls SEH coverage................... %ls%s%ls\n",
-                kGreen, kReset,
-                isActive(INJ_MM_ENABLE_EXCEPTIONS) ? kGreen : kYellow,
-                isActive(INJ_MM_ENABLE_EXCEPTIONS) ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; runtime-verified (by design; not measured)"
-                                                   : L"disabled; payload exceptions not covered",
-                kReset);
-
-            STRING_STATS stealth_fix_stats{};
-            if (get_string_stats)
-            {
-                get_string_stats(&stealth_fix_stats);
-            }
-
-            if (get_string_stats && stealth_fix_stats.Reported)
-            {
-                const bool all_imports =
-                    stealth_fix_stats.SymbolsResolved == stealth_fix_stats.SymbolsDeclared;
-                wprintf(L"  %ls[+]%ls Encrypted NT imports............ %ls%lu%ls of %ls%lu%ls\n",
-                    kGreen, kReset,
-                    all_imports ? kGreen : kYellow,
-                    static_cast<unsigned long>(stealth_fix_stats.SymbolsResolved), kReset,
-                    all_imports ? kGreen : kYellow,
-                    static_cast<unsigned long>(stealth_fix_stats.SymbolsDeclared), kReset);
-                wprintf(L"  %ls[+]%ls Self-test tiers................. %ls%lu%ls of %ls%lu%ls\n",
-                    kGreen, kReset,
-                    stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
-                    static_cast<unsigned long>(stealth_fix_stats.TiersPassed), kReset,
-                    stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
-                    static_cast<unsigned long>(stealth_fix_stats.TiersTotal), kReset);
-            }
-            else
-            {
-                wprintf(L"  %ls[!]%ls Encrypted NT import counters.... %lsUNAVAILABLE%ls (cannot verify VEH import removal from runtime)\n",
-                    kYellow, kReset, kYellow, kReset);
-            }
-
-            if (have_local_nt && isActive(INJ_MM_ENABLE_EXCEPTIONS))
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-                if (exception_dir.Size)
-                {
-                    wprintf(L"  %ls[+]%ls Payload exception data.......... RVA %ls0x%08X%ls, %ls%lu%ls entries\n",
-                        kGreen, kReset,
-                        kGreen, exception_dir.VirtualAddress, kReset,
-                        kGreen, static_cast<unsigned long>(exception_dir.Size / sizeof(RUNTIME_FUNCTION)), kReset);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls Payload exception data.......... none; SEH-only cannot unwind payload exceptions\n",
-                        kYellow, kReset);
-                }
-            }
+            StealthVerifyExceptionHandling(flags, have_local_nt, buffers, get_string_stats, step, total);
         }
 
-        if (isActive(INJ_MM_EXECUTE_TLS))
+        if (step_enabled[kStealthExecuteTls])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute TLS...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            int tls_callbacks = 0;
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                auto &tls_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-                if (tls_dir.Size > 0)
-                {
-                    BYTE local_tls[sizeof(IMAGE_TLS_DIRECTORY64)] = { 0 };
-                    SIZE_T copy_size = sizeof(IMAGE_TLS_DIRECTORY64);
-                    if (tls_dir.Size < copy_size)
-                        copy_size = static_cast<SIZE_T>(tls_dir.Size);
-                    const size_t tls_off = rva_file_offset(tls_dir.VirtualAddress);
-                    if (tls_off != static_cast<size_t>(-1) && tls_off + copy_size <= local_pe_size)
-                    {
-                        memcpy(&local_tls, local_pe + tls_off, copy_size);
-                        auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(local_tls);
-                        if (tls->AddressOfCallBacks)
-                        {
-
-                            const ULONGLONG image_base = nt->OptionalHeader.ImageBase;
-                            const size_t cb_off = tls->AddressOfCallBacks >= image_base
-                                ? rva_file_offset(static_cast<DWORD>(tls->AddressOfCallBacks - image_base))
-                                : static_cast<size_t>(-1);
-                            if (cb_off != static_cast<size_t>(-1))
-                            {
-                                ULONGLONG * cb_array = ReCa<ULONGLONG *>(const_cast<BYTE *>(local_pe + cb_off));
-                                const size_t max_cb = (local_pe_size - cb_off) / sizeof(ULONGLONG);
-                                for (size_t i = 0; i < 256 && i < max_cb; ++i)
-                                {
-                                    if (cb_array[i] == 0 || cb_array[i] == 0xFFFFFFFF)
-                                        break;
-                                    ++tls_callbacks;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (tls_callbacks > 0)
-                wprintf(L"  %ls[+]%ls %ls%d%ls TLS callback(s) found (execution by design; not measured).\n",
-                    kGreen, kReset, kGreen, tls_callbacks, kReset);
-            else
-
-                wprintf(L"  %ls[+]%ls No TLS callbacks present (callback array empty or absent).\n",
-                    kGreen, kReset);
+            StealthExecuteTls(have_local_nt, local_pe, local_pe_size, buffers, step, total);
         }
 
-        if (isActive(INJ_MM_RUN_DLL_MAIN))
+        if (step_enabled[kStealthExecuteDllMain])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            wprintf(L"  %ls[+]%ls %lsDllMain(DLL_PROCESS_ATTACH)%ls invocation by design; success inferred from the operation result.\n", kGreen, kReset, kGreen, kReset);
-            wprintf(L"  %ls[+]%ls DllMain return value: %lsTRUE%ls (by design; not measured)\n", kGreen, kReset, kGreen, kReset);
+            StealthExecuteDllMain(step, total);
         }
 
-        if (isActive(INJ_MM_RUN_UNDER_LDR_LOCK))
+        if (step_enabled[kStealthRunUnderLoaderLock])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run under loader lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            wprintf(XOR_STR_W(L"  %ls[+]%ls LdrLockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
-            wprintf(XOR_STR_W(L"  %ls[+]%ls LdrUnlockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
+            StealthRunUnderLoaderLock(step, total);
         }
 
-        if (isActive(INJ_MM_CLEAN_DATA_DIR))
+        if (step_enabled[kStealthCleanDataDirectories])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Clean data directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            const bool have_shell_report = MapStats &&
-                (MapStats->CleanedMask || MapStats->ImportSize || MapStats->DelayImportSize ||
-                 MapStats->RelocSize || MapStats->TlsSize || MapStats->DebugSize || MapStats->ExportSize);
-
-            if (have_shell_report)
-            {
-
-                wprintf(L"  %ls[+]%ls Import = %ls%d%ls | DelayImport = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Debug = %ls%d%ls | Export = %ls%d%ls\n",
-                    kGreen, kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_IMPORT) & 1), kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT) & 1), kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_BASERELOC) & 1), kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_TLS) & 1), kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DEBUG) & 1), kReset,
-                    kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_EXPORT) & 1), kReset);
-                wprintf(L"  %ls[+]%ls Pre-clean sizes: Import %ls0x%08X%ls | DelayImport %ls0x%08X%ls | Reloc %ls0x%08X%ls | TLS %ls0x%08X%ls | Debug %ls0x%08X%ls | Export %ls0x%08X%ls\n",
-                    kGreen, kReset,
-                    kGreen, MapStats->ImportSize, kReset,
-                    kGreen, MapStats->DelayImportSize, kReset,
-                    kGreen, MapStats->RelocSize, kReset,
-                    kGreen, MapStats->TlsSize, kReset,
-                    kGreen, MapStats->DebugSize, kReset,
-                    kGreen, MapStats->ExportSize, kReset);
-                wprintf(L"\n  %ls[+]%ls All data directories zeroed successfully.\n", kGreen, kReset);
-                if (MapStats->Verified)
-                {
-                    wprintf(L"  %ls[+]%ls Payload-side re-read confirms all 6 directories are zero "
-                            L"(verified before header cloak).\n", kGreen, kReset);
-                }
-                else if (MapStats->ResidualMask)
-                {
-                    wprintf(L"  %ls[!]%ls Re-read found %d directory entry/entries still non-zero "
-                            L"(mask 0x%08X).\n",
-                        kYellow, kReset, static_cast<int>(MapStats->ResidualMask), MapStats->ResidualMask);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls Payload reported success but performed no read-back "
-                            L"verification.\n", kYellow, kReset);
-                }
-                if (have_remote_nt && nt_data)
-                {
-                    auto nt = ReCa<IMAGE_NT_HEADERS *>(nt_data);
-                    auto & dd = nt->OptionalHeader.DataDirectory;
-                    const bool all_zero =
-                        dd[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0 &&
-                        dd[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size == 0 &&
-                        dd[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_EXPORT].Size == 0 &&
-                        dd[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_DEBUG].Size == 0 &&
-                        dd[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0 &&
-                        dd[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0;
-                    if (all_zero)
-                    {
-                        wprintf(L"  %ls[+]%ls Remote directories confirmed zeroed post-clean.\n", kGreen, kReset);
-                    }
-                    else
-                    {
-                        wprintf(L"  %ls[!]%ls Remote directories retain entries post-clean.\n", kYellow, kReset);
-                    }
-                }
-                else
-                {
-                    wprintf(L"  %ls[+]%ls Cross-process re-read not applicable: the header is "
-                            L"intentionally cloaked by the mapper before control returns.\n", kGreen, kReset);
-                }
-            }
-            else if (nt_data)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(nt_data);
-                wprintf(L"  %ls[+]%ls Import = %ls%d%ls  Reloc = %ls%d%ls  TLS = %ls%d%ls  Exception = %ls%d%ls  Security = %ls%d%ls  Debug = %ls%d%ls  GlobalPtr = %ls%d%ls\n",
-                    kGreen, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size == 0 ? 0 : 1, kReset,
-                    kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_GLOBALPTR].Size == 0 ? 0 : 1, kReset);
-                wprintf(L"  %ls[+]%ls All data directories zeroed to prevent static analysis.\n", kGreen, kReset);
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls All data directories zeroed (by design; not measured).\n", kGreen, kReset);
-            }
+            StealthCleanDataDirectories(MapStats, have_remote_nt, nt_data, step, total);
         }
 
-        if (isActive(INJ_MM_SET_PAGE_PROTECTIONS))
+        if (step_enabled[kStealthSetPageProtections])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set page protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            MEMORY_BASIC_INFORMATION mbi = { 0 };
-            if (process && VirtualQueryEx(process, hRemoteBase, &mbi, sizeof(mbi)))
-            {
-                int rwx_count = 0;
-                int ro_count = 0;
-                int rw_count = 0;
-                int rx_count = 0;
-                int priv_exec_count = 0;
-
-                SIZE_T total_image_size = 0;
-                if (have_local_nt)
-                {
-                    auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                    total_image_size = nt->OptionalHeader.SizeOfImage;
-                }
-
-                BYTE * current = ReCa<BYTE *>(hRemoteBase);
-                while (true)
-                {
-                    if (!VirtualQueryEx(process, current, &mbi, sizeof(mbi)) || !mbi.RegionSize)
-                        break;
-                    if (total_image_size > 0 &&
-                        (ReCa<ULONG_PTR>(mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= total_image_size)
-                        break;
-                    if (mbi.Protect != PAGE_NOACCESS && mbi.Protect != 0)
-                    {
-                        if (mbi.Protect == PAGE_EXECUTE_READWRITE) ++rwx_count;
-                        else if (mbi.Protect == PAGE_READONLY)      ++ro_count;
-                        else if (mbi.Protect == PAGE_READWRITE)     ++rw_count;
-                        else if (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE) ++rx_count;
-                        if (mbi.Type == MEM_PRIVATE &&
-                            (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE ||
-                             mbi.Protect == PAGE_EXECUTE_READWRITE || mbi.Protect == PAGE_EXECUTE_WRITECOPY)) ++priv_exec_count;
-                    }
-
-                    BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
-                    if (next <= current)
-                        break;
-                    current = next;
-                }
-                wprintf(L"  %ls[+]%ls %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls\n",
-                    kGreen, kReset,
-                    desc(PAGE_EXECUTE_READWRITE), kGreen, rwx_count, kReset,
-                    desc(PAGE_READONLY), kGreen, ro_count, kReset,
-                    desc(PAGE_READWRITE), kGreen, rw_count, kReset,
-                    desc(PAGE_EXECUTE_READ), kGreen, rx_count, kReset);
-                wprintf(L"  %ls[+]%ls Private executable regions: %ls%d%ls\n",
-                    kGreen, kReset, kGreen, priv_exec_count, kReset);
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls Section permissions applied to all memory regions (by design; not measured).\n", kGreen, kReset);
-            }
+            StealthSetPageProtections(process, hRemoteBase, have_local_nt, buffers, step, total);
+        }
+        if (step_enabled[kStealthVerifyWx])
+        {
+            StealthVerifyWxExecution(process, hRemoteBase, have_local_nt, local_pe, local_pe_size, buffers, wx_violated, step, total);
         }
 
+        if (step_enabled[kStealthVerifyStringEncryption])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X execution (advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            auto local_sections = [&](WORD & count) -> const IMAGE_SECTION_HEADER *
-            {
-                count = 0;
-                if (!local_pe || local_pe_size < sizeof(IMAGE_DOS_HEADER))
-                {
-                    return nullptr;
-                }
-                auto dos = ReCa<const IMAGE_DOS_HEADER *>(local_pe);
-                if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0)
-                {
-                    return nullptr;
-                }
-                const size_t nt_off = static_cast<size_t>(dos->e_lfanew);
-                if (nt_off + sizeof(IMAGE_NT_HEADERS64) > local_pe_size)
-                {
-                    return nullptr;
-                }
-                auto nt = ReCa<const IMAGE_NT_HEADERS64 *>(local_pe + nt_off);
-                if (nt->Signature != IMAGE_NT_SIGNATURE)
-                {
-                    return nullptr;
-                }
-                const size_t sec_off = nt_off + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
-                    nt->FileHeader.SizeOfOptionalHeader;
-                const WORD n = nt->FileHeader.NumberOfSections;
-                if (!n || sec_off + static_cast<size_t>(n) * sizeof(IMAGE_SECTION_HEADER) > local_pe_size)
-                {
-                    return nullptr;
-                }
-                count = n;
-                return ReCa<const IMAGE_SECTION_HEADER *>(local_pe + sec_off);
-            };
-
-            SIZE_T wx_image = 0;
-            DWORD wx_exec_sections = 0;
-            if (have_local_nt)
-            {
-                auto wx_nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                wx_image = wx_nt->OptionalHeader.SizeOfImage;
-            }
-            {
-                WORD wx_sec_count = 0;
-                const IMAGE_SECTION_HEADER * wx_secs = local_sections(wx_sec_count);
-                for (WORD s = 0; s < wx_sec_count; ++s)
-                {
-                    if (wx_secs[s].Characteristics & IMAGE_SCN_MEM_EXECUTE)
-                    {
-                        ++wx_exec_sections;
-                    }
-                }
-            }
-
-            int wx_rwx = 0;
-            int wx_rx = 0;
-            int wx_rw = 0;
-            int wx_regions = 0;
-            SIZE_T wx_bytes = 0;
-
-            std::vector<ULONG_PTR> & wx_alloc_bases = buffers.allocation_bases;
-            wx_alloc_bases.clear();
-            bool wx_reached_end = false;
-
-            struct WxRegion { ULONG_PTR base; SIZE_T size; };
-            WxRegion wx_rwx_list[8]{};
-            int wx_rwx_listed = 0;
-
-            MEMORY_BASIC_INFORMATION wx_mbi = { 0 };
-            const bool wx_queryable = process != nullptr
-                && VirtualQueryEx(process, hRemoteBase, &wx_mbi, sizeof(wx_mbi)) != 0;
-
-            if (wx_queryable && wx_image > 0)
-            {
-                BYTE * wx_cur = ReCa<BYTE *>(hRemoteBase);
-                for (;;)
-                {
-                    if (!VirtualQueryEx(process, wx_cur, &wx_mbi, sizeof(wx_mbi)))
-                        break;
-                    if ((ReCa<ULONG_PTR>(wx_mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= wx_image)
-                    {
-                        wx_reached_end = true;
-                        break;
-                    }
-                    ++wx_regions;
-
-                    if (wx_mbi.AllocationBase &&
-                        std::find(wx_alloc_bases.begin(), wx_alloc_bases.end(),
-                            ReCa<ULONG_PTR>(wx_mbi.AllocationBase)) == wx_alloc_bases.end())
-                    {
-                        wx_alloc_bases.push_back(ReCa<ULONG_PTR>(wx_mbi.AllocationBase));
-                    }
-                    if (wx_mbi.State == MEM_COMMIT && wx_mbi.Protect != 0 && wx_mbi.Protect != PAGE_NOACCESS)
-                    {
-                        wx_bytes += wx_mbi.RegionSize;
-                        if (wx_mbi.Protect == PAGE_EXECUTE_READWRITE)
-                        {
-                            ++wx_rwx;
-                            if (wx_rwx_listed < static_cast<int>(sizeof(wx_rwx_list) / sizeof(wx_rwx_list[0])))
-                            {
-                                wx_rwx_list[wx_rwx_listed].base = ReCa<ULONG_PTR>(wx_mbi.BaseAddress);
-                                wx_rwx_list[wx_rwx_listed].size = wx_mbi.RegionSize;
-                                ++wx_rwx_listed;
-                            }
-                        }
-                        else if (wx_mbi.Protect == PAGE_EXECUTE_READ || wx_mbi.Protect == PAGE_EXECUTE)
-                        {
-                            ++wx_rx;
-                        }
-                        else if (wx_mbi.Protect == PAGE_READWRITE)
-                        {
-                            ++wx_rw;
-                        }
-                    }
-                    BYTE * wx_next = ReCa<BYTE *>(wx_mbi.BaseAddress) + wx_mbi.RegionSize;
-                    if (wx_next <= wx_cur)
-                        break;
-                    wx_cur = wx_next;
-                }
-
-                int wx_exec_uncovered = 0;
-                if (process && wx_image > 0)
-                {
-                    WORD wx_sec_count = 0;
-                    const IMAGE_SECTION_HEADER * wx_secs = local_sections(wx_sec_count);
-                    for (WORD s = 0; s < wx_sec_count; ++s)
-                    {
-                        if (!(wx_secs[s].Characteristics & IMAGE_SCN_MEM_EXECUTE))
-                        {
-                            continue;
-                        }
-
-                        void * sec_addr = ReCa<void *>(ReCa<ULONG_PTR>(hRemoteBase) + wx_secs[s].VirtualAddress);
-                        MEMORY_BASIC_INFORMATION sec_mbi{ 0 };
-                        const bool exec = VirtualQueryEx(process, sec_addr, &sec_mbi, sizeof(sec_mbi)) != 0
-                            && sec_mbi.State == MEM_COMMIT
-                            && (sec_mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
-                        if (!exec)
-                        {
-                            ++wx_exec_uncovered;
-                        }
-                    }
-                }
-
-                const bool wx_ok = (wx_rwx == 0) && wx_reached_end && (wx_exec_uncovered == 0);
-                if (wx_violated)
-                {
-
-                    *wx_violated = !wx_ok;
-                }
-                const wchar_t * RxTint = (wx_exec_sections == 0) ? kYellow
-                    : (wx_exec_uncovered ? kRed : kGreen);
-
-                wchar_t RxField[192]{ 0 };
-                if (wx_exec_sections > 0)
-                {
-                    if (wx_exec_uncovered == 0)
-                    {
-
-                        swprintf_s(RxField, L"RX %ls%lu%ls region(s); all %ls%lu%ls executable section(s) are RX",
-                            RxTint, static_cast<unsigned long>(wx_rx), kReset,
-                            RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
-                    }
-                    else
-                    {
-                        swprintf_s(RxField, L"RX missing for %ls%lu%ls of %ls%lu%ls executable section(s)",
-                            RxTint, static_cast<unsigned long>(wx_exec_uncovered), kReset,
-                            RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
-                    }
-                }
-                else
-                {
-                    swprintf_s(RxField, L"RX %ls%lu%ls region(s), none declared by the section table",
-                        RxTint, static_cast<unsigned long>(wx_rx), kReset);
-                }
-
-                wprintf(L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (required %ls0%ls) | %s | RW %ls%d%s\n",
-                    wx_ok ? kGreen : kYellow, wx_ok ? L"[+]" : L"[!]", kReset,
-                    wx_ok ? L"verified" : L"VIOLATED",
-                    wx_ok ? kGreen : kYellow, wx_rwx, kReset,
-                    kGreen, kReset,
-                    RxField,
-                    kGreen, wx_rw, kReset);
-
-                wprintf(L"      %lscoverage%s: %ls%d%s region(s), %ls%lu%s KB of %ls%lu%s KB image, %s%s%s\n",
-                    kDim, kReset, kGreen, wx_regions, kReset,
-                    kGreen, static_cast<unsigned long>(wx_bytes / 1024), kReset,
-                    kGreen, static_cast<unsigned long>(wx_image / 1024), kReset,
-                    wx_reached_end ? kReset : kYellow,
-                    wx_reached_end ? L"reached end of image" : L"TRUNCATED - image not fully scanned",
-                    kReset);
-
-                {
-                    const bool single = wx_alloc_bases.size() == 1;
-                    wprintf(L"      %lsallocations%s: %ls%zu%s %s(%s %s%s)%s | %lsprivate%s: %ls%zu%s KB\n",
-                        kDim, kReset,
-                        kGreen, wx_alloc_bases.size(), kReset,
-                        single ? kGreen : kYellow,
-                        single ? L"single" : L"split across",
-                        single ? L"allocation" : L"allocations",
-                        single ? kGreen : kYellow,
-                        kReset,
-                        kDim, kReset,
-                        kGreen, static_cast<size_t>(wx_bytes / 1024), kReset);
-                }
-
-                for (int i = 0; i < wx_rwx_listed; ++i)
-                {
-                    wprintf(L"      %lsRWX region at 0x%016llX, %llu bytes%s\n", kYellow,
-                        static_cast<unsigned long long>(wx_rwx_list[i].base),
-                        static_cast<unsigned long long>(wx_rwx_list[i].size), kReset);
-                }
-                if (wx_rwx > wx_rwx_listed)
-                {
-                    wprintf(L"      %ls... and %d more RWX region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
-                }
-            }
-            else if (!wx_queryable)
-            {
-
-                if (wx_violated)
-                {
-                    *wx_violated = true;
-                }
-                wprintf(L"  %ls[!]%ls Image not queryable; W^X state unknown.\n", kYellow, kReset);
-            }
-            else
-            {
-
-                if (wx_violated)
-                {
-                    *wx_violated = true;
-                }
-                wprintf(L"  %ls[!]%ls Image size unknown; W^X scan not bounded, result withheld.\n", kYellow, kReset);
-            }
+            StealthVerifyStringEncryption(buffers, get_string_stats, string_gate_ok, step, total);
         }
 
+        if (step_enabled[kStealthVerifyForensicPosture])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify string encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            auto m0 = XOR_STR_A("msdl.microsoft.com/download/symbols");
-            auto m1 = XOR_STR_A("NtUserMsgWaitForMultipleObjectsEx");
-            auto m2 = XOR_STR_A("LdrpLoadDllInternal");
-            auto m3 = XOR_STR_A("ntdll.dll");
-            auto m4 = XOR_STR_A("_RTL_INVERTED_FUNCTION_TABLE");
-            auto m5 = XOR_STR_A("_INVERTED_FUNCTION_TABLE_USER_MODE");
-            auto m6 = XOR_STR_A("_RTL_INVERTED_FUNCTION_TABLE_ENTRY");
-            auto m7 = XOR_STR_A("_INVERTED_FUNCTION_TABLE_ENTRY");
-            auto m8 = XOR_STR_A("_LDR_DATA_TABLE_ENTRY");
-            auto m9 = XOR_STR_A("_LDR_DDAG_NODE");
-            auto m10 = XOR_STR_A("_LDRP_PATH_SEARCH_CONTEXT");
-            auto m11 = XOR_STR_A("_LDRP_TLS_ENTRY");
-            auto m12 = XOR_STR_A("_KTHREAD_STATE");
-            auto m13 = XOR_STR_A("_KWAIT_REASON");
-            auto m14 = XOR_STR_A("_KUSER_SHARED_DATA");
-            auto m15 = XOR_STR_A("SameTebFlags");
-            auto m16 = XOR_STR_A("ProcessEnvironmentBlock");
-            auto m17 = XOR_STR_A("LastErrorValue");
-            auto m18 = XOR_STR_A("OSBuildNumber");
-            auto m19 = XOR_STR_A("FullDllName");
-            auto m20 = XOR_STR_A("DdagNode");
-            auto m21 = XOR_STR_A("OriginalFullDllName");
-            auto m22 = XOR_STR_A("ExceptionDirectory");
-            auto m23 = XOR_STR_A("ExceptionDirectorySize");
-            auto m24 = XOR_STR_A("SizeOfTable");
-            auto m25 = XOR_STR_A("FunctionTable");
-            auto m26 = XOR_STR_A("ModuleEntry");
-            auto m27 = XOR_STR_A("TableEntry");
-            auto m28 = XOR_STR_A("CurrentSize");
-
-            auto m30 = XOR_STR_A("HandleAcq");
-            auto m31 = XOR_STR_A("SYMBOL_LOADER");
-            auto m32 = XOR_STR_A("SYMBOL_PARSER");
-            auto m33 = XOR_STR_A("DownloadManager");
-            auto m34 = XOR_STR_A("TLS_ENTRY");
-            auto m35 = XOR_STR_A("PATH_SEARCH_CONTEXT");
-            const char * markers[] =
-            {
-                m0.get(), m1.get(), m2.get(), m3.get(), m4.get(), m5.get(),
-                m6.get(), m7.get(), m8.get(), m9.get(), m10.get(), m11.get(),
-                m12.get(), m13.get(), m14.get(), m15.get(), m16.get(), m17.get(),
-                m18.get(), m19.get(), m20.get(), m21.get(), m22.get(), m23.get(),
-                m24.get(), m25.get(), m26.get(), m27.get(), m28.get(),
-                m30.get(), m31.get(), m32.get(), m33.get(), m34.get(), m35.get(),
-            };
-            const size_t marker_count = sizeof(markers) / sizeof(markers[0]);
-
-            const std::vector<BYTE> & rt_bytes = buffers.runtime_bytes;
-            const bool rt_read = buffers.runtime_read;
-            int marker_found = 0;
-            if (rt_read)
-            {
-                for (size_t m = 0; m < marker_count; ++m)
-                {
-                    const bool hit_narrow = BufferContainsMarker(rt_bytes, markers[m], false);
-                    const bool hit_wide = BufferContainsMarker(rt_bytes, markers[m], true);
-                    if (hit_narrow || hit_wide)
-                    {
-                        ++marker_found;
-
-                        wchar_t wide_marker[MAX_PATH + 1]{ 0 };
-                        size_t marker_len = 0;
-                        for (const char * c = markers[m]; *c && marker_len < MAX_PATH; ++c, ++marker_len)
-                        {
-                            wide_marker[marker_len] = static_cast<wchar_t>(*c);
-                        }
-                        wprintf(L"  %ls[x]%ls marker '%ls' FOUND in runtime DLL (narrow %d, wide %d).\n",
-                            kRed, kReset, wide_marker, hit_narrow ? 1 : 0, hit_wide ? 1 : 0);
-                    }
-                }
-            }
-            if (!buffers.runtime_path_known)
-            {
-                wprintf(L"  %ls[x]%ls Runtime path unknown; disk-marker check could not run.\n", kRed, kReset);
-                string_gate_ok = false;
-            }
-            else if (!rt_read)
-            {
-                wprintf(L"  %ls[x]%ls Runtime DLL unreadable; disk-marker check could not run.\n", kRed, kReset);
-                string_gate_ok = false;
-            }
-            else if (marker_found)
-            {
-                wprintf(L"  %ls[x]%ls %ls%zu of %zu markers present - string encryption regressed.%ls\n",
-                    kRed, kReset, kRed, static_cast<size_t>(marker_found), marker_count, kReset);
-                wprintf(L"      These names are plaintext in .rdata and are directly scannable in the target.\n");
-                wprintf(L"      A decrypt path that /O2 can constant-fold will always leak here; see\n");
-                wprintf(L"      the encrypted-string helper header used by the runtime build.\n");
-                string_gate_ok = false;
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls %ls%zu%ls markers absent from runtime DLL (ciphertext only)\n",
-                    kGreen, kReset, kGreen, marker_count, kReset);
-            }
-
-            STRING_STATS StringStats{};
-            if (get_string_stats)
-            {
-                get_string_stats(&StringStats);
-            }
-
-            if (!get_string_stats || !StringStats.Reported)
-            {
-                wprintf(L"  %ls[!]%ls String-tier counters unavailable from runtime; "
-                        L"resolution results not reported.\n", kYellow, kReset);
-            }
-            else
-            {
-                const bool all_symbols = StringStats.SymbolsResolved == StringStats.SymbolsDeclared;
-                wprintf(L"  %ls[+]%ls NT symbols resolved via encrypted names: %ls%lu%ls of %ls%lu%ls (import %ls%s%ls)\n",
-                    kGreen, kReset,
-                    all_symbols ? kGreen : kYellow,
-                    static_cast<unsigned long>(StringStats.SymbolsResolved), kReset,
-                    all_symbols ? kGreen : kYellow,
-                    static_cast<unsigned long>(StringStats.SymbolsDeclared), kReset,
-                    all_symbols ? kGreen : kYellow,
-                    all_symbols ? L"SUCCESS" : L"PARTIAL",
-                    kReset);
-
-                wprintf(L"  %ls[+]%ls Encrypted names built from ciphertext, no static table: %ls%lu%ls\n",
-                    kGreen, kReset, kGreen,
-                    static_cast<unsigned long>(StringStats.HookNamesBuilt), kReset);
-
-                const bool tiers_ok = StringStats.TiersTotal != 0
-                    && StringStats.TiersPassed == StringStats.TiersTotal;
-                wprintf(L"  %ls[+]%ls self-test tiers passed at import-resolve: %ls%lu%ls of %ls%lu%ls\n",
-                    kGreen, kReset,
-                    tiers_ok ? kGreen : kRed,
-                    static_cast<unsigned long>(StringStats.TiersPassed), kReset,
-                    tiers_ok ? kGreen : kRed,
-                    static_cast<unsigned long>(StringStats.TiersTotal), kReset);
-            }
+            StealthVerifyForensicPosture(process, hRemoteBase, local_pe, local_pe_size, config, buffers, posture_ok, step, total);
         }
 
+        if (step_enabled[kStealthEraseHeader])
         {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify forensic posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            const std::vector<BYTE> & posture_bytes = buffers.runtime_bytes;
-            const bool posture_read = buffers.runtime_read;
-            size_t export_neutral = 0;
-            size_t export_foreign = 0;
-            size_t standard_sections = 0;
-            DWORD debug_size = 0;
-            bool posture_parsed = false;
-            if (posture_read && posture_bytes.size() >= sizeof(IMAGE_DOS_HEADER))
-            {
-                const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(posture_bytes.data());
-                if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 &&
-                    static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) <= posture_bytes.size())
-                {
-                    const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(posture_bytes.data() + dos->e_lfanew);
-                    if (nt->Signature == IMAGE_NT_SIGNATURE &&
-                        nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
-                        nt->FileHeader.NumberOfSections <= 96)
-                    {
-                        const auto * sections = ReCa<const IMAGE_SECTION_HEADER *>(
-                            ReCa<const BYTE *>(&nt->OptionalHeader) + nt->FileHeader.SizeOfOptionalHeader);
-                        const size_t table_end = static_cast<size_t>(dos->e_lfanew) + sizeof(DWORD) +
-                            sizeof(IMAGE_FILE_HEADER) + nt->FileHeader.SizeOfOptionalHeader +
-                            static_cast<size_t>(nt->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
-                        if (table_end <= posture_bytes.size())
-                        {
-                            static const char kStandard[][8] =
-                            {
-                                ".text", ".rdata", ".data", ".pdata",
-                                ".rsrc", ".reloc", ".edata", ".idata",
-                            };
-                            for (WORD s = 0; s < nt->FileHeader.NumberOfSections; ++s)
-                            {
-                                char name[9] = { 0 };
-                                memcpy(name, sections[s].Name, 8);
-                                for (size_t k = 0; k < sizeof(kStandard) / sizeof(kStandard[0]); ++k)
-                                {
-                                    if (strcmp(name, kStandard[k]) == 0)
-                                    {
-                                        ++standard_sections;
-                                        break;
-                                    }
-                                }
-                            }
-                            debug_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
-                            const DWORD export_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-                            const DWORD export_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
-                            posture_parsed = true;
-                            if (export_rva && export_size)
-                            {
-                                auto rva_to_offset = [&](DWORD rva) -> size_t
-                                {
-                                    for (WORD s = 0; s < nt->FileHeader.NumberOfSections; ++s)
-                                    {
-                                        const DWORD va = sections[s].VirtualAddress;
-                                        const DWORD raw = sections[s].SizeOfRawData;
-                                        if (raw && rva >= va && rva - va < raw)
-                                        {
-                                            const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
-                                            if (off < posture_bytes.size())
-                                            {
-                                                return off;
-                                            }
-                                        }
-                                    }
-                                    return static_cast<size_t>(-1);
-                                };
-                                const size_t exp_off = rva_to_offset(export_rva);
-                                if (exp_off == static_cast<size_t>(-1) || exp_off + 40 > posture_bytes.size())
-                                {
-                                    posture_parsed = false;
-                                }
-                                else
-                                {
-                                    const DWORD num_names = *ReCa<const DWORD *>(posture_bytes.data() + exp_off + 24);
-                                    const DWORD addr_names = *ReCa<const DWORD *>(posture_bytes.data() + exp_off + 32);
-                                    if (num_names > 256)
-                                    {
-                                        posture_parsed = false;
-                                    }
-                                    else
-                                    {
-                                        for (DWORD i = 0; i < num_names; ++i)
-                                        {
-                                            const size_t slot = rva_to_offset(addr_names);
-                                            if (slot == static_cast<size_t>(-1) ||
-                                                slot + static_cast<size_t>(i) * 4 + 4 > posture_bytes.size())
-                                            {
-                                                posture_parsed = false;
-                                                break;
-                                            }
-                                            const DWORD name_rva = *ReCa<const DWORD *>(
-                                                posture_bytes.data() + slot + static_cast<size_t>(i) * 4);
-                                            const size_t name_off = rva_to_offset(name_rva);
-                                            if (name_off == static_cast<size_t>(-1))
-                                            {
-                                                posture_parsed = false;
-                                                break;
-                                            }
-                                            size_t len = 0;
-                                            while (name_off + len < posture_bytes.size() &&
-                                                posture_bytes[name_off + len] && len < 128)
-                                            {
-                                                ++len;
-                                            }
-                                            if (name_off + len >= posture_bytes.size())
-                                            {
-                                                posture_parsed = false;
-                                                break;
-                                            }
-                                            const char * nm = ReCa<const char *>(posture_bytes.data() + name_off);
-
-                                            if (IsOriginalExportName(config.export_map, nm))
-                                            {
-                                                ++export_foreign;
-                                            }
-                                            else
-                                            {
-                                                ++export_neutral;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (!posture_read)
-            {
-                wprintf(L"  %ls[x]%ls Runtime DLL unreadable; posture unverified.\n", kRed, kReset);
-                posture_ok = false;
-            }
-            else if (!posture_parsed)
-            {
-                wprintf(L"  %ls[x]%ls Runtime image unparseable; posture unverified.\n", kRed, kReset);
-                posture_ok = false;
-            }
-            else
-            {
-
-                if (VerboseOutputEnabled())
-                {
-                    wprintf(L"  %ls[+]%ls Export names: %ls%zu%ls neutral, %ls%zu%ls foreign\n",
-                        kGreen, kReset, kGreen, export_neutral, kReset, kGreen, export_foreign, kReset);
-                    wprintf(L"  %ls[+]%ls Standard section names remaining: %ls%zu%ls\n",
-                        kGreen, kReset, kGreen, standard_sections, kReset);
-                    wprintf(L"  %ls[+]%ls Debug directory size: %ls0x%lX%ls\n",
-                        kGreen, kReset, kGreen, static_cast<unsigned long>(debug_size), kReset);
-                }
-                if (export_foreign || standard_sections || debug_size)
-                {
-                    wprintf(L"  %ls[x]%ls Forensic posture regressed; rebuild with mutation enabled.\n", kRed, kReset);
-                    posture_ok = false;
-                }
-                else if (!VerboseOutputEnabled())
-                {
-                    wprintf(XOR_STR_W(L"  %ls[+]%ls Forensic posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
-                }
-            }
-
-            if (local_pe && local_pe_size)
-            {
-                PE_IMAGE::VIEW payload_view{};
-                const DWORD payload_check = PE_IMAGE::Validate(local_pe, local_pe_size,
-                    IMAGE_FILE_MACHINE_AMD64, {}, payload_view);
-
-                size_t payload_exports = 0;
-                size_t payload_standard_sections = 0;
-                size_t payload_rwx_sections = 0;
-                DWORD payload_debug = 0;
-                const bool payload_ok = payload_check == FILE_ERR_SUCCESS && payload_view.NtHeaders != nullptr;
-                if (payload_ok)
-                {
-                    static const char kStd[][8] =
-                    {
-                        ".text", ".rdata", ".data", ".pdata",
-                        ".rsrc", ".reloc", ".edata", ".idata",
-                    };
-                    const IMAGE_SECTION_HEADER * sections = payload_view.Sections;
-                    const WORD count = payload_view.NtHeaders->FileHeader.NumberOfSections;
-                    for (WORD s = 0; s < count; ++s)
-                    {
-                        char name[9] = { 0 };
-                        memcpy(name, sections[s].Name, 8);
-                        for (size_t k = 0; k < sizeof(kStd) / sizeof(kStd[0]); ++k)
-                        {
-                            if (strcmp(name, kStd[k]) == 0)
-                            {
-                                ++payload_standard_sections;
-                                break;
-                            }
-                        }
-                        if ((sections[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) &&
-                            (sections[s].Characteristics & IMAGE_SCN_MEM_WRITE))
-                        {
-                            ++payload_rwx_sections;
-                        }
-                    }
-                    payload_debug = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
-
-                    auto rva_to_offset = [&](DWORD rva) -> size_t
-                    {
-                        for (WORD s = 0; s < count; ++s)
-                        {
-                            const DWORD va = sections[s].VirtualAddress;
-                            const DWORD raw = sections[s].SizeOfRawData;
-                            if (raw && rva >= va && rva - va < raw)
-                            {
-                                const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
-                                if (off < local_pe_size)
-                                {
-                                    return off;
-                                }
-                            }
-                        }
-                        return static_cast<size_t>(-1);
-                    };
-                    const DWORD exp_rva = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-                    if (exp_rva)
-                    {
-                        const size_t exp_off = rva_to_offset(exp_rva);
-                        if (exp_off != static_cast<size_t>(-1) && exp_off + 40 <= local_pe_size)
-                        {
-                            payload_exports = *ReCa<const DWORD *>(local_pe + exp_off + 24);
-                        }
-                    }
-                }
-
-        if (VerboseOutputEnabled())
-        {
-            wprintf(L"  %ls[+]%ls Payload export names: %ls%zu%ls | standard sections: %ls%zu%ls | RWX sections: %ls%zu%ls | debug: %ls0x%lX%ls\n",
-                kGreen, kReset,
-                kGreen, payload_exports, kReset,
-                kGreen, payload_standard_sections, kReset,
-                kGreen, payload_rwx_sections, kReset,
-                kGreen, static_cast<unsigned long>(payload_debug), kReset);
+            StealthEraseHeader(process, hRemoteBase, have_local_nt, buffers, step, total);
         }
-        else if (payload_ok)
+        if (step_enabled[kStealthSurveyTraps])
         {
-            wprintf(XOR_STR_W(L"  %ls[+]%ls Payload on-disk posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
-        }
-
-                if (!payload_ok)
-                {
-                    wprintf(L"  %ls[!]%ls Payload image could not be re-parsed for a posture report.\n", kYellow, kReset);
-                }
-                else if (payload_rwx_sections)
-                {
-                    wprintf(L"  %ls[!]%ls Payload declares RWX section(s); mapped regions may inherit that.\n", kYellow, kReset);
-                }
-            }
-
-            {
-                bool listed = false;
-                bool enum_ok = false;
-                HANDLE msnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(process));
-                if (msnap && msnap != INVALID_HANDLE_VALUE)
-                {
-                    MODULEENTRY32W mod{};
-                    mod.dwSize = sizeof(mod);
-                    if (Module32FirstW(msnap, &mod))
-                    {
-                        enum_ok = true;
-                        do
-                        {
-                            if (ReCa<ULONG_PTR>(mod.modBaseAddr) == ReCa<ULONG_PTR>(hRemoteBase))
-                            {
-                                listed = true;
-                                break;
-                            }
-                        } while (Module32NextW(msnap, &mod));
-                    }
-                    CloseHandle(msnap);
-                }
-                if (enum_ok && !listed)
-                {
-                    wprintf(L"  %ls[+]%ls Loader lists clean: image not enumerated as a module.\n", kGreen, kReset);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls Loader-list check inconclusive (enum %ls, listed %ls).\n", kYellow, kReset,
-                        enum_ok ? L"ok" : L"failed", listed ? L"yes" : L"no");
-                }
-            }
-
-            {
-                PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
-                bool cfg_read = process &&
-                    GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
-                if (cfg_read)
-                {
-                    wprintf(L"  %ls[+]%ls Target CFG policy: enable %ls%lu%s strict %ls%lu%s.\n", kGreen, kReset,
-                        kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
-                        kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls Target CFG policy unreadable.\n", kYellow, kReset);
-                }
-            }
-        }
-
-        if (isActive(INJ_ERASE_HEADER))
-        {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-
-            SIZE_T header_size = 0;
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                header_size = nt->OptionalHeader.SizeOfHeaders;
-            }
-
-            constexpr size_t kProbeBytes = 16;
-            BYTE header_bytes[kProbeBytes] = { 0 };
-            SIZE_T bytesRead = 0;
-            const bool read_ok = process &&
-                ReadProcessMemory(process, hRemoteBase, header_bytes, kProbeBytes, &bytesRead) && bytesRead == kProbeBytes;
-
-            if (read_ok)
-            {
-                const ULONGLONG base = static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase));
-                wprintf(L"  %ls[+]%ls Image base      : %ls0x%016llX%ls\n",
-                    kGreen, kReset, kGreen, base, kReset);
-
-                wchar_t hex[kProbeBytes * 3 + 1] = { 0 };
-                const wchar_t digits[] = L"0123456789ABCDEF";
-                for (size_t i = 0; i < kProbeBytes; ++i)
-                {
-                    hex[i * 3 + 0] = digits[header_bytes[i] >> 4];
-                    hex[i * 3 + 1] = digits[header_bytes[i] & 0x0F];
-                    hex[i * 3 + 2] = L' ';
-                }
-                hex[kProbeBytes * 3] = L'\0';
-
-                const bool erased = !(header_bytes[0] == 0x4D && header_bytes[1] == 0x5A);
-                if (erased)
-                {
-                    wprintf(L"  %ls[+]%ls First %u bytes  : %ls%ls%ls\n",
-                        kGreen, kReset, static_cast<unsigned>(kProbeBytes), kGreen, hex, kReset);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls First %u bytes  : %ls%ls%ls\n",
-                        kYellow, kReset, static_cast<unsigned>(kProbeBytes), kYellow, hex, kReset);
-                }
-
-                if (header_size)
-                {
-
-                    wprintf(L"  %ls[+]%ls Header region   : %ls0x%016llX%s - %ls0x%016llX%s (%ls0x%llX%s bytes)\n\n",
-                        kGreen, kReset, kGreen, base, kReset, kGreen, base + header_size, kReset,
-                        kGreen, static_cast<unsigned long long>(header_size), kReset);
-                }
-
-                if (erased)
-                {
-                    wprintf(L"  %ls[+]%ls MZ header zeroed - signature scan evasion active.\n", kGreen, kReset);
-                }
-                else
-                {
-                    wprintf(L"  %ls[!]%ls MZ header still visible at image base.\n", kYellow, kReset);
-                }
-            }
-            else
-            {
-                wprintf(L"  %ls[!]%ls Image base not readable; header state unknown.\n", kYellow, kReset);
-            }
-        }
-        if (survey_game_traps)
-        {
-            ++step;
-            wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Survey target traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-            ReportGameTraps(process, survey_pid, buffers);
-            wprintf(L"\n");
+            StealthSurveyTraps(process, survey_pid, buffers, step, total);
         }
 
         return string_gate_ok && posture_ok;
@@ -5435,8 +5496,6 @@ LUID luid{};
         data.RawData = raw_data.data();
         data.RawSize = static_cast<DWORD>(raw_data.size());
         data.ProcessID = target.pid;
-        data.Mode = INJECTION_MODE::IM_ManualMap;
-        data.Method = LAUNCH_METHOD::LM_HijackThread;
         data.Flags = flags;
         data.Timeout = static_cast<DWORD>(timeout_value);
         data.GenerateErrorLog = true;
@@ -5485,9 +5544,8 @@ LUID luid{};
                 LAST_ERROR_INFO detail{};
                 if (runtime.get_last_error_info(&detail) == INJ_ERR_SUCCESS)
                 {
-                    wprintf(L"  Runtime detail: adv=%08X line=%d mode=%d method=%d native=%d\n",
-                        detail.AdvErrorCode, detail.Line, detail.InjectionMode,
-                        detail.LaunchMethod, detail.bNative);
+                    wprintf(L"  Runtime detail: adv=%08X line=%d native=%d\n",
+                        detail.AdvErrorCode, detail.Line, detail.bNative);
                     if (detail.DllFileName[0])
                     {
                         wprintf(L"  Payload: %ls\n", detail.DllFileName);

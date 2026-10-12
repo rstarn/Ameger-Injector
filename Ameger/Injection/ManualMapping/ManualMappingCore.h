@@ -8,5 +8,5 @@
 namespace MMAP_NATIVE
 {
 
-	DWORD ManualMap(const INJECTION_SOURCE & DllPath, HANDLE hTargetProc, LAUNCH_METHOD Method, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
+	DWORD ManualMap(const INJECTION_SOURCE & DllPath, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
 }

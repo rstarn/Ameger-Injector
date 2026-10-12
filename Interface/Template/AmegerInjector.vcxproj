@@ -90,7 +90,8 @@
     <ClInclude Include="..\..\Ameger\System\Symbol\Offsets\DynamicOffsets.h" />
     <ClInclude Include="..\..\Ameger\System\Import\ImportHandler.h" />
     <ClInclude Include="..\..\Ameger\NT\NTDefinitions.h" />
-    <ClInclude Include="..\..\Ameger\System\Download\DownloadManager.h" />
+    <ClInclude Include="..\..\Ameger\Native\Syscall.h" />
+    <ClInclude Include="..\..\Ameger\System\Download\Manager.h" />
     <ClInclude Include="..\..\Ameger\System\Handle\HandleHijack.h" />
     <ClInclude Include="..\..\Ameger\Core\Utility\Header\PrecompiledHeader.h" />
     <ClInclude Include="..\..\Ameger\Injection\ManualMapping\ManualMappingCore.h" />
@@ -113,11 +114,12 @@
     <ClCompile Include="..\..\Ameger\System\Symbol\Loader\SymbolLoader.cpp" />
     <ClCompile Include="..\..\Ameger\System\Symbol\Parser\SymbolParser.cpp" />
     <ClCompile Include="..\..\Ameger\System\Symbol\Offsets\DynamicOffsets.cpp" />
-    <ClCompile Include="..\..\Ameger\System\Download\DownloadManager.cpp" />
+    <ClCompile Include="..\..\Ameger\System\Download\Manager.cpp" />
     <ClCompile Include="..\..\Ameger\System\Handle\HandleHijack.cpp" />
     <ClCompile Include="..\..\Ameger\Injection\ManualMapping\ManualMapping.cpp" />
     <ClCompile Include="..\..\Ameger\Execution\ThreadHijacking.cpp" />
     <ClCompile Include="..\..\Ameger\System\Information\ProcessInformation.cpp" />
+    <ClCompile Include="..\..\Ameger\Native\Syscall.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

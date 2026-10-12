@@ -3,7 +3,7 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Error.h"
-#include "System/Download/DownloadManager.h"
+#include "System/Download/Manager.h"
 #include "Core/Utility/Tools/Tools.h"
 
 class SYMBOL_LOADER
@@ -15,7 +15,7 @@ class SYMBOL_LOADER
 	HANDLE				m_hInterruptEvent = NULL;
 	std::atomic<bool>	m_bInterruptEvent{false};
 
-	DownloadManager m_DlMgr;
+	Manager m_DlMgr;
 	std::atomic<bool>	m_bStartDownload{false};
 
 	bool m_bReady = false;
@@ -81,6 +81,13 @@ struct GUID_StreamData
 	int date;
 	int age;
 	GUID guid;
+};
+
+struct DBIStreamHeader
+{
+	int		version_signature;
+	int		version_header;
+	DWORD	age;
 };
 
 inline SYMBOL_LOADER				sym_ntdll_native;

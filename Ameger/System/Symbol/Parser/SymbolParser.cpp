@@ -430,17 +430,11 @@ DWORD SYMBOL_PARSER::GetEnumValueAny(const char * const * TypeNames, size_t Type
 					else if (value.vt == VT_UINT) v = value.uintVal;
 					else
 					{
-						 ;
 						continue;
 					}
-					 ;
 					ValueOut = v;
 					LOG(2, "SYMBOL_PARSER: %s::%s = %lu\n", TypeNames[t], szConstantName, v);
 					found = true;
-				}
-				else
-				{
-					 ;
 				}
 			}
 		}

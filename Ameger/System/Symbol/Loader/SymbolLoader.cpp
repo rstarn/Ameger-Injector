@@ -41,7 +41,7 @@ namespace
 	}
 
 	HRESULT DownloadUrlToFile(const std::wstring & url, const std::wstring & dest,
-		const std::atomic<bool> & interrupt, DownloadManager & mgr)
+		const std::atomic<bool> & interrupt, Manager & mgr)
 	{
 
 		auto agent = XOR_STR_W(L"Windows-Update-Agent");
@@ -407,12 +407,39 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	auto * stream_data = ReCa<GUID_StreamData *>(pdb_raw + stream_data_offset);
 
 	int guid_eq = memcmp(&stream_data->guid, &guid, sizeof(GUID));
-	const int stream_age = stream_data->age;
-	const bool age_eq = stream_age >= 0 && static_cast<DWORD>(stream_age) == age;
+
+	// The module records its build age in the CodeView (RSDS) debug record and the PDB mirrors it
+	// in the DBI stream (stream 3) header. The PDB *info* stream (stream 1) also carries an "age",
+	// but that is a write counter which the toolchain and Microsoft's symbol server advance
+	// independently of the module signature: the symbol-server ntdll PDB for RSDS age 1 reports an
+	// info-stream age of 4, and an incrementally linked local build (RSDS age 3) reports 5, while
+	// their DBI ages stay 1 and 3. Comparing against the info-stream age therefore rejects every
+	// valid symbol-server PDB, so the DBI age is the field that actually has to match.
+	bool dbi_age_available = false;
+	DWORD dbi_age = 0;
+	const auto dbi_stream = streams.find(3);
+	if (dbi_stream != streams.end() && !dbi_stream->second.empty())
+	{
+		const int dbi_page_index = dbi_stream->second.front();
+		if (dbi_page_index >= 0 && dbi_page_index < pPDBHeader->file_page_count)
+		{
+			const size_t dbi_offset = static_cast<size_t>(dbi_page_index) * page_size;
+			if (dbi_offset <= size_on_disk - sizeof(DBIStreamHeader))
+			{
+				dbi_age = ReCa<DBIStreamHeader *>(pdb_raw + dbi_offset)->age;
+				dbi_age_available = true;
+			}
+		}
+	}
+
+	const bool age_eq = !dbi_age_available || dbi_age == age;
 
 	delete[] pdb_raw;
 
-	auto ret = (guid_eq == 0);
+	// A GUID mismatch is always fatal: the PDB is not the one the module was built with. The age
+	// is only enforced when the PDB exposes a DBI age, so a valid PDB is never rejected outright
+	// just because that field is absent.
+	auto ret = (guid_eq == 0 && age_eq);
 
 	if (guid_eq != 0)
 	{
@@ -420,11 +447,15 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	}
 	else if (!age_eq)
 	{
-		LOG(2, "SYMBOL_LOADER: PDB age %d differs from module age %u; proceeding on GUID match\n", stream_age, age);
+		LOG(1, "SYMBOL_LOADER: PDB DBI age %u does not match module age %u; rejecting PDB\n", dbi_age, age);
+	}
+	else if (!dbi_age_available)
+	{
+		LOG(2, "SYMBOL_LOADER: guid match, PDB DBI age unavailable\n");
 	}
 	else
 	{
-		LOG(2, "SYMBOL_LOADER: guid match\n");
+		LOG(2, "SYMBOL_LOADER: guid and age match\n");
 	}
 
 	return ret;

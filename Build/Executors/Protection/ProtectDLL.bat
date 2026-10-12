@@ -74,13 +74,16 @@ if not defined TARGET goto :target_missing
 if not exist "%TARGET%" goto :target_missing
 if not "%DLL_CANDIDATES%"=="1" goto :target_ambiguous
 for %%N in ("%TARGET%") do set "TARGET_NAME=%%~nxN"
-echo   %C_GREEN%[+]%C_RESET% Target:  %C_GREEN%%TARGET%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Skipped: %C_YELLOW%%RUNTIME_NAME% (manual-mapped, never virtualized)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Target      = %C_GREEN%%TARGET%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Skipped     = %C_YELLOW%%RUNTIME_NAME% (manual-mapped)%C_RESET%
+echo.
 call :check_already_protected
-if defined VMP_PRESENT if /i not "%AMEGER_FORCE_VMP%"=="1" (
-  echo   %C_GREEN%[+]%C_RESET% Already protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); skipping.
-  echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 to virtualize anyway.%C_RESET%
-  goto :already_protected
+if defined VMP_PRESENT (
+  if /i not "%AMEGER_FORCE_VMP%"=="1" (
+    echo   %C_GREEN%[+]%C_RESET% Already protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); skipping.
+    echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 to virtualize anyway.%C_RESET%
+    goto :already_protected
+  )
 )
 echo.
 echo.
@@ -89,7 +92,7 @@ echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Resolving VMProtect project...
 echo.
 call :find_project
 if errorlevel 1 goto :project_missing
-echo   %C_GREEN%[+]%C_RESET% Project: %C_GREEN%%VMP_PROJECT%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Project      = %C_GREEN%%VMP_PROJECT%%C_RESET%
 echo.
 call :check_project_input
 if errorlevel 1 goto :project_mismatch
@@ -159,10 +162,23 @@ call :sha256_of "%TARGET%" OUT_SHA
 if errorlevel 1 goto :hash_error
 if not defined OUT_SHA goto :hash_error
 set "PIN_SRC=%WORK_DIR%\pin.ini"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$c=[IO.File]::ReadAllText('%CONFIG_MASTER%'); $c=[regex]::Replace($c,'(?m)^PayloadSha256\s*=.*$','PayloadSha256 = '+('%OUT_SHA%')); [IO.File]::WriteAllText('%PIN_SRC%',$c,[Text.Encoding]::ASCII)"
-if errorlevel 1 goto :pin_error
+set "PINGEN_TMP=%TEMP%\amg_pingen_%RANDOM%%RANDOM%"
+set "PINGEN_B64=%PINGEN_TMP%.b64"
+set "PINGEN_PS1=%PINGEN_TMP%.ps1"
+set "PINGEN_RC=1"
+>"%PINGEN_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%PINGEN_B64%" echo cGFyYW0oW3N0cmluZ10kQ29uZmlnTWFzdGVyLCBbc3RyaW5nXSRPdXRTaGEsIFtzdHJpbmddJFBpblNyYykNCiRjID0gW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkQ29uZmlnTWFzdGVyKQ0KJGMgPSBbcmVnZXhdOjpSZXBsYWNlKCRjLCAnKD9tKV5QYXlsb2FkU2hhMjU2XHMqPS4qJCcsICdQYXlsb2FkU2hhMjU2ID0gJyArICgkT3V0U2hhKSkNCltJTy5GaWxlXTo6V3JpdGVBbGxUZXh0KCRQaW5TcmMsICRjLCBbVGV4dC5FbmNvZGluZ106OkFTQ0lJKQ0K
+>>"%PINGEN_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%PINGEN_B64%" "%PINGEN_PS1%" >nul 2>&1
+if errorlevel 1 goto :pingen_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PINGEN_PS1%" -ConfigMaster "%CONFIG_MASTER%" -OutSha "%OUT_SHA%" -PinSrc "%PIN_SRC%"
+set "PINGEN_RC=%ERRORLEVEL%"
+:pingen_cleanup
+if exist "%PINGEN_PS1%" del /f /q "%PINGEN_PS1%" >nul 2>&1
+if exist "%PINGEN_B64%" del /f /q "%PINGEN_B64%" >nul 2>&1
+if not "%PINGEN_RC%"=="0" goto :pin_error
 if not exist "%PIN_SRC%" goto :pin_error
-echo   %C_GREEN%[+]%C_RESET% PayloadSha256 = %C_GREEN%%OUT_SHA%%C_RESET% %C_YELLOW%(release copy only)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% PayloadSha256 = %C_GREEN%%OUT_SHA%%C_RESET%
 if not exist "%CONFIG_SCRIPT%" goto :pin_error
 if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
   echo   %C_RED%ERROR: AMEGER_ENCRYPT_CONFIG=0 is refused; the launcher rejects plaintext configs.%C_RESET%
@@ -171,7 +187,7 @@ if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
 if not exist "%DEPLOYED_CONFIG%" goto :pin_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%PIN_SRC%" -Destination "%DEPLOYED_CONFIG%"
 if errorlevel 1 goto :pin_error
-echo   %C_GREEN%[+]%C_RESET% Deployed config re-encrypted.
+echo   %C_GREEN%[+]%C_RESET% Config re-encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 goto :pin_done
 
 :pin_done
@@ -190,7 +206,7 @@ if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%DLL_DIR%%C_RESET%.
 echo.
 echo Payload protection completed.
-echo Payload: %C_GREEN%%TARGET%%C_RESET%
+echo   Payload    = %C_GREEN%%TARGET%%C_RESET%
 echo.
 echo.
 if "%NO_PAUSE%"=="0" pause
@@ -208,7 +224,26 @@ set "VMP_PRESENT="
 set "BASELINE="
 if exist "%RELEASE_CACHE%\pe-sections.txt" for /f "usebackq tokens=1,* delims=:" %%A in ("%RELEASE_CACHE%\pe-sections.txt") do if /i "%%A"=="%TARGET_NAME%" set "BASELINE=%%B"
 if not defined BASELINE set "BASELINE=@none@"
-for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$base=('%BASELINE%').Split(','); $b=[IO.File]::ReadAllBytes('%TARGET%'); $e=[BitConverter]::ToInt32($b,0x3C); $c=$e+4; $n=[BitConverter]::ToUInt16($b,$c+2); $z=[BitConverter]::ToUInt16($b,$c+16); $s=$c+20+$z; for($i=0;$i -lt $n;$i++){ $o=$s+40*$i; $nm=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0); $x=[BitConverter]::ToUInt32($b,$o+36); if($x -band 0x20000000){ $tag=$nm+'+X' } else { $tag=$nm }; if($base -notcontains $tag){ Write-Output ('VMP_PRESENT=' + $nm) } }"`) do set "%%A=%%B"
+REM The VMProtect probe is a PowerShell script carried as base64 so that batch never has to parse a
+REM stray parenthesis from the PowerShell grammar. certutil decodes it to a unique temp .ps1, which is
+REM run and then removed. The probe reads the target's PE section table and reports any section absent
+REM from the recorded baseline as a VMP_PRESENT line. VMP_PRESENT is left unset if the probe cannot
+REM run, exactly as the previous inline command behaved.
+set "VMP_CHK=%TEMP%\amg_vmpchk_%RANDOM%%RANDOM%"
+set "VMP_CHK_B64=%VMP_CHK%.b64"
+set "VMP_CHK_PS1=%VMP_CHK%.ps1"
+set "VMP_CHK_OUT=%VMP_CHK%.out"
+>"%VMP_CHK_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%VMP_CHK_B64%" echo cGFyYW0oDQogICAgW3N0cmluZ10kQmFzZWxpbmUgPSAnQG5vbmVAJywNCiAgICBbc3RyaW5nXSRUYXJnZXQNCikNCiRiYXNlPSgkQmFzZWxpbmUpLlNwbGl0KCcsJykNCiRiPVtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRUYXJnZXQpDQokZT1bQml0Q29udmVydGVyXTo6VG9JbnQzMigkYiwweDNDKQ0KJGM9JGUrNA0KJG49W0JpdENvbnZlcnRlcl06OlRvVUludDE2KCRiLCRjKzIpDQokej1bQml0Q29udmVydGVyXTo6VG9VSW50MTYoJGIsJGMrMTYpDQokcz0kYysyMCskeg0KZm9yKCRpPTA7JGkgLWx0ICRuOyRpKyspew0KICAgICRvPSRzKzQwKiRpDQogICAgJG5tPVtUZXh0LkVuY29kaW5nXTo6QVNDSUkuR2V0U3RyaW5nKCRiLCRvLDgpLlRyaW0oW2NoYXJdMCkNCiAgICAkeD1bQml0Q29udmVydGVyXTo6VG9VSW50MzIoJGIsJG8rMzYpDQogICAgaWYoJHggLWJhbmQgMHgyMDAwMDAwMCl7ICR0YWc9JG5tKycrWCcgfSBlbHNlIHsgJHRhZz0kbm0gfQ0KICAgIGlmKCRiYXNlIC1ub3Rjb250YWlucyAkdGFnKXsgV3JpdGUtT3V0cHV0ICgnVk1QX1BSRVNFTlQ9JyArICRubSkgfQ0KfQ0K
+>>"%VMP_CHK_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%VMP_CHK_B64%" "%VMP_CHK_PS1%" >nul 2>&1
+if errorlevel 1 goto :vmp_check_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VMP_CHK_PS1%" -Baseline "%BASELINE%" -Target "%TARGET%" >"%VMP_CHK_OUT%" 2>&1
+for /f "usebackq tokens=1,* delims==" %%A in ("%VMP_CHK_OUT%") do set "%%A=%%B"
+:vmp_check_cleanup
+if exist "%VMP_CHK_PS1%" del /f /q "%VMP_CHK_PS1%" >nul 2>&1
+if exist "%VMP_CHK_B64%" del /f /q "%VMP_CHK_B64%" >nul 2>&1
+if exist "%VMP_CHK_OUT%" del /f /q "%VMP_CHK_OUT%" >nul 2>&1
 exit /b 0
 
 :already_done
@@ -304,11 +339,35 @@ set "VMP_PROJECT="
 exit /b 1
 
 :check_project_input
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$x=[xml][IO.File]::ReadAllText('%VMP_PROJECT%'); $i=[string]$x.Document.Protection.InputFileName; if($i -eq '%PAYLOAD_ORIGINAL_NAME%'){exit 0}; Write-Host ('    project targets: ' + $i); exit 1"
-exit /b %ERRORLEVEL%
+set "PROJIN_TMP=%TEMP%\amg_projin_%RANDOM%%RANDOM%"
+set "PROJIN_B64=%PROJIN_TMP%.b64"
+set "PROJIN_PS1=%PROJIN_TMP%.ps1"
+set "PROJIN_RC=1"
+>"%PROJIN_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%PROJIN_B64%" echo cGFyYW0oW3N0cmluZ10kVm1wUHJvamVjdCwgW3N0cmluZ10kRXhwZWN0ZWROYW1lKQ0KJHggPSBbeG1sXVtJTy5GaWxlXTo6UmVhZEFsbFRleHQoJFZtcFByb2plY3QpDQokaSA9IFtzdHJpbmddJHguRG9jdW1lbnQuUHJvdGVjdGlvbi5JbnB1dEZpbGVOYW1lDQppZiAoJGkgLWVxICRFeHBlY3RlZE5hbWUpIHsgZXhpdCAwIH0NCldyaXRlLUhvc3QgKCcgICAgcHJvamVjdCB0YXJnZXRzOiAnICsgJGkpDQpleGl0IDENCg==
+>>"%PROJIN_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%PROJIN_B64%" "%PROJIN_PS1%" >nul 2>&1
+if errorlevel 1 goto :projin_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PROJIN_PS1%" -VmpProject "%VMP_PROJECT%" -ExpectedName "%PAYLOAD_ORIGINAL_NAME%"
+set "PROJIN_RC=%ERRORLEVEL%"
+:projin_cleanup
+if exist "%PROJIN_PS1%" del /f /q "%PROJIN_PS1%" >nul 2>&1
+if exist "%PROJIN_B64%" del /f /q "%PROJIN_B64%" >nul 2>&1
+exit /b %PROJIN_RC%
 
 :vmp_settings
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$x=[xml][IO.File]::ReadAllText('%VMP_PROJECT%'); $p=$x.Document.Protection; Write-Host ('    Input         : ' + $p.InputFileName); Write-Host ('    VM complexity : ' + $p.VMComplexity); Write-Host ('    VM instances  : ' + $p.VMInstances); Write-Host ('    Options       : ' + $p.Options); Write-Host '    Procedures    :'; foreach($q in $p.Procedures.Procedure){ Write-Host ('      - ' + $q.MapAddress + '  CompilationType=' + $q.CompilationType + '  Complexity=' + $q.Complexity) }"
+set "VMPSET_TMP=%TEMP%\amg_vmpset_%RANDOM%%RANDOM%"
+set "VMPSET_B64=%VMPSET_TMP%.b64"
+set "VMPSET_PS1=%VMPSET_TMP%.ps1"
+>"%VMPSET_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%VMPSET_B64%" echo cGFyYW0oW3N0cmluZ10kVm1wUHJvamVjdCkNCiR4ID0gW3htbF1bSU8uRmlsZV06OlJlYWRBbGxUZXh0KCRWbXBQcm9qZWN0KQ0KJHAgPSAkeC5Eb2N1bWVudC5Qcm90ZWN0aW9uDQpXcml0ZS1Ib3N0ICgnICAgIElucHV0ICAgICAgICAgOiAnICsgJHAuSW5wdXRGaWxlTmFtZSkNCldyaXRlLUhvc3QgKCcgICAgVk0gY29tcGxleGl0eSA6ICcgKyAkcC5WTUNvbXBsZXhpdHkpDQpXcml0ZS1Ib3N0ICgnICAgIFZNIGluc3RhbmNlcyAgOiAnICsgJHAuVk1JbnN0YW5jZXMpDQpXcml0ZS1Ib3N0ICgnICAgIE9wdGlvbnMgICAgICAgOiAnICsgJHAuT3B0aW9ucykNCldyaXRlLUhvc3QgJyAgICBQcm9jZWR1cmVzICAgIDonDQpmb3JlYWNoICgkcSBpbiAkcC5Qcm9jZWR1cmVzLlByb2NlZHVyZSkgew0KICAgIFdyaXRlLUhvc3QgKCcgICAgICAtICcgKyAkcS5NYXBBZGRyZXNzICsgJyAgQ29tcGlsYXRpb25UeXBlPScgKyAkcS5Db21waWxhdGlvblR5cGUgKyAnICBDb21wbGV4aXR5PScgKyAkcS5Db21wbGV4aXR5KQ0KfQ0K
+>>"%VMPSET_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%VMPSET_B64%" "%VMPSET_PS1%" >nul 2>&1
+if errorlevel 1 goto :vmpset_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VMPSET_PS1%" -VmpProject "%VMP_PROJECT%"
+:vmpset_cleanup
+if exist "%VMPSET_PS1%" del /f /q "%VMPSET_PS1%" >nul 2>&1
+if exist "%VMPSET_B64%" del /f /q "%VMPSET_B64%" >nul 2>&1
 exit /b 0
 
 :read_state
@@ -333,7 +392,21 @@ exit /b 0
 :sha256_of
 set "SHA256="
 if not exist "%~1" exit /b 1
-for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$h=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes('%~1'))) -replace '-',''); Write-Output ('SHA256=' + $h)"`) do set "%%A=%%B"
+set "SHATMP_TMP=%TEMP%\amg_sha_%RANDOM%%RANDOM%"
+set "SHATMP_B64=%SHATMP_TMP%.b64"
+set "SHATMP_PS1=%SHATMP_TMP%.ps1"
+set "SHATMP_OUT=%SHATMP_TMP%.out"
+>"%SHATMP_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%SHATMP_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkNCiRoID0gKFtCaXRDb252ZXJ0ZXJdOjpUb1N0cmluZyhbU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlNIQTI1Nl06OkNyZWF0ZSgpLkNvbXB1dGVIYXNoKFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKSkpIC1yZXBsYWNlICctJywnJykNCldyaXRlLU91dHB1dCAoJ1NIQTI1Nj0nICsgJGgpDQo=
+>>"%SHATMP_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%SHATMP_B64%" "%SHATMP_PS1%" >nul 2>&1
+if errorlevel 1 goto :sha_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SHATMP_PS1%" -Path "%~1" >"%SHATMP_OUT%" 2>&1
+for /f "usebackq tokens=1,2 delims==" %%A in ("%SHATMP_OUT%") do set "%%A=%%B"
+:sha_cleanup
+if exist "%SHATMP_PS1%" del /f /q "%SHATMP_PS1%" >nul 2>&1
+if exist "%SHATMP_B64%" del /f /q "%SHATMP_B64%" >nul 2>&1
+if exist "%SHATMP_OUT%" del /f /q "%SHATMP_OUT%" >nul 2>&1
 if not defined SHA256 exit /b 1
 set "%~2=%SHA256%"
 set "SHA256="
@@ -341,8 +414,21 @@ exit /b 0
 
 :validate_output
 if not exist "%WORK_DIR%\out.dll" exit /b 1
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$b=[IO.File]::ReadAllBytes('%WORK_DIR%\out.dll'); if($b.Length -lt 2){exit 1}; if($b[0] -ne 0x4D -or $b[1] -ne 0x5A){exit 1}; exit 0"
-if errorlevel 1 exit /b 1
+set "VALOUT_TMP=%TEMP%\amg_valout_%RANDOM%%RANDOM%"
+set "VALOUT_B64=%VALOUT_TMP%.b64"
+set "VALOUT_PS1=%VALOUT_TMP%.ps1"
+set "VALOUT_RC=1"
+>"%VALOUT_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%VALOUT_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkNCiRiID0gW0lPLkZpbGVdOjpSZWFkQWxsQnl0ZXMoJFBhdGgpDQppZiAoJGIuTGVuZ3RoIC1sdCAyKSB7IGV4aXQgMSB9DQppZiAoJGJbMF0gLW5lIDB4NEQgLW9yICRiWzFdIC1uZSAweDVBKSB7IGV4aXQgMSB9DQpleGl0IDANCg==
+>>"%VALOUT_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%VALOUT_B64%" "%VALOUT_PS1%" >nul 2>&1
+if errorlevel 1 goto :valout_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VALOUT_PS1%" -Path "%WORK_DIR%\out.dll"
+set "VALOUT_RC=%ERRORLEVEL%"
+:valout_cleanup
+if exist "%VALOUT_PS1%" del /f /q "%VALOUT_PS1%" >nul 2>&1
+if exist "%VALOUT_B64%" del /f /q "%VALOUT_B64%" >nul 2>&1
+if not "%VALOUT_RC%"=="0" exit /b 1
 fc /b "%WORK_DIR%\out.dll" "%TARGET%" > nul
 if errorlevel 2 exit /b 2
 if not errorlevel 1 exit /b 1
@@ -351,7 +437,21 @@ exit /b 0
 :verify_segment
 set "VM_SEG="
 set "VM_SEG_STATUS="
-for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$seg='%SEG_NAME%'; $b=[IO.File]::ReadAllBytes('%~1'); $e=[BitConverter]::ToInt32($b,0x3C); $c=$e+4; $n=[BitConverter]::ToUInt16($b,$c+2); $z=[BitConverter]::ToUInt16($b,$c+16); $s=$c+20+$z; $found=$null; for($i=0;$i -lt $n;$i++){ $o=$s+40*$i; $nm=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0); if($nm.StartsWith($seg)){ $found=$nm; break } }; if($null -eq $found){ Write-Output 'VM_SEG_STATUS=missing'; Write-Output 'VM_SEG='; exit 0 }; Write-Output ('VM_SEG=' + $found); if($found -match ('^' + [regex]::Escape($seg) + '[0-9]*$')){ Write-Output 'VM_SEG_STATUS=ok' } else { Write-Output 'VM_SEG_STATUS=mismatch' }; exit 0"`) do set "%%A=%%B"
+set "VMSEG_TMP=%TEMP%\amg_vmseg_%RANDOM%%RANDOM%"
+set "VMSEG_B64=%VMSEG_TMP%.b64"
+set "VMSEG_PS1=%VMSEG_TMP%.ps1"
+set "VMSEG_OUT=%VMSEG_TMP%.out"
+>"%VMSEG_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%VMSEG_B64%" echo cGFyYW0oW3N0cmluZ10kU2VnbWVudCwgW3N0cmluZ10kUGF0aCkNCiRiID0gW0lPLkZpbGVdOjpSZWFkQWxsQnl0ZXMoJFBhdGgpDQokZSA9IFtCaXRDb252ZXJ0ZXJdOjpUb0ludDMyKCRiLCAweDNDKQ0KJGMgPSAkZSArIDQNCiRuID0gW0JpdENvbnZlcnRlcl06OlRvVUludDE2KCRiLCAkYyArIDIpDQokeiA9IFtCaXRDb252ZXJ0ZXJdOjpUb1VJbnQxNigkYiwgJGMgKyAxNikNCiRzID0gJGMgKyAyMCArICR6DQokZm91bmQgPSAkbnVsbA0KZm9yICgkaSA9IDA7ICRpIC1sdCAkbjsgJGkrKykgew0KICAgICRvID0gJHMgKyA0MCAqICRpDQogICAgJG5tID0gW1RleHQuRW5jb2RpbmddOjpBU0NJSS5HZXRTdHJpbmcoJGIsICRvLCA4KS5UcmltKFtjaGFyXTApDQogICAgaWYgKCRubS5TdGFydHNXaXRoKCRTZWdtZW50KSkgeyAkZm91bmQgPSAkbm07IGJyZWFrIH0NCn0NCmlmICgkbnVsbCAtZXEgJGZvdW5kKSB7DQogICAgV3JpdGUtT3V0cHV0ICdWTV9TRUdfU1RBVFVTPW1pc3NpbmcnDQogICAgV3JpdGUtT3V0cHV0ICdWTV9TRUc9Jw0KICAgIGV4aXQgMA0KfQ0KV3JpdGUtT3V0cHV0ICgnVk1fU0VHPScgKyAkZm91bmQpDQppZiAoJGZvdW5kIC1tYXRjaCAoJ14nICsgW3JlZ2V4XTo6RXNjYXBlKCRTZWdtZW50KSArICdbMC05XSokJykpIHsNCiAgICBXcml0ZS1PdXRwdXQgJ1ZNX1NFR19TVEFUVVM9b2snDQp9IGVsc2Ugew0KICAgIFdyaXRlLU91dHB1dCAnVk1fU0VHX1NUQVRVUz1taXNtYXRjaCcNCn0NCmV4aXQgMA0K
+>>"%VMSEG_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%VMSEG_B64%" "%VMSEG_PS1%" >nul 2>&1
+if errorlevel 1 goto :vmseg_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VMSEG_PS1%" -Segment "%SEG_NAME%" -Path "%~1" >"%VMSEG_OUT%" 2>&1
+for /f "usebackq tokens=1,* delims==" %%A in ("%VMSEG_OUT%") do set "%%A=%%B"
+:vmseg_cleanup
+if exist "%VMSEG_PS1%" del /f /q "%VMSEG_PS1%" >nul 2>&1
+if exist "%VMSEG_B64%" del /f /q "%VMSEG_B64%" >nul 2>&1
+if exist "%VMSEG_OUT%" del /f /q "%VMSEG_OUT%" >nul 2>&1
 if /i "%VM_SEG_STATUS%"=="ok" exit /b 0
 if /i "%VM_SEG_STATUS%"=="missing" (
   echo   %C_RED%ERROR: no VMProtect segment found in the protected output.%C_RESET%
@@ -367,8 +467,21 @@ if not exist "%PAYLOAD_ASSET%" exit /b 1
 call :sha256_of "%PAYLOAD_ASSET%" ASSET_SHA
 if errorlevel 1 exit /b 1
 if not defined ASSET_SHA exit /b 1
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$c=[IO.File]::ReadAllText('%CONFIG_MASTER%'); $m=[regex]::Match($c,'(?m)^PayloadSha256\s*=\s*([0-9A-Fa-f]{64})'); if(-not $m.Success){exit 1}; if($m.Groups[1].Value -ne '%ASSET_SHA%'){Write-Host ('    master pins : ' + $m.Groups[1].Value); Write-Host ('    asset is    : ' + '%ASSET_SHA%'); exit 1}; exit 0"
-exit /b %ERRORLEVEL%
+set "PINCHK_TMP=%TEMP%\amg_pinchk_%RANDOM%%RANDOM%"
+set "PINCHK_B64=%PINCHK_TMP%.b64"
+set "PINCHK_PS1=%PINCHK_TMP%.ps1"
+set "PINCHK_RC=1"
+>"%PINCHK_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%PINCHK_B64%" echo cGFyYW0oW3N0cmluZ10kQ29uZmlnTWFzdGVyLCBbc3RyaW5nXSRBc3NldFNoYSkNCiRjID0gW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkQ29uZmlnTWFzdGVyKQ0KJG0gPSBbcmVnZXhdOjpNYXRjaCgkYywgJyg/bSleUGF5bG9hZFNoYTI1NlxzKj1ccyooWzAtOUEtRmEtZl17NjR9KScpDQppZiAoLW5vdCAkbS5TdWNjZXNzKSB7IGV4aXQgMSB9DQppZiAoJG0uR3JvdXBzWzFdLlZhbHVlIC1uZSAkQXNzZXRTaGEpIHsNCiAgICBXcml0ZS1Ib3N0ICgnICAgIG1hc3RlciBwaW5zIDogJyArICRtLkdyb3Vwc1sxXS5WYWx1ZSkNCiAgICBXcml0ZS1Ib3N0ICgnICAgIGFzc2V0IGlzICAgIDogJyArICRBc3NldFNoYSkNCiAgICBleGl0IDENCn0NCmV4aXQgMA0K
+>>"%PINCHK_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%PINCHK_B64%" "%PINCHK_PS1%" >nul 2>&1
+if errorlevel 1 goto :pinchk_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PINCHK_PS1%" -ConfigMaster "%CONFIG_MASTER%" -AssetSha "%ASSET_SHA%"
+set "PINCHK_RC=%ERRORLEVEL%"
+:pinchk_cleanup
+if exist "%PINCHK_PS1%" del /f /q "%PINCHK_PS1%" >nul 2>&1
+if exist "%PINCHK_B64%" del /f /q "%PINCHK_B64%" >nul 2>&1
+exit /b %PINCHK_RC%
 
 :write_state
 if not exist "%RELEASE_CACHE%" mkdir "%RELEASE_CACHE%"

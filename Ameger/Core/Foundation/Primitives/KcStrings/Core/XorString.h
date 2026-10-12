@@ -41,7 +41,7 @@ namespace xor_string
 		XorDecrypted & operator=(const XorDecrypted &) = delete;
 
 	public:
-		__forceinline explicit XorDecrypted(const XorEncrypted<CharT, N, Key> & enc) noexcept
+		__declspec(noinline) explicit XorDecrypted(const XorEncrypted<CharT, N, Key> & enc) noexcept
 		{
 			const kc_strings::detail::DomainMask mask;
 

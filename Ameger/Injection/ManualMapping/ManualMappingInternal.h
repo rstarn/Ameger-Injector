@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "Native/Syscall.h"
+
 #include "System/Import/ImportHandler.h"
 #include "System/Symbol/Offsets/DynamicOffsets.h"
 #include "Injection.h"
@@ -33,6 +35,8 @@ typedef struct _MM_DEPENDENCY_RECORD
 
 DWORD __declspec(code_seg(".mmap_sec$01")) __stdcall ManualMapping_Shell		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
+DWORD __declspec(code_seg(".mmap_sec$05")) __stdcall MMI_SetExecProtections	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, DWORD NewState);
+bool	__declspec(code_seg(".mmap_sec$11")) __stdcall MMI_FindLoadedModule	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const UNICODE_STRING * FullName, HINSTANCE * hModule);
 DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$04")) __stdcall MMI_InitializeCookie		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$06")) __stdcall MMI_LoadImports			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
@@ -50,15 +54,21 @@ NTSTATUS __declspec(code_seg(".mmap_sec$13")) __stdcall MMIH_LoadModule(MMAP_NAT
 
 DWORD __declspec(code_seg(".mmap_sec$14")) MMAP_SEC_END();
 
+#define MM_EXEC_STATE_MAPPABLE	0
+#define MM_EXEC_STATE_EXECUTE	1
+#define MM_EXEC_STATE_WRITABLE	2
+
 namespace MMAP_NATIVE
 {
 	using namespace NATIVE;
 
 	ALIGN struct MANUAL_MAPPING_FUNCTION_TABLE
 	{
-		ALIGN NT_FUNC_LOCAL(NtClose);
+	ALIGN NT_FUNC_LOCAL(NtClose);
 
-		ALIGN NT_FUNC_LOCAL(NtAllocateVirtualMemory);
+	ALIGN NT_FUNC_LOCAL(NtQueryInformationProcess);
+
+	ALIGN NT_FUNC_LOCAL(NtAllocateVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtProtectVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtFreeVirtualMemory);
 
@@ -127,52 +137,151 @@ namespace MMAP_NATIVE
 		}
 	};
 
-	ALIGN struct MANUAL_MAPPING_DATA
+ 	ALIGN struct MANUAL_MAPPING_DATA
+ 	{
+ 		ALIGN HINSTANCE	hRet		= NULL;
+ 		ALIGN DWORD		Flags		= NULL;
+ 		ALIGN NTSTATUS	ntRet		= STATUS_SUCCESS;
+
+ 		ALIGN void				*	pFakeSEHDirectory	= nullptr;
+
+ 		ALIGN RUNTIME_FUNCTION	*	pDynamicFunctionTable	= nullptr;
+
+ 		ALIGN DWORD	InvertedTableInstalled = 0;
+
+ 		ALIGN BYTE *	pAllocationBase	= nullptr;
+ 		ALIGN BYTE *	pImageBase		= nullptr;
+ 		ALIGN BYTE *	pRawData		= nullptr;
+ 		ALIGN DWORD		RawSize			= 0;
+
+ 		ALIGN IMAGE_DOS_HEADER		* pDosHeader		= nullptr;
+ 		ALIGN IMAGE_NT_HEADERS		* pNtHeaders		= nullptr;
+ 		ALIGN IMAGE_OPTIONAL_HEADER	* pOptionalHeader	= nullptr;
+ 		ALIGN IMAGE_FILE_HEADER		* pFileHeader		= nullptr;
+
+ 		ALIGN MM_DEPENDENCY_RECORD * pImportsHead		= nullptr;
+ 		ALIGN MM_DEPENDENCY_RECORD * pDelayImportsHead	= nullptr;
+
+ 		ALIGN MAP_STATS MapStats{};
+
+ 		ALIGN MANUAL_MAPPING_FUNCTION_TABLE * FunctionTable = nullptr;
+
+ 		ALIGN DYNAMIC_NT_OFFSETS NtOffsets{};
+
+		// Exec section protection bookkeeping. Three of the stages used to walk the section table and
+		// issue NtProtectVirtualMemory independently, which turned one mapped image into six separate
+		// RW->RX->RW->RX transitions on the same pages. Everything now routes through one flag so the
+		// whole image is promoted exactly twice.
+		ALIGN DWORD ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
+
+		// Payload obfuscation. The image bytes never cross the boundary in the clear: the host stores
+		// a keystream transform and the remote side recovers the plaintext while copying it into place,
+		// so neither the transfer nor the staging region ever holds a recognisable PE.
+		ALIGN DWORD64	PayloadSeed0	= 0;
+		ALIGN DWORD64	PayloadSeed1	= 0;
+		ALIGN DWORD		PayloadEncoded	= 0;
+
+		// Per-callback TLS diagnostics. When a TLS callback is rejected the remote side records which
+		// entry failed and at what address, so the host can name the exact callback instead of only
+		// reporting the aggregate range error.
+		ALIGN DWORD		TlsCallbackIndex	= 0;
+		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
+ 	};
+}
+
+// Both sides of the transfer need the same rotation helper.
+__forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
+{
+	constexpr unsigned kBits = sizeof(DWORD64) * 8u;
+	const unsigned Shift = Count & (kBits - 1u);
+
+	if (!Shift)
 	{
-		ALIGN HINSTANCE	hRet		= NULL;
-		ALIGN DWORD		Flags		= NULL;
-		ALIGN NTSTATUS	ntRet		= STATUS_SUCCESS;
+		return Value;
+	}
 
-		ALIGN void				*	pFakeSEHDirectory	= nullptr;
-
-		ALIGN RUNTIME_FUNCTION	*	pDynamicFunctionTable	= nullptr;
-
-		ALIGN DWORD	InvertedTableInstalled = 0;
-
-		ALIGN BYTE *	pAllocationBase	= nullptr;
-		ALIGN BYTE *	pImageBase		= nullptr;
-		ALIGN BYTE *	pRawData		= nullptr;
-		ALIGN DWORD		RawSize			= 0;
-
-		ALIGN IMAGE_DOS_HEADER		* pDosHeader		= nullptr;
-		ALIGN IMAGE_NT_HEADERS		* pNtHeaders		= nullptr;
-		ALIGN IMAGE_OPTIONAL_HEADER	* pOptionalHeader	= nullptr;
-		ALIGN IMAGE_FILE_HEADER		* pFileHeader		= nullptr;
-
-		ALIGN MM_DEPENDENCY_RECORD * pImportsHead		= nullptr;
-		ALIGN MM_DEPENDENCY_RECORD * pDelayImportsHead	= nullptr;
-
-		ALIGN MAP_STATS MapStats{};
-
-		ALIGN MANUAL_MAPPING_FUNCTION_TABLE * FunctionTable = nullptr;
-
-		ALIGN DYNAMIC_NT_OFFSETS NtOffsets{};
-	};
+	return (Value >> Shift) | (Value << (kBits - Shift));
 }
 
 #pragma region inlined helper functions
 
-__forceinline UINT_PTR bit_rotate_r(UINT_PTR val, int count)
+// Position indexed key stream. Both the host encoder and the remote decoder evaluate the same
+// function for the same offset, so sections can be recovered in any order and in any granularity
+// without carrying a running cipher state between passes.
+__forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
 {
+	DWORD64 x = Seed0 ^ (Index * 0x9E3779B97F4A7C15ULL);
+	x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;
+	x ^= x >> 27; x *= 0x94D049BB133111EBULL;
+	x ^= x >> 31;
+	x ^= Seed1 + (Index << 32) + Index;
+	x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ULL;
+	x ^= x >> 32;
+	x ^= x >> 25; x *= 0x2545F4914F6CDD1DULL;
+	x ^= x >> 12;
 
-	constexpr unsigned kBits = sizeof(UINT_PTR) * 8u;
-	const unsigned shift = static_cast<unsigned>(count) & (kBits - 1u);
-	if (!shift)
+	return x;
+}
+
+// Transforms a byte range in place. Applying the function twice is the identity, so the same routine
+// encodes on the host and decodes in the target.
+__forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
+{
+	if (!Data || !Size)
 	{
-		return val;
+		return;
 	}
 
-	return (val >> shift) | (val << (kBits - shift));
+	size_t offset = 0;
+
+	while (offset + sizeof(DWORD64) <= Size)
+	{
+		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
+		*ReCa<DWORD64 *>(Data + offset) ^= Block;
+
+		offset += sizeof(DWORD64);
+	}
+
+	if (offset < Size)
+	{
+		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
+		const auto * Bytes = ReCa<const BYTE *>(&Block);
+
+		for (size_t i = 0; offset + i < Size; ++i)
+		{
+			Data[offset + i] ^= Bytes[i];
+		}
+	}
+}
+
+// Streams a transformed copy without touching the source.
+__forceinline void MMI_KeyTransformCopy(BYTE * Destination, const BYTE * Source, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
+{
+	if (!Destination || !Source || !Size)
+	{
+		return;
+	}
+
+	size_t offset = 0;
+
+	while (offset + sizeof(DWORD64) <= Size)
+	{
+		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
+		*ReCa<DWORD64 *>(Destination + offset) = *ReCa<const DWORD64 *>(Source + offset) ^ Block;
+
+		offset += sizeof(DWORD64);
+	}
+
+	if (offset < Size)
+	{
+		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
+		const auto * Bytes = ReCa<const BYTE *>(&Block);
+
+		for (size_t i = 0; offset + i < Size; ++i)
+		{
+			Destination[offset + i] = Source[offset + i] ^ Bytes[i];
+		}
+	}
 }
 
 __forceinline void * MMI_LdrpHeap(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f)

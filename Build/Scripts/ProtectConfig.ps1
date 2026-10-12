@@ -160,7 +160,7 @@ if ($null -ne $pinOverride) {
     }
     $text = [regex]::Replace($text, '(?m)^PayloadSha256\s*=.*$', 'PayloadSha256 = ' + $pinOverride)
     $modified = $true
-    Write-Host ("ProtectConfig: PayloadSha256 pinned to " + $pinOverride)
+    Write-Host ("ProtectConfig: PayloadSha256 = {0}" -f ("" + $pinOverride))
 }
 
 $preserved = $null
@@ -200,7 +200,20 @@ if ($pairs.Count -gt 0) {
     if ($text -ne $before) { $modified = $true }
     foreach ($k in @("PayloadName", "RuntimeName", "ExportMap", "DllDir")) {
         if ($pairs.ContainsKey($k)) {
-            Write-Host ("ProtectConfig: " + $k + " = " + $pairs[$k])
+            $val = $pairs[$k]
+            if ($k -eq "ExportMap") {
+                # ExportMap is a comma-separated map; print the header, then one entry per line.
+                $entries = $val -split ','
+                Write-Host ("ProtectConfig: {0} =" -f $k.PadRight(12))
+                foreach ($entry in $entries) {
+                    $parts = $entry -split '='
+                    if ($parts.Count -eq 2) {
+                        Write-Host ("  {0} = {1}" -f $parts[0].PadRight(20), ("" + $parts[1]))
+                    }
+                }
+            } else {
+                Write-Host ("ProtectConfig: {0} = {1}" -f $k.PadRight(12), ("" + $val))
+            }
         }
     }
 }

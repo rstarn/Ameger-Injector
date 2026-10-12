@@ -34,8 +34,6 @@ struct ERROR_INFO
 	std::wstring	DllFileName;
 	std::wstring	TargetProcessExeFileName;
 	DWORD			TargetProcessId;
-	INJECTION_MODE	InjectionMode;
-	LAUNCH_METHOD	LaunchMethod;
 	DWORD			Flags;
 	DWORD			ErrorCode;
 	DWORD			AdvErrorCode;
@@ -97,6 +95,11 @@ bool GetSymbolCacheRoot(std::wstring & out);
 void DeleteSymbolCacheRoot(const std::wstring & root);
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code = nullptr);
+
+// Explicit opt-in that re-enables the direct NtOpenProcess / NtOpenThread fallback when handle
+// acquisition finds no donor. It is off by default so the fail-closed path is the shipped behaviour;
+// set INJ_ALLOW_DIRECT_FALLBACK=1 to restore the legacy direct open.
+bool AllowDirectHandleFallback();
 
 void ErrorLog(const ERROR_INFO & info);
 

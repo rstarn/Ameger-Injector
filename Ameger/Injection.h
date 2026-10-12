@@ -8,8 +8,6 @@ struct MEMORY_INJECTIONDATA
 	BYTE * RawData;
 	DWORD RawSize;
 	DWORD ProcessID;
-	INJECTION_MODE Mode;
-	LAUNCH_METHOD Method;
 	DWORD Flags;
 	DWORD Timeout;
 	ULONG_PTR hHandleValue;
@@ -60,8 +58,6 @@ struct LAST_ERROR_INFO
 	DWORD	AdvErrorCode;
 	int		Line;
 	DWORD	Flags;
-	int		InjectionMode;
-	int		LaunchMethod;
 	int		bNative;
 	wchar_t	DllFileName[MAX_PATH];
 	wchar_t	TargetProcessExeFileName[MAX_PATH];

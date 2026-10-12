@@ -25,6 +25,18 @@
 #define STATUS_NOT_IMPLEMENTED		0xC0000002
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 #define STATUS_APISET_NOT_HOSTED	0xC0000481
+#ifndef STATUS_DLL_NOT_FOUND
+#define STATUS_DLL_NOT_FOUND		0xC0000135
+#endif
+#ifndef STATUS_ENTRYPOINT_NOT_FOUND
+#define STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139
+#endif
+#ifndef STATUS_ACCESS_DENIED
+#define STATUS_ACCESS_DENIED 0xC0000022
+#endif
+#ifndef STATUS_INVALID_PARAMETER
+#define STATUS_INVALID_PARAMETER 0xC000000D
+#endif
 
 typedef LONG KPRIORITY;
 
@@ -38,7 +50,11 @@ typedef LONG KPRIORITY;
 
 typedef enum class _PROCESSINFOCLASS
 {
-	ProcessBasicInformation			= 0
+	ProcessBasicInformation			= 0,
+	ProcessImageFileName			= 27,
+	// Win32 (native path translation skipped) image name. Preferred over 0x1B because it never
+	// returns a \Device\HarddiskVolume form, so a Win32 comparison can be made directly.
+	ProcessImageFileNameWin32		= 43
 } PROCESSINFOCLASS;
 
 typedef enum class _SYSTEM_INFORMATION_CLASS
