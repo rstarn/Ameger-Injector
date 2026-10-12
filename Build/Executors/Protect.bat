@@ -1,29 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem ---------------------------------------------------------------------------
-rem Protect.bat - VMProtect orchestrator.
-rem
-rem Calls the two protection stages in order and aggregates their results. The
-rem payload runs first: protecting it rewrites the PayloadSha256 pin, so the
-rem launcher is protected against a release whose pin has already settled.
-rem
-rem Both stages fail closed and are individually idempotent, so a repeat run
-rem that finds an unchanged protected binary is a no-op rather than a second
-rem virtualization pass over already-virtualized code.
-rem
-rem Usage:
-rem   Protect.bat              both stages
-rem   Protect.bat dll          payload only
-rem   Protect.bat exe          launcher only
-rem   Protect.bat /nopause     suppress the pause (also CREATE_NO_PAUSE=1)
-rem ---------------------------------------------------------------------------
-
 set "NO_PAUSE=0"
 if defined CREATE_NO_PAUSE set "NO_PAUSE=%CREATE_NO_PAUSE%"
-rem Honor /nopause in any argument position, not only the first: a caller may
-rem pass the stage selector first ("Protect.bat dll /nopause"). STAGE below
-rem still reads %~1 exactly as before, so the stage semantics are unchanged.
 for %%A in (%*) do if /i "%%A"=="/nopause" set "NO_PAUSE=1"
 
 set "C_RESET="
@@ -38,16 +17,12 @@ if defined ESC (
     set "C_YELLOW=%ESC%[93m"
 )
 
-rem This script lives in Build\Executors\, so the repository root is two levels
-rem up. Rooting at "%~dp0.." resolved to Build\ itself.
 for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\Build"
 set "OUT_ROOT=%BUILD_DIR%\Release"
 set "STAGE_DIR=%BUILD_DIR%\Executors\Protection"
 set "PROTECT_DLL=%STAGE_DIR%\ProtectDLL.bat"
 set "PROTECT_EXE=%STAGE_DIR%\ProtectEXE.bat"
-rem Per-build deployed names (V-02/V-04), for the closing summary only. Read
-rem best effort: the stages themselves fail closed if the state is missing.
 set "NAMES_STATE=%OUT_ROOT%\Cache\BuildNames.state"
 set "PAYLOAD_NAME="
 set "EXE_NAME="
@@ -61,10 +36,6 @@ if defined STAGE (
   )
 )
 
-rem Deployed DLL folder name (V-05) and, for the closing summary only, the
-rem deployed payload/launcher names. Read best effort: the stages themselves
-rem fail closed if the state is missing. Resolved here rather than hardcoded
-rem because the folder no longer has a stable name.
 set "DLL_DIR_NAME="
 set "PAYLOAD_DEST="
 
@@ -121,12 +92,6 @@ if exist "%NAMES_STATE%" for /f "usebackq tokens=1,* delims==" %%A in ("%NAMES_S
   if /i "%%A"=="EXE_NAME" if not defined EXE_NAME set "EXE_NAME=%%B"
   if /i "%%A"=="DLLDIR_NAME" if not defined DLL_DIR_NAME set "DLL_DIR_NAME=%%B"
 )
-rem Resolve where the payload actually sits. The folder name is per-build (V-05),
-rem so the summary must read it from the state the stages used instead of
-rem assuming the retired stock "DLLs" name: a printed path that does not exist
-rem sends an operator to a folder that was shipped precisely to remove stable
-rem naming. Fall back to a name-based scan, then to the release root, rather
-rem than ever printing the stock name.
 if defined DLL_DIR_NAME if exist "%OUT_ROOT%\%DLL_DIR_NAME%\%PAYLOAD_NAME%" set "PAYLOAD_DEST=%OUT_ROOT%\%DLL_DIR_NAME%\"
 if not defined PAYLOAD_DEST if defined PAYLOAD_NAME for /f "delims=" %%F in ('dir /b /s /a-d "%OUT_ROOT%\%PAYLOAD_NAME%" 2^>nul') do if not defined PAYLOAD_DEST set "PAYLOAD_DEST=%%~dpF"
 echo.
@@ -152,11 +117,6 @@ if defined EXE_NAME (
   echo Interface x64: %C_GREEN%%OUT_ROOT%\*.exe%C_RESET%
 )
 echo.
-rem The name state is the de-anonymization map (deployed names + export
-rem rename table). Both protection stages have consumed it only when this was
-rem a full Protect run; remove it from the shipped tree on full success so
-rem the mapping key is never left on disk next to the binaries. A single-stage
-rem run keeps it for the follow-up stage. Best-effort delete.
 if not defined STAGE if exist "%NAMES_STATE%" del /f /q "%NAMES_STATE%" >nul 2>&1
 if "%NO_PAUSE%"=="0" pause
 exit /b 0

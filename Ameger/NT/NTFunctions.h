@@ -4,16 +4,6 @@
 
 #include "NT/Windows11.h"
 
-// Native function-pointer types resolved at runtime (never linked).
-// What: f_* signatures for the ntdll loader/memory/heap routines the shell
-//   and host call through the function tables. Why pointers, not imports: the
-//   shipped binary must expose no plaintext ntdll symbol names (Warden scans
-//   .rdata) and the shell runs where no import table exists - every name is
-//   XOR-encrypted and resolved via the PDB/downloaded offsets. How: host
-//   fills NATIVE::* via ResolveImports; the shell receives a table copy and
-//   checks IsValid() before use. RtlDeleteFunctionTable stays optional.
-// Aliases the default (Win11) struct revision as the unqualified name so call
-// sites read LDR_DATA_TABLE_ENTRY instead of the versioned spelling.
 #define DEF_STRUCT_DEFAULT(name, suffix)	\
 using name		= name##suffix;				\
 using P##name	= P##name##suffix;			\
@@ -31,15 +21,15 @@ using f_LdrUnloadDll = NTSTATUS (__stdcall *)
 
 using f_LdrpLoadDllInternal = VOID (__fastcall *)
 (
-	UNICODE_STRING				*	dll_path, 
+	UNICODE_STRING				*	dll_path,
 	LDRP_PATH_SEARCH_CONTEXT	*	search_path,
 	LDRP_LOAD_CONTEXT_FLAGS			Flags,
-	ULONG32							Unknown0,	
-	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown1,	
-	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown2,	
+	ULONG32							Unknown0,
+	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown1,
+	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown2,
 	LDR_DATA_TABLE_ENTRY_WIN11	**	ldr_out,
 	NTSTATUS					*	ntRet,
-	ULONG							Unknown4	
+	ULONG							Unknown4
 );
 
 using f_LdrGetProcedureAddress = NTSTATUS (__stdcall *)
@@ -104,9 +94,6 @@ using f_RtlAddFunctionTable = BOOL (__stdcall *)
 	DWORD64				BaseAddress
 );
 
-// Documented ntdll API. Optional: resolved but not required, and used only by
-// MMI_CleanUp to undo RtlAddFunctionTable. Same table pointer that was passed
-// to RtlAddFunctionTable.
 using f_RtlDeleteFunctionTable = BOOLEAN (__stdcall *)
 (
 	RUNTIME_FUNCTION *	FunctionTable
@@ -119,14 +106,14 @@ using f_LdrpHandleTlsData = NTSTATUS (__fastcall *)
 
 using f_LdrLockLoaderLock = NTSTATUS (__stdcall *)
 (
-	ULONG			Flags, 
-	ULONG		*	State, 
+	ULONG			Flags,
+	ULONG		*	State,
 	ULONG_PTR	*	Cookie
 );
 
 using f_LdrUnlockLoaderLock = NTSTATUS (__stdcall *)
 (
-	ULONG		Flags, 
+	ULONG		Flags,
 	ULONG_PTR	Cookie
 );
 

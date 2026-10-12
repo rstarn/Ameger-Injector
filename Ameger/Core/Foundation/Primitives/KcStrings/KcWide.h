@@ -6,14 +6,9 @@
 
 #include "Core/DomainKey.h"
 
-// Single-layer wide strings: KernelCloak encrypted_wstring.h replica.
-// What: compile-time ciphertext (KcEncryptedWString, N = wchar count incl.
-//   null) plus stack plaintext view (KcDecryptedWString). Key is per-site like
-//   the narrow tier. See Core/KcStrSuite.h for usage rules and deltas.
 namespace kc_strings
 {
-// Compile-time ciphertext blob; see the narrow-tier note on why the
-// `static constexpr` lambda form is load-bearing for .rdata hygiene.
+
 template <std::size_t N, std::uint32_t Key>
 class KcEncryptedWString
 {
@@ -33,8 +28,6 @@ public:
 	{
 	}
 
-	// Decrypts into the caller's N-wide stack buffer via canceling
-	// DomainMask passes; wipes staging. Params: out (N wchar stack buffer).
 	__forceinline void Decrypt(wchar_t * out) const noexcept
 	{
 		const kc_strings::detail::DomainMask mask;
@@ -101,7 +94,7 @@ __forceinline KcDecryptedWString<N, Key> KcMakeDecryptedW(const KcEncryptedWStri
 {
 	return KcDecryptedWString<N, Key>(enc);
 }
-} // namespace kc_strings
+}
 
 #define KC_WSTR(s) ::kc_strings::KcMakeDecryptedW([]() -> const auto & { constexpr std::size_t kc_n = sizeof(s) / sizeof(wchar_t); constexpr std::uint32_t kc_k = static_cast<std::uint32_t>((__COUNTER__ + 1) * 0x45D9F3Bu ^ __LINE__ * 0x1B873593u ^ kc_n * 0xCC9E2D51u ^ ::kc_strings::detail::kStringSeed); static constexpr ::kc_strings::KcEncryptedWString<kc_n, kc_k> kc_e(s, std::make_index_sequence<kc_n>{}); return kc_e; }())
 

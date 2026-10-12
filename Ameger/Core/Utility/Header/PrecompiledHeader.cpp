@@ -2,22 +2,6 @@
 
 #include "Core/Foundation/Error.h"
 
-// PCH implementation TU: anchors the precompiled header and hosts the trace
-// sink plus the CRT invalid-parameter guard. What: SetRawPrintCallback stores
-// the launcher callback; custom_print formats one line to it (or stdout);
-// ImTheTrashMan swallows CRT parameter errors so a bad format never throws
-// out of the trace path.
-//
-// No #pragma comment(lib) for dbghelp/wininet/urlmon/shlwapi: every one of
-// those would place a static import in the shipped PE, and a manual-mapping
-// carrier importing dbghelp.dll or wininet.dll is a textbook IOC. The two
-// modules that are genuinely needed (dbghelp for PDB parsing, wininet for the
-// symbol download) are resolved by name at the moment of use and freed again
-// immediately after - see Core/Utility/Binary/DynamicAPI.h.
-
-// Installs/clears the trace sink. Params: print (callback or null to mute).
-// Returns INJ_ERR_SUCCESS always. Exported as CoreSetTrace (renamed per
-// build); the launcher sets QuietPrint in production.
 DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 {
 #pragma EXPORT_FUNCTION("CoreSetTrace", __FUNCDNAME__)
@@ -36,11 +20,6 @@ DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 	return INJ_ERR_SUCCESS;
 }
 
-	// CRT invalid-parameter handler: intentionally ignores all args and returns,
-	// so a formatting misuse in custom_print degrades to a dropped line instead
-	// of an exception/crash on the injection path. noexcept because the CRT
-	// invokes it through an extern "C" pointer, where an escaping exception is
-	// undefined behaviour.
 	void ImTheTrashMan(const wchar_t * expression, const wchar_t * function, const wchar_t * file, unsigned int line, uintptr_t pReserved) noexcept
 	{
 		UNREFERENCED_PARAMETER(expression);
@@ -50,10 +29,6 @@ DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 		UNREFERENCED_PARAMETER(pReserved);
 	}
 
-// Formats one trace line with leading indent and routes it to the launcher
-// callback (or stdout when none). Params: indention_offset (spaces, clamped
-// >= 0), format + varargs (vsprintf_s; grown by 1 KB on ERANGE). Best-effort:
-// allocation/format failures drop the line; never throws.
 void custom_print(int indention_offset, const char * format, ...)
 {
 	if (indention_offset < 0)

@@ -3,13 +3,6 @@
 #include "System/Symbol/Offsets/DynamicOffsets.h"
 #include "System/Symbol/Parser/SymbolParser.h"
 
-// Offset-resolution implementation (see DynamicOffsets.h for the strict vs
-// fallback policy). What: PDB type/enum queries, memcpy'd into
-// MANUAL_MAPPING_DATA for the target shell.
-
-// Same as REQUIRE_FIELD but accepts an older and a newer PDB spelling of the
-// same field. Microsoft renames fields across builds without moving them; the
-// field is still mandatory, so a type that carries neither name fails closed.
 static DWORD ResolveFieldEither(const char * const * types, size_t typeCount, const char * primary, const char * alternate, DWORD & out)
 {
 	DWORD off = 0;
@@ -35,10 +28,6 @@ DWORD ResolveDynamicOffsets()
 
 	DYNAMIC_NT_OFFSETS tmp{};
 
-	// Every PDB type/field/enum name this resolver probes is held as
-	// compile-time ciphertext and decrypted into stack buffers here; the
-	// pointer arrays below only reference those buffers, which outlive every
-	// read in this function. Nothing below is a plaintext .rdata literal.
 	auto t_teb_a = XOR_STR_A("TEB");
 	auto t_teb_b = XOR_STR_A("_TEB");
 	auto t_peb_a = XOR_STR_A("PEB");
@@ -100,13 +89,7 @@ DWORD ResolveDynamicOffsets()
 	const char * kKuser[] = { t_kuser_a.get(), t_kuser_b.get() };
 	const char * kLdrEntry[] = { t_ldr_a.get(), t_ldr_b.get() };
 	const char * kDdag[] = { t_ddag_a.get(), t_ddag_b.get() };
-	// Inverted function table. 26xxx renamed the types and their fields while
-	// keeping the exact same on-disk layout (see NTDefinitions.h): the table
-	// became _INVERTED_FUNCTION_TABLE_USER_MODE {CurrentSize,MaximumSize,
-	// Epoch,Overflow,TableEntry} and the entry became
-	// _INVERTED_FUNCTION_TABLE_ENTRY {union{FunctionTable,DynamicTable},
-	// ImageBase,SizeOfImage,SizeOfTable}. Both spellings are attempted below;
-	// the layout is still required to be present, so this stays fail-closed.
+
 	const char * kInvTable[] = { t_invt_a.get(), t_invt_b.get(), t_invt_c.get(), t_invt_d.get() };
 	const char * kInvEntry[] = { t_inve_a.get(), t_inve_b.get(), t_inve_c.get(), t_inve_d.get() };
 	const char * kTls[] = { t_tls_a.get(), t_tls_b.get(), t_tls_c.get(), t_tls_d.get() };
@@ -124,9 +107,6 @@ DWORD ResolveDynamicOffsets()
 		(out) = _off; \
 	} while (0)
 
-// Same as REQUIRE_FIELD but accepts an older and a newer PDB spelling of the
-// same field. Microsoft renames fields across builds without moving them; the
-// field is still mandatory, so a type that carries neither name fails closed.
 #define REQUIRE_FIELD_ALT(types, primary, alternate, out) \
 	do { \
 		if (ResolveFieldEither(types, _countof(types), primary, alternate, out) != SYMBOL_ERR_SUCCESS) { \
@@ -145,18 +125,6 @@ DWORD ResolveDynamicOffsets()
 		(out) = static_cast<DWORD>(_sz); \
 	} while (0)
 
-// Best-effort variants. Same lookups, but a miss logs and leaves the field at
-// zero instead of failing the whole resolution.
-//
-// Use these ONLY for fields nothing in the tree dereferences. A field that is
-// actually consumed must stay STRICT: it has to be resolved or the consumer
-// would compute from a zero offset, which is exactly the stale-guess class of
-// bug the strict policy above exists to prevent. These exist because the
-// strict subset had grown to cover several fields with no consumer at all, so
-// a future ntdll PDB that renames or drops any one of them would block every
-// injection over a value nothing reads. If a field below ever gains a
-// consumer, promote it back to REQUIRE_FIELD in the same commit that adds the
-// consumer - the zero fallback is only safe while the field is write-only.
 #define OPTIONAL_FIELD(types, field, out) \
 	do { \
 		DWORD _off = 0; \
@@ -178,9 +146,6 @@ DWORD ResolveDynamicOffsets()
 		} \
 	} while (0)
 
-// Best-effort counterpart of REQUIRE_FIELD_ALT for the same reason.
-// OPTIONAL_FIELD_ALT is the mirror of REQUIRE_FIELD_ALT; a caller that needs
-// one needs the other, so both live here and both are #undef'd below.
 #define OPTIONAL_FIELD_ALT(types, primary, alternate, out) \
 	do { \
 		if (ResolveFieldEither(types, _countof(types), primary, alternate, out) != SYMBOL_ERR_SUCCESS) { \
@@ -188,17 +153,10 @@ DWORD ResolveDynamicOffsets()
 		} \
 	} while (0)
 
-	// TEB: SameTebFlags (worker check) and LastErrorValue (stub gs:[] disp) are
-	// consumed by the hijack path and stay STRICT. ProcessEnvironmentBlock has
-	// no reader, so it is best-effort.
 	REQUIRE_FIELD(kTeb, f_same_teb_flags.get(), tmp.TebSameTebFlags);
 	REQUIRE_FIELD(kTeb, f_last_error.get(), tmp.TebLastErrorValue);
 	OPTIONAL_FIELD(kTeb, f_peb.get(), tmp.TebProcessEnvironmentBlock);
 
-	// PEB: the Windows version comes from RtlGetVersion and the loader lock is
-	// only ever taken by the remote shell, which reads its own copy of these
-	// values - no host-side consumer exists for any PEB field. Best-effort so a
-	// PEB shape change cannot stall injection.
 	OPTIONAL_FIELD(kPeb, f_os_major.get(), tmp.PebOsMajorVersion);
 	OPTIONAL_FIELD(kPeb, f_os_minor.get(), tmp.PebOsMinorVersion);
 	OPTIONAL_FIELD(kPeb, f_os_build.get(), tmp.PebOsBuildNumber);
@@ -207,13 +165,8 @@ DWORD ResolveDynamicOffsets()
 	OPTIONAL_FIELD(kPeb, f_loader_lock.get(), tmp.PebLoaderLock);
 	OPTIONAL_SIZE(kPeb, tmp.PebSize);
 
-	// KUSER_SHARED_DATA.Cookie field (base 0x7FFE0000 is fixed mapping).
-	// Consumed by MMI_EnableExceptions - STRICT.
 	REQUIRE_FIELD(kKuser, f_cookie.get(), tmp.KuserCookie);
 
-	// LDR entry: only DllBase and sizeof() are consumed (MMI_LoadModule's
-	// name preprocessing and MMI_HandleTLS's dummy entry). The rest are
-	// documentation of the shape and have no reader.
 	REQUIRE_FIELD(kLdrEntry, f_dll_base.get(), tmp.LdrEntryDllBase);
 	REQUIRE_SIZE(kLdrEntry, tmp.LdrEntrySize);
 	OPTIONAL_FIELD(kLdrEntry, f_size_of_image.get(), tmp.LdrEntrySizeOfImage);
@@ -222,12 +175,6 @@ DWORD ResolveDynamicOffsets()
 	OPTIONAL_FIELD(kDdag, f_state.get(), tmp.LdrDdagNodeState);
 	OPTIONAL_SIZE(kDdag, tmp.LdrDdagNodeSize);
 
-	// Inverted tables. Field names differ by build (Count/CurrentSize,
-	// Entries/TableEntry, ImageSize/SizeOfImage,
-	// ExceptionDirectory/FunctionTable, ExceptionDirectorySize/SizeOfTable);
-	// the offsets are identical. Everything read by MMI_EnableExceptions is
-	// STRICT; ImageSize/SizeOfImage is not read there (the shell proves image
-	// containment with MMI_InImage against SizeOfImage it already holds).
 	REQUIRE_FIELD_ALT(kInvTable, f_count.get(), f_current_size.get(), tmp.InvertedTableCount);
 	REQUIRE_FIELD_ALT(kInvTable, f_entries.get(), f_table_entry.get(), tmp.InvertedTableEntries);
 	REQUIRE_FIELD(kInvEntry, f_image_base.get(), tmp.InvertedEntryImageBase);
@@ -243,13 +190,6 @@ DWORD ResolveDynamicOffsets()
 #undef OPTIONAL_FIELD_ALT
 #undef OPTIONAL_SIZE
 
-	// TLS entry: PDB-first, with a fallback derived from the repo's own
-	// documented _TLS_ENTRY (NTDefinitions.h, static_asserted to 72) instead of
-	// a hand-summed field list that could silently drift from it. The only
-	// consumer (MMI_HandleTLS) uses the size purely as an upper bound for
-	// reading ModuleEntry, so an oversized guess is harmless while an
-	// undersized one would disable the LdrpTlsList unlink and leak the dummy
-	// entry - err on the large side by taking the documented struct size.
 	{
 		DWORD off = 0;
 		if (sym_parser.GetFieldOffsetAny(kTls, _countof(kTls), f_module_entry.get(), off) == SYMBOL_ERR_SUCCESS && off && off < 0x200)
@@ -273,12 +213,8 @@ DWORD ResolveDynamicOffsets()
 		}
 	}
 
-	// LDRP_PATH_SEARCH_CONTEXT size + OriginalFullDllName offset: PDB-first,
-	// static fallback (over-allocate is safe; under-allocate would corrupt).
 	{
-		// One definition shared by both fallbacks below. Layout is the
-		// reverse-engineered context: it is only ever sized/offset, never
-		// dereferenced.
+
 		struct FALLBACK_CTX { wchar_t * a; void * b[3]; wchar_t * c; void * d[7]; ULONG64 e[4]; };
 
 		ULONG64 ctx_sz = 0;
@@ -288,8 +224,7 @@ DWORD ResolveDynamicOffsets()
 		}
 		else
 		{
-			// Fallback keeps the reverse-engineered size; it is only a heap
-			// allocation length, never an in-target field offset.
+
 			tmp.LdrpPathSearchContextSize = static_cast<DWORD>(sizeof(FALLBACK_CTX));
 			LOG(1, "DynamicOffsets: path context size via fallback %lu\n", tmp.LdrpPathSearchContextSize);
 		}
@@ -305,10 +240,6 @@ DWORD ResolveDynamicOffsets()
 		}
 	}
 
-	// Thread Running state (PDB first, stable fallback 2): the only scheduler
-	// value consumed anywhere (victim selection is Running-only). No wait
-	// stubs are disassembled and no consensus is published: with waiting
-	// threads never hijacked, return-address offsets have no consumer.
 	{
 		DWORD v = 0;
 		if (sym_parser.GetEnumValueAny(kThreadState, _countof(kThreadState), f_running.get(), v) == SYMBOL_ERR_SUCCESS)
@@ -324,10 +255,7 @@ DWORD ResolveDynamicOffsets()
 
 	tmp.Ready = 1;
 	g_DynamicOffsets = tmp;
-	// Publish only after every field is written: release-store the flag so a
-	// consumer's acquire-load of g_DynamicOffsetsReady observes the full
-	// struct. Ready is also set in tmp for the MANUAL_MAPPING_DATA copy, but
-	// this atomic store is the synchronization primitive.
+
 	g_DynamicOffsetsReady.store(1, std::memory_order_release);
 	LOG(1, "DynamicOffsets ready: t0=0x%X t1=0x%X t2=0x%X p0=0x%X p1=0x%X k0=0x%X l0=0x%X sz=%lu i0=0x%X i1=0x%X\n",
 		tmp.TebSameTebFlags, tmp.TebLastErrorValue, tmp.TebProcessEnvironmentBlock,

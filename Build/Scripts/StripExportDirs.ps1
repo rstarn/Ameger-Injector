@@ -2,35 +2,16 @@ param(
     [Parameter(Mandatory = $true)][string]$Path
 )
 
-# Remove the export directory from a payload on disk.
-#
-# Rationale: after manual mapping nothing resolves exports - there is no loader
-# entry, so GetProcAddress cannot work on the image (see the export wipe in
-# ManualMapping.cpp). The directory exists on disk only as leftover plaintext,
-# and it carries the single most identifying symbol in the binary
-# ("ManualEntry"), plus the original DLL file name. Stripping it removes that
-# without affecting mapping or entry invocation, which travel by RVA.
-#
-# Import tables are deliberately NOT touched: the loader reads import
-# descriptors straight out of the mapped image, so they are functionally
-# required at rest.
-#
-# Exit 0 = stripped (or already absent), 1 = refused/failed.
-
 $ErrorActionPreference = 'Stop'
 
-# Colour handling. This script is launched from the protect stages, which set
-# their own ANSI variables, but a child PowerShell process cannot see them - so
-# the escapes are emitted here instead. AMEGER_NO_COLOR is honoured to match the
-# rest of the build.
 $noColour = ($env:AMEGER_NO_COLOR -eq '1')
 $esc = [string][char]27
 if ($noColour) {
     $G = ''; $E = ''; $X = ''
 } else {
-    $G = "$esc[92m"   # green, result values
-    $E = "$esc[91m"   # red, failures
-    $X = "$esc[0m"    # reset
+    $G = "$esc[92m"
+    $E = "$esc[91m"
+    $X = "$esc[0m"
 }
 
 if (-not (Test-Path -LiteralPath $Path)) { Write-Host "  $E[!]$X export strip: file not found: $Path"; exit 1 }
@@ -75,7 +56,6 @@ function Convert-RvaToOffset([uint32]$rva) {
 $eo = Convert-RvaToOffset $expRva
 if ($eo -lt 0) { Write-Host "  $E[!]$X export strip: export RVA 0x$($expRva.ToString('X')) outside every section"; exit 1 }
 
-# Collect every plaintext string the directory points at so none survives.
 $strings = New-Object System.Collections.Generic.List[int]
 $nameRva = [BitConverter]::ToUInt32($b, $eo + 12)
 if ($nameRva -ne 0) { $strings.Add((Convert-RvaToOffset $nameRva)) }
@@ -96,14 +76,12 @@ foreach ($o in $strings) {
     if ($o -lt $b.Length) { $b[$o] = 0 }
 }
 
-# Clear the directory structure and the data-directory entry that advertises it.
 $end = [Math]::Min($eo + [int]$expSz, $b.Length)
 for ($o = $eo; $o -lt $end; $o++) { $b[$o] = 0 }
 for ($o = $ddoff; $o -lt ($ddoff + 8); $o++) { $b[$o] = 0 }
 
 [IO.File]::WriteAllBytes($Path, $b)
 
-# Verify: the entry must read empty and no export name may survive.
 $v = [IO.File]::ReadAllBytes($Path)
 $ve = [BitConverter]::ToInt32($v, 0x3C)
 $vdd = if ($pe32p) { $ve + 4 + 20 + 112 } else { $ve + 4 + 20 + 96 }

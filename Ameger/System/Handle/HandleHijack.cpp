@@ -3,12 +3,6 @@
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "System/Handle/HandleHijack.h"
 
-// Handle-hijack implementation (see HandleHijack.h for the strategy note).
-// What: sponsor validation/duplication plus the owner-first donor scan with
-//   self-calibrated type indices, owner/dup budgets, and functional rights
-//   proofs (never NtQueryObject). Why this shape: direct OpenProcess/
-//   OpenThread is the most-hooked telemetry, so usable handles are borrowed
-//   from processes that already hold them.
 namespace
 {
 	constexpr ULONG kSystemExtendedHandleInformation = 64;
@@ -19,10 +13,8 @@ namespace
 	constexpr size_t kInitialEnumBytes = 1 << 20;
 	constexpr size_t kMaxEnumBytes = 64ULL * 1024ULL * 1024ULL;
 
-	// Scan budgets: bound the worst case to a handful of operations so a miss
-	// can never degrade into a system-wide open/duplicate storm.
-	constexpr size_t kMaxForeignOwners = 16;	// distinct non-target owners opened per scan
-	constexpr size_t kMaxDupAttempts = 512;		// total duplicate attempts per scan
+	constexpr size_t kMaxForeignOwners = 16;
+	constexpr size_t kMaxDupAttempts = 512;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
 	{
@@ -76,9 +68,7 @@ namespace
 
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
-		// Zero-literal construction: no "ntdll.dll" bytes of any kind in
-		// .rdata, not even ciphertext. Each char is a template parameter.
-		// Direct arity (not the COUNT dispatch): deterministic expansion.
+
 		wchar_t ntdll_mod[10];
 		do {
 			constexpr auto stack_key = KC_STACK_KEY_;
@@ -107,9 +97,7 @@ namespace
 		UniqueHandle Token(RawToken);
 
 		LUID Luid{ 0 };
-		// SE_DEBUG_NAME is a plaintext SDK literal ("SeDebugPrivilege") that
-		// would otherwise persist in .rdata; decrypt it onto the stack for
-		// the duration of this call only.
+
 		if (!LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
 		{
 			return false;
@@ -128,21 +116,9 @@ namespace
 		return GetLastError() == ERROR_SUCCESS;
 	}
 
-	// Object-type indices are boot-stable: calibrate once per process
-	// lifetime and reuse (0 = not calibrated yet).
 	std::atomic<USHORT> g_CachedProcessType{ 0 };
 	std::atomic<USHORT> g_CachedThreadType{ 0 };
 
-	// SeDebugPrivilege is enabled lazily - only after an owner open fails.
-	// Common paths (target-owned and self-owned donors) never need it, so the
-	// AdjustTokenPrivileges call disappears from the default acquisition. The
-	// flag below gates one enable at a time (not once per process lifetime):
-	// each scan that enabled it revokes it before returning, so no token state
-	// survives the acquisition - matching the launcher, which enables for one
-	// open and immediately removes. A revoked flag is reset so a later scan
-	// can re-enable; without the reset, the first revoke would permanently
-	// wedge later scans into fail-closed (the flag would claim "attempted"
-	// while the privilege is actually gone).
 	std::atomic<bool> g_DebugPrivilegeAttempted{ false };
 
 	void EnsureSeDebugPrivilege()
@@ -154,12 +130,6 @@ namespace
 		}
 	}
 
-	// Removes SeDebugPrivilege from our token and re-arms the attempt flag so
-	// a future scan can enable again. Best-effort: runs after a scan whether
-	// or not this scan enabled (removing a non-held privilege is a harmless
-	// no-op), but callers only invoke it when they observed the flag flip to
-	// avoid pointless token traffic on the common no-privilege path. Never
-	// invalidates handles already obtained (rights are checked at dup time).
 	void RevokeSeDebugPrivilege()
 	{
 		HANDLE RawToken = nullptr;
@@ -167,15 +137,13 @@ namespace
 		{
 			UniqueHandle Token(RawToken);
 
-			// Stack-decrypted privilege name (see EnableSeDebugPrivilege).
 			LUID Luid{ 0 };
 			if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
 			{
 				TOKEN_PRIVILEGES Privileges{ 0 };
 				Privileges.PrivilegeCount = 1;
 				Privileges.Privileges[0].Luid = Luid;
-				// REMOVED, not merely disabled: a disabled-but-held privilege
-				// is still enumerable token state.
+
 				Privileges.Privileges[0].Attributes = SE_PRIVILEGE_REMOVED;
 				AdjustTokenPrivileges(Token.get(), FALSE, &Privileges, sizeof(Privileges), nullptr, nullptr);
 			}
@@ -258,9 +226,6 @@ namespace
 		return QueryHandleSnapshot(Ntdll, kSystemHandleInformation, false, Out, LastStatus);
 	}
 
-	// Self-calibration: locate our own known handle inside the snapshot and
-	// read back its ObjectTypeIndex. Indices vary per boot, so hardcoding
-	// them is the classic reason hijack scans "find nothing".
 	bool FindOwnEntryType(const EnumSnapshot & Snapshot, DWORD SelfPid, ULONG_PTR HandleValue, USHORT & TypeIndexOut)
 	{
 		if (Snapshot.Extended)
@@ -330,12 +295,6 @@ namespace
 		return false;
 	}
 
-	// Functional rights probes. NtQueryObject(BasicInformation) is filtered
-	// on protected targets, so rights are proven by doing, not by asking.
-	// Dup-with-explicit-mask success already proves the source carried the
-	// rights (the kernel refuses otherwise); the probes below confirm the
-	// duplicated handle is honestly usable. All probes leave zero lasting
-	// effect in the target.
 	bool ProbeQueryUsable(HANDLE Candidate, DWORD TargetPid)
 	{
 		if (GetProcessId(Candidate) != TargetPid)
@@ -356,10 +315,6 @@ namespace
 			return false;
 		}
 
-// Retried once: a release that fails while the reserve is still live is
-	// occasionally transient, and a retry reclaims the page instead of leaving
-	// a permanently reserved hole in the candidate. Still fails closed if the
-	// second attempt fails.
 	for (int attempt = 0; attempt < 2; ++attempt)
 	{
 		if (VirtualFreeEx(Candidate, Page, 0, MEM_RELEASE))
@@ -368,11 +323,6 @@ namespace
 		}
 	}
 
-	// The reserve succeeded on this same handle, so a persistently failed
-	// release is unexpected. The probe page then stays reserved in the target -
-	// bounded by the scan budget, but genuinely unreclaimable. The return value
-	// is unchanged: a candidate that cannot release the probe is rejected
-	// exactly as before.
 	LOG(1, "ProbeVmOperation: release failed twice (%lu)\n", GetLastError());
 	return false;
 }
@@ -397,10 +347,6 @@ namespace
 		return GetThreadId(Candidate) == TargetTid && GetProcessIdOfThread(Candidate) == TargetPid;
 	}
 
-	// Opens (and caches) a handle to an owner process for duplication.
-	// Failures are cached too, so one unreachable owner cannot be re-opened
-	// for each of its entries. SeDebugPrivilege is enabled on the first
-	// failure and the open retried once.
 	HANDLE OpenOwnerCached(std::vector<std::pair<DWORD, UniqueHandle>> & Owners, DWORD OwnerPid)
 	{
 		for (auto & Owner : Owners)
@@ -436,10 +382,7 @@ namespace
 		HANDLE TargetOwnerHandle, HANDLE & Out, HijackStats & Detail)
 	{
 		Out = nullptr;
-		// NOTE: fills only scan-owned fields. Attempted/Source/SnapStatus/
-		// Calibrated belong to the caller (HijackImpl) - resetting Detail
-		// here once wiped Attempted to 0 on every scan, which made the UI
-		// report "no telemetry" while real counters arrived intact.
+
 		Detail.Examined = 0;
 		Detail.DonorPid = 0;
 		Detail.GrantedAccess = 0;
@@ -454,9 +397,7 @@ namespace
 		Detail.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 
 		std::vector<std::pair<DWORD, UniqueHandle>> Owners;
-		// Objects already proven to be the wrong target (dup succeeded, verify
-		// rejected): the same object can never verify later, so later entries
-		// pointing at it are skipped without another duplicate.
+
 		std::unordered_set<ULONG_PTR> WrongObjects;
 		size_t Examined = 0;
 		size_t Duplicated = 0;
@@ -474,8 +415,7 @@ namespace
 		{
 			if (DupAttempts >= kMaxDupAttempts)
 			{
-				// Budget stop: bound the worst case so a miss can never
-				// degrade into a system-wide duplicate storm.
+
 				++BudgetSkipped;
 				BudgetHit = true;
 				return false;
@@ -489,7 +429,6 @@ namespace
 				return false;
 			}
 
-			// Our own table: duplicate directly, no owner open needed.
 			if (OwnerPid == SelfPid)
 			{
 				HANDLE DirectRaw = nullptr;
@@ -505,9 +444,6 @@ namespace
 					return false;
 				}
 
-				// RAII from the moment of acquisition: every later exit -
-				// including an exception thrown while recording the rejected
-				// object - closes the duplicate instead of leaking it.
 				UniqueHandle Direct(DirectRaw);
 
 				++Duplicated;
@@ -532,10 +468,6 @@ namespace
 				return true;
 			}
 
-			// Owner resolution: target-owned entries duplicate from the
-			// caller-supplied handle to the target when available (the target
-			// is never opened a second time); foreign owners go through the
-			// bounded, negatively-cached owner cache.
 			HANDLE Owner = nullptr;
 			if (OwnerPid == TargetPid && TargetOwnerHandle)
 			{
@@ -576,8 +508,6 @@ namespace
 				return false;
 			}
 
-			// Explicit-mask duplication is itself the rights proof: the kernel
-			// refuses unless the donor carried at least the requested mask.
 			HANDLE DuplicatedRaw = nullptr;
 			if (!NtOk(Ntdll.NtDuplicateObject(Owner, SourceValue, GetCurrentProcess(),
 				&DuplicatedRaw, DesiredAccess, 0, 0)) || !DuplicatedRaw)
@@ -591,9 +521,6 @@ namespace
 				return false;
 			}
 
-			// RAII from the moment of acquisition: every later exit - including
-			// an exception thrown while recording the rejected object - closes
-			// the duplicate instead of leaking it.
 			UniqueHandle DuplicatedHandle(DuplicatedRaw);
 
 			++Duplicated;
@@ -605,7 +532,7 @@ namespace
 				++VerifyRejected;
 				if (Object)
 				{
-					// Same object = same underlying target; never re-dup it.
+
 					WrongObjects.insert(ReCa<ULONG_PTR>(Object));
 				}
 				return false;
@@ -619,8 +546,6 @@ namespace
 			return true;
 		};
 
-		// Extract the raw table size and the type-matching candidates in one
-		// walk (the raw snapshot stays untouched for calibration callers).
 		struct Candidate
 		{
 			DWORD		OwnerPid;
@@ -685,13 +610,8 @@ namespace
 			}
 		}
 
-		// Raw table size, recorded before filtering.
 		Detail.TotalHandles = static_cast<DWORD>(TotalCount);
 
-		// Owner-first passes: 0 = target-owned entries (the real-world winner
-		// almost always lives here - the target's own handle to itself), then
-		// our own table, then foreign owners (bounded by the budgets). The
-		// scan stops at the first verified hit.
 		for (DWORD Pass = 0; Pass < 3 && !Out && !BudgetHit; ++Pass)
 		{
 			for (const auto & Entry : Candidates)
@@ -760,12 +680,6 @@ namespace
 		Local.Attempted = 1;
 		Local.Source = static_cast<DWORD>(HijackSource::Scan);
 
-		// Token hygiene: if this scan is the one that flips the lazy
-		// SeDebugPrivilege attempt flag, revoke the privilege before returning
-		// so no token state survives the acquisition. Recorded up front; the
-		// Finish path below revokes exactly when we flipped it (a pre-set flag
-		// means someone else owns that decision - and with the single
-		// injection gate there is no one else running concurrently).
 		const bool priv_previously_attempted = g_DebugPrivilegeAttempted.load(std::memory_order_acquire);
 
 		const auto Finish = [&](DWORD Code) -> DWORD
@@ -805,19 +719,9 @@ namespace
 			return Finish(INJ_ERR_HANDLE_HIJACK_FAILED);
 		}
 
-		// Object-type indices are boot-stable: calibrate once per process
-		// lifetime and reuse from the cache afterwards. The cache is read
-		// first so the self-calibration handles below are opened only when a
-		// calibration is actually needed.
 		USHORT WantedType = (ThreadScan ? g_CachedThreadType : g_CachedProcessType).load(std::memory_order_acquire);
 		bool HaveType = WantedType != 0;
 
-		// Calibrators are opened BEFORE the single enumeration so they are
-		// guaranteed to exist in it (a fresh Open* value cannot be found in
-		// an older snapshot): one enumeration instead of two. SeDebugPrivilege
-		// is intentionally NOT enabled here - the owner cache enables it
-		// lazily on the first open failure, so the common path never touches
-		// the token at all.
 		UniqueHandle SelfProc;
 		UniqueHandle SelfThread;
 		if (!HaveType)
@@ -869,8 +773,6 @@ namespace
 			*Detail = Local;
 		}
 
-		// Same token hygiene as Finish (this is the one return that bypasses
-		// it): revoke exactly when this scan flipped the lazy attempt flag.
 		if (!priv_previously_attempted && g_DebugPrivilegeAttempted.load(std::memory_order_acquire))
 		{
 			RevokeSeDebugPrivilege();
@@ -885,13 +787,7 @@ HijackStats g_ThreadHijackStats{ };
 
 namespace
 {
-	// These two slots are written by the injection thread and read by the
-	// UI/export thread with no other synchronization. A plain 80-byte struct
-	// assignment is not atomic, so a concurrent reader races with it (C++ UB)
-	// and can observe a half-updated record. Every field is a DWORD, so copy
-	// field-by-field through InterlockedExchange - a compiler intrinsic on
-	// x64, no new import - and load through InterlockedCompareExchange so no
-	// read/write pair is a data race.
+
 	void StoreHijackStats(HijackStats & Dst, const HijackStats & Src)
 	{
 		static_assert(sizeof(HijackStats) % sizeof(LONG) == 0, "HijackStats must be a whole number of LONGs");
@@ -922,10 +818,6 @@ namespace
 		return false;
 	}
 
-	// Identity first: the handle must reference the requested process, and its
-	// image name must be readable (that proves PROCESS_QUERY_LIMITED_INFORMATION).
-	// Rights are proven by doing, never by NtQueryObject, which protected
-	// targets filter.
 	const DWORD ActualPid = GetProcessId(Candidate);
 	if (ActualPid != TargetPid)
 	{
@@ -941,15 +833,6 @@ namespace
 		return false;
 	}
 
-	// Access: when the caller asks for VM_OPERATION, prove it with the existing
-	// reserve/release probe. This is the conservative correct check - it
-	// exercises a requested right directly (the injection path cannot run
-	// without VM_OPERATION) using the lightest probe in this file. A full
-	// alloc/write/read roundtrip is deliberately NOT done here: the call site
-	// already enforces the full mask with an explicit-mask DuplicateHandle and
-	// runs ProbeMemoryRoundtrip unless INJ_SKIP_SPONSOR_ROUNDTRIP is set, so
-	// roundtripping unconditionally would duplicate that probe and reject
-	// handles the path intentionally allows.
 	if ((DesiredAccess & PROCESS_VM_OPERATION) && !ProbeVmOperation(Candidate))
 	{
 		return false;
@@ -958,10 +841,6 @@ namespace
 	return true;
 }
 
-// Full roundtrip on a single committed page: proves VM_OPERATION (alloc),
-// VM_WRITE, VM_READ and QUERY_* together with zero lasting effect - the page
-// is released before returning. Used for the sponsor dup only (per-candidate
-// use inside the scan loop would churn the target's address space).
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
 	void * Page = VirtualAllocEx(Candidate, nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);

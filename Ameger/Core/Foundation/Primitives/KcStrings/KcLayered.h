@@ -6,17 +6,11 @@
 
 #include "Core/DomainKey.h"
 
-// Triple-layer strings: KernelCloak layered_string.h replica (XOR +
-// XTEA-32 + Fisher-Yates shuffle, six keys per site). Wide layered has no
-// KC upstream equivalent; it applies the identical construction byte-wise
-// over the UTF-16 encoding so the XTEA block structure is preserved.
-// See Core/KcStrSuite.h for the usage rules and the usermode deltas.
 namespace kc_strings
 {
 namespace detail
 {
-	// XTEA-32 block-cipher constants for the middle layer (exact upstream
-	// values; deltas here would fork every layered ciphertext).
+
 	constexpr std::uint32_t kXteaDelta = 0x9E3779B9u;
 	constexpr std::size_t kXteaRounds = 32;
 
@@ -83,17 +77,6 @@ namespace detail
 		return static_cast<std::uint8_t>((keyA >> ((idx % 4) * 8)) ^ (idx * 0x9E3779B9u));
 	}
 
-	// Compile-time Fisher-Yates shuffle order for N bytes under Seed.
-	// Forward maps plain index -> shuffled slot; Inverse undoes it at
-	// decrypt time.
-	//
-	// The shuffle ORDER does land in .rdata: Decrypt odr-uses s_perm at run
-	// time (the Inverse lookup below), so the compiler must materialize both
-	// tables - kPadded * sizeof(size_t) * 2 bytes. That is not a plaintext
-	// leak and it is not a weakness: the whole table is derivable from
-	// ShuffleSeed, which is itself a template argument emitted as an immediate
-	// next to the XTEA key. Regenerating the order at run time to keep it out
-	// of the image would cost more than it protects.
 	template <std::size_t N, std::uint32_t Seed>
 	struct BytePermutation
 	{
@@ -110,10 +93,7 @@ namespace detail
 			}
 
 			std::uint32_t state = Seed;
-			// The loop below starts at N - 1 and counts down to 1. With N == 0
-			// that expression wraps to SIZE_MAX and the loop runs to completion;
-			// the static_assert above now rejects the only instantiations that
-			// could reach it.
+
 			for (std::size_t i = N - 1; i > 0; --i)
 			{
 				state = state * 0x41C64E6Du + 0x3039u;
@@ -198,13 +178,6 @@ public:
 
 		detail::Wipe<char, N>(staged);
 
-		// Wipe buf too. After the XTEA pass above, buf[i] is exactly
-		// plaintext[i] ^ LayerXorKey(KeyA, i), and KeyA is a compile-time
-		// template argument emitted as an immediate in the XTEA loop - so for
-		// the remainder of this frame the buffer holds plaintext recoverable
-		// with one XOR. Every other tier in the suite wipes its staging buffer;
-		// this one did not, which contradicted the claim in KcStrSuite.h that
-		// the layered tiers clean up after themselves.
 		detail::Wipe<std::uint8_t, kPadded>(buf);
 	}
 
@@ -320,8 +293,6 @@ public:
 
 		detail::Wipe<wchar_t, N>(staged);
 
-		// Same reason as the narrow tier: past the XTEA pass buf holds
-		// plaintext masked by a compile-time-immediate keystream. Wipe it.
 		detail::Wipe<std::uint8_t, kPadded>(buf);
 	}
 
@@ -365,7 +336,7 @@ __forceinline KcDecryptedLayeredW<N, KeyA, KeyB0, KeyB1, KeyB2, KeyB3, ShuffleSe
 {
 	return KcDecryptedLayeredW<N, KeyA, KeyB0, KeyB1, KeyB2, KeyB3, ShuffleSeed>(enc);
 }
-} // namespace kc_strings
+}
 
 #define KC_STR_LAYERED(s) ::kc_strings::KcMakeLayered([]() -> const auto & { constexpr std::uint32_t kc_cnt = static_cast<std::uint32_t>(__COUNTER__); constexpr std::uint32_t kc_ln = static_cast<std::uint32_t>(__LINE__); constexpr std::uint32_t kc_sd = ::kc_strings::detail::kStringSeed; constexpr std::uint32_t kc_ka = ((kc_cnt + 1) * 0x45D9F3Bu ^ kc_ln * 0x1B873593u) ^ kc_sd; constexpr std::uint32_t kc_kb0 = ((kc_cnt + 2) * 0xCC9E2D51u ^ kc_ln * 0x85EBCA6Bu) ^ kc_sd; constexpr std::uint32_t kc_kb1 = ((kc_cnt + 3) * 0xC2B2AE35u ^ kc_ln * 0x27D4EB2Du) ^ kc_sd; constexpr std::uint32_t kc_kb2 = ((kc_cnt + 4) * 0x165667B1u ^ kc_ln * 0xE6546B64u) ^ kc_sd; constexpr std::uint32_t kc_kb3 = ((kc_cnt + 5) * 0x9E3779B9u ^ kc_ln * 0x41C64E6Du) ^ kc_sd; constexpr std::uint32_t kc_sh = ((kc_cnt + 6) * 0x6C62272Eu ^ kc_ln * 0xBEA6E8C5u) ^ kc_sd; static constexpr ::kc_strings::KcLayeredString<sizeof(s), kc_ka, kc_kb0, kc_kb1, kc_kb2, kc_kb3, kc_sh> kc_e(s, std::make_index_sequence<sizeof(s)>{}); return kc_e; }())
 

@@ -7,11 +7,6 @@
 #include <bcrypt.h>
 #include <iomanip>
 
-// Host utility implementations (see Tools.h for the per-function contract).
-// What: OS probes, PE validation wrappers, path/temp/scramble helpers, and
-//   the serialized error log. Why here: shared logic every stage needs, kept
-//   out of headers to avoid bloating the in-target shell. bcrypt is linked
-//   for the payload SHA-256 pin check.
 #pragma comment(lib, "bcrypt.lib")
 
 namespace
@@ -28,9 +23,6 @@ namespace
 	{
 		DWORD * error_code = static_cast<DWORD *>(parameter);
 
-		// No PEB/TEB offsets here: version comes from RtlGetVersion (ntdll
-		// export, no struct layout needed) instead of __readgsqword(0x60) +
-		// hardcoded PEB field offsets. Fully dynamic, no per-build constants.
 		auto ntdll_name = XOR_STR_W(L"ntdll.dll");
 		HMODULE hNtdll = GetModuleHandleW(ntdll_name.get());
 		if (!hNtdll)
@@ -66,28 +58,11 @@ namespace
 		DWORD v_hi = ver.dwMajorVersion;
 		DWORD v_lo = ver.dwMinorVersion;
 
-		// Clamp the minor into the 0..99 window the packing below assumes.
-		// A conforming RTL_OSVERSIONINFOW always reports 0..9, so this is
-		// defensive. The previous `for (; v_lo >= 10; v_lo /= 10)` divided by
-		// 10 rather than reducing modulo 100, so any out-of-range report was
-		// silently mangled (13 became 1) instead of folded into range.
 		if (v_lo > 99)
 		{
 			v_lo %= 100;
 		}
 
-		// Packed as major * 100 + minor, the contract Tools.h documents
-		// (Win10/11 => 1000, Win8.1 => 602, Win7 => 601).
-		//
-		// This used to be `v_hi * 10 + v_lo`, which yields 100 for Win11 and
-		// matches neither the header nor any recognized packing: 100 is also
-		// what a literal "major*100+minor" read of a bogus 1.0 release gives.
-		// No consumer compares the value today - the OS gate is build-number
-		// based (GetSupportedWindowsLayout) and Main.cpp only tests it against
-		// zero - so the defect never fired. It is fixed here because the next
-		// consumer that trusts the header would otherwise be handed a version
-		// number 10x too small, and 22000-vs-2200 is exactly the class of
-		// off-by-a-factor error this codebase documents against elsewhere.
 		g_OSVersion = v_hi * 100 + v_lo;
 		g_OSBuildNumber = ver.dwBuildNumber;
 
@@ -118,14 +93,7 @@ DWORD GetOSBuildVersion()
 
 bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layout_family)
 {
-	// 22H2 (22621) and 23H2 (22631) share the same ntdll/loader layout
-	// (23H2 is a 22H2 enablement package), so they map to one family.
-	// 24H2 (26100) and 25H2 (26200) are likewise layout-compatible within
-	// their ranges. Exact-equality matching broke every 23H2 machine
-	// (the most common Win11 gaming build) with INJ_ERR_WINDOWS_BUILD_UNSUPPORTED
-	// (0x4E), which the UI then misreported as "Failed to load symbols".
-	// Match by range and forward-map newer builds to the latest known family
-	// instead of failing closed on each feature update.
+
 	bool supported = true;
 
 	if (build_number >= 26200)
@@ -240,10 +208,6 @@ DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
 
-	// Mirror ValidateDllFile's ceiling (:178). This path bounds every read
-	// PE_IMAGE::Validate makes by the caller-supplied RawSize, so without an
-	// upper bound a wrong RawSize reads past the caller's buffer instead of
-	// being rejected.
 	if (RawSize > PE_IMAGE::MAX_IMAGE_SIZE)
 	{
 		LOG(1, "In-memory image exceeds the maximum supported size: %08X\n", RawSize);
@@ -282,13 +246,6 @@ bool GetOwnModulePathW(std::wstring & out)
 	return true;
 }
 
-// Builds the root that the symbol cache lives under for this run. The leaf is
-// drawn per run from the OS CSPRNG, so two things that a stable name would
-// expose are gone: a directory an observer can look for by name, and a
-// directory an earlier run has already left behind. The caller owns the tree:
-// DeleteSymbolCacheRoot() removes it again (PurgePdb -> ImportHandler ->
-// launcher shutdown), so a completed run leaves nothing even though the leaf
-// name is unpredictable.
 bool GetSymbolCacheRoot(std::wstring & out)
 {
 	out.clear();
@@ -297,14 +254,7 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	DWORD length = GetEnvironmentVariableW(XOR_STR_W(L"LOCALAPPDATA").get(), local_app_data, MAX_PATH);
 	if (!length || length >= MAX_PATH)
 	{
-		// LOCALAPPDATA absent (stripped/service environment): fall back to the
-		// system temp dir rather than the caller's module-directory fallback.
-		// The module dir is the loudest possible home for a timestamped
-		// ntdll.pdb; TEMP already contains arbitrary artifacts on this machine
-		// and is swept by cleanup, so the PDB blends in instead of sitting a
-		// multi-megabyte file beside the runtime. PurgePdb still deletes it
-		// once imports resolve. An empty TEMP return falls through to the
-		// caller, preserving its existing behavior as a last resort.
+
 		length = GetTempPathW(MAX_PATH, local_app_data);
 		if (!length || length >= MAX_PATH)
 		{
@@ -318,9 +268,6 @@ bool GetSymbolCacheRoot(std::wstring & out)
 		root += L'\\';
 	}
 
-	// Random 10-character leaf, first character a letter so the name parses as
-	// a plain directory name. Drawn from the same CSPRNG the temp-name helper
-	// uses, with the tick counter as a fallback if the OS call fails.
 	static const wchar_t kAlphabet[] = L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 	unsigned char pick[10]{ 0 };
@@ -336,7 +283,6 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	std::wstring leaf;
 	leaf.reserve(10);
 
-	// Letters only for the first character.
 	leaf += static_cast<wchar_t>('a' + (pick[0] % 26));
 
 	for (int i = 1; i < 10; ++i)
@@ -357,10 +303,6 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	return true;
 }
 
-// Removes the per-run symbol cache tree, including the PDB and the Symbols
-// directory. Best effort: the tree is random-named and uninteresting on disk,
-// so a failure to delete is reported but never allowed to fail the run that
-// requested the removal.
 void DeleteSymbolCacheRoot(const std::wstring & root)
 {
 	if (root.empty())
@@ -368,8 +310,6 @@ void DeleteSymbolCacheRoot(const std::wstring & root)
 		return;
 	}
 
-	// Depth-first: clear the two levels the loader creates (the Symbols
-	// directory and the PDB inside it) plus the random root itself.
 	std::wstring pattern = root;
 	if (pattern.back() != L'\\')
 	{
@@ -399,7 +339,7 @@ void DeleteSymbolCacheRoot(const std::wstring & root)
 
 			if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 			{
-				// One nested level, then remove the directory.
+
 				std::wstring nested = child + L"\\*";
 
 				WIN32_FIND_DATAW inner{ 0 };
@@ -459,15 +399,6 @@ bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 	return !bWOW64;
 }
 
-// Stealth: no disk artifact. Failures stay in a volatile ring buffer
-// (16 entries) and go to the debug callback only. The ring stores exactly the
-// fields GetLastErrorInfo publishes - and nothing it deliberately drops. The
-// full ERROR_INFO carries SourceFile/FunctionName (always empty, layout
-// compat), TargetProcessId, HandleValue and the RawData pointer/size; keeping
-// those in a global would put operator paths, PIDs and payload pointers into
-// every crash dump of this process, which is precisely what the ring's contract
-// forbids. Fixed arrays keep the record fully inside the ring buffer with no
-// separate heap allocation per entry.
 namespace
 {
 	constexpr size_t kErrorRingCapacity = 16;
@@ -508,15 +439,9 @@ void ErrorLog(const ERROR_INFO & info)
 	redacted.LaunchMethod = info.LaunchMethod;
 	redacted.bNative = info.bNative;
 
-	// Basename before storing so even a crash dump never holds an absolute
-	// operator path. TargetProcessExeFileName is already a bare exe name (see
-	// Inject_Internal QueryFullProcessImageNameW handling).
 	const std::wstring dll_name = BasenameOnly(info.DllFileName);
 	wcsncpy_s(redacted.DllFileName, _countof(redacted.DllFileName), dll_name.c_str(), _TRUNCATE);
 	wcsncpy_s(redacted.TargetProcessExeFileName, _countof(redacted.TargetProcessExeFileName), info.TargetProcessExeFileName.c_str(), _TRUNCATE);
-	// Deliberately NEVER stored: TargetProcessId, HandleValue, SourceFile,
-	// FunctionName, RawData, RawSize. GetLastErrorInfo cannot publish what the
-	// ring does not hold, so a dump of this process cannot surface them either.
 
 	AcquireSRWLockExclusive(&g_ErrorLogLock);
 	g_ErrorRing[g_ErrorRingHead] = redacted;
@@ -527,8 +452,6 @@ void ErrorLog(const ERROR_INFO & info)
 	}
 	ReleaseSRWLockExclusive(&g_ErrorLogLock);
 
-	// Debug channel only (console/callback when the operator attaches one).
-	// No PID, no full path, no file write.
 	LOG(1, "Load failed: code=%08X adv=%08X flags=%08X mode=%d method=%d\n",
 		info.ErrorCode, info.AdvErrorCode, info.Flags,
 		static_cast<int>(info.InjectionMode), static_cast<int>(info.LaunchMethod));
@@ -543,17 +466,13 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 		return INJ_ERR_NO_DATA;
 	}
 
-	// Take a copy under the lock so a concurrent ErrorLog cannot advance the
-	// head between reading the index and reading the record. The ring record
-	// is a plain fixed-array struct, so this copy shares nothing with the
-	// ring and the flat POD below needs no further translation of heap state.
 	ERROR_RING_RECORD snapshot{};
 	bool have_record = false;
 
 	AcquireSRWLockShared(&g_ErrorLogLock);
 	if (g_ErrorRingCount)
 	{
-		// The newest record sits one slot behind the head.
+
 		const size_t newest = (g_ErrorRingHead + kErrorRingCapacity - 1) % kErrorRingCapacity;
 		snapshot = g_ErrorRing[newest];
 		have_record = true;
@@ -575,17 +494,8 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 	Out->LaunchMethod = static_cast<int>(snapshot.LaunchMethod);
 	Out->bNative = snapshot.bNative;
 
-	// wcsncpy_s with an explicit destination size truncates rather than
-	// overrunning. The sources are already basename-redacted by ErrorLog, so no
-	// absolute operator path leaves the process.
 	wcsncpy_s(Out->DllFileName, _countof(Out->DllFileName), snapshot.DllFileName, _TRUNCATE);
 	wcsncpy_s(Out->TargetProcessExeFileName, _countof(Out->TargetProcessExeFileName), snapshot.TargetProcessExeFileName, _TRUNCATE);
-
-	// There is no "deliberately not copied" list any more: TargetProcessId,
-	// HandleValue, SourceFile, FunctionName, RawData and RawSize were never
-	// stored in the ring (see ErrorLog), so GetLastErrorInfo cannot publish
-	// them even by mistake. The property is structural, not a checklist in a
-	// comment.
 
 	return INJ_ERR_SUCCESS;
 }
@@ -607,9 +517,6 @@ bool StartAsyncWorker(ASYNC_WORKER_SLOT & slot, LPTHREAD_START_ROUTINE entry, vo
 		return false;
 	}
 
-	// Publish Done before the thread exists so a worker that runs immediately
-	// can never observe or signal a null event. If creation fails the thread
-	// never ran, so clearing the slot cannot race.
 	slot.Done = done;
 	HANDLE thread = CreateThread(nullptr, 0, entry, param, 0, nullptr);
 	if (!thread)
@@ -662,9 +569,7 @@ std::wstring CharArrayToStdWstring(const char * szString)
 		if (required > 1)
 		{
 			out.assign(static_cast<size_t>(required) - 1, L'\0');
-			// Same flag as the sizing call: without it the conversion silently
-			// substitutes U+FFFD for invalid bytes, so a string that failed the
-			// size probe could still yield a (corrupted) result here.
+
 			if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, out.data(), required))
 			{
 				out.clear();

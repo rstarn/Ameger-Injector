@@ -1,9 +1,7 @@
 $failed = $false
 $Files = @($args)
 foreach ($f in $Files) {
-  # Freshly-linked binaries are often briefly memory-mapped by real-time AV
-  # scanning them, which fails the rewrite with "user-mapped section open".
-  # Retry transient IO locks; fail fast on permanent validation errors.
+
   $done = $false
   for ($attempt = 1; $attempt -le 20 -and -not $done; $attempt++) {
     try {
@@ -24,8 +22,7 @@ foreach ($f in $Files) {
       Write-Host ("Retimestamped: " + $f)
       $done = $true
     } catch {
-      # Method invocations wrap the real error (InnerException), so walk
-      # the chain: only IOExceptions (locks, AV scans) are retried.
+
       $chain = $_.Exception
       while ($chain -and -not ($chain -is [System.IO.IOException])) { $chain = $chain.InnerException }
       if ($chain -and $attempt -lt 20) {

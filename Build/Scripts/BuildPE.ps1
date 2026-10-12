@@ -1,47 +1,3 @@
-# Binary PE mutation engine for Ameger Injector.
-#
-# Inspired by Kiy0w0/kernel-mmi "Layer 2 Binary PE mutation", adapted to this
-# repo: strict Windows PowerShell 5.1 (no PS7-only syntax), AV-scan retry
-# handling like AddPE.ps1, fail-safe GUID stamping (verified zero
-# slack only), and PE32+ data-directory math computed from the section table
-# instead of hardcoded offsets.
-#
-# After linking, 11 mutations are applied in place (file size never changes):
-#   1. TimeDateStamp      - crypto-random compile timestamp (also in
-#                           AddPE.ps1; re-randomized here, idempotent)
-#   2. Checksum           - crypto-random PE checksum (ignored by the loader
-#                           for user-mode DLL/EXE)
-#   3. Rich Header        - destroy MSVC toolchain fingerprint (DanS..Rich)
-#   4. Section Names      - rename standard sections to neutral names and
-#                           custom groups (.mmap_sec/.veh_sec/REMOTE_T) to
-#                           random names; loader and repo validator key off
-#                           directories/addresses, never names
-#   5. Debug Directory    - randomize debug blobs (PDB path/GUID), then zero
-#                           the directory RVA/Size; skipped when absent
-#   6. Linker Version     - plausible MSVC linker version numbers
-#   7. OS Version         - declared OS/image/subsystem versions; pinned to
-#                           10.0 so the mutated image never under-reports the
-#                           Win10/11 APIs the build actually links against
-#                           (under-reporting is loader-legal but a fingerprint
-#                           lie, and it breaks GetVersionEx-based tooling)
-#   8. Code Caves         - homogeneous 0x00/0xCC runs (>= 64 bytes) inside
-#                           EXECUTE sections that are NOT covered by any
-#                           .pdata (exception directory) function range, so
-#                           only linker slack is ever touched; filled with
-#                           multi-byte NOPs
-#   9. Build GUID         - 128-bit watermark, but ONLY into verified
-#                           trailing-zero slack of the last section; skipped
-#                           otherwise (never overwrites real bytes)
-#  10. DOS Stub           - randomize [0x40, e_lfanew); MZ magic and e_lfanew
-#                           itself are outside the range and untouched
-#  11. Export Name        - overwrite the export directory's DLL-name field
-#                           (link-time TargetName) with same-length random
-#                           alphanumerics; the loader never reads it
-#
-# Exit code 0 = file written (individual mutations may report skipped);
-# exit code 1 = structural validation, IO, or mutation failure (fail closed:
-# the caller must refuse to continue with an inconsistent build).
-
 param(
     [Parameter(Mandatory = $true)]
     [string[]]$Files
@@ -49,12 +5,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Console styling, matching the palette Create.bat already uses for the build
-# log (92/91/93/0m). Windows PowerShell 5.1's console host does not expose
-# RawUI.SupportsVirtualTerminal, so capability is not probed here: 5.1 is only
-# ever run on Windows 10+ hosts where conhost renders VT sequences, and output
-# is stripped whenever stdout is redirected so build logs and CI captures stay
-# free of escape sequences.
 $script:UseColor = -not [Console]::IsOutputRedirected
 
 $script:Esc = [char]27
@@ -70,8 +20,6 @@ function Get-Painted([string]$Color, [string]$Text) {
     return ($Color + $Text + $script:C_Reset)
 }
 
-# Both numerals are painted; the brackets and the separating slash stay in the
-# host default so the counter reads as structure around two highlighted numbers.
 function Get-StepCounter([int]$Index, [int]$Total) {
     return ("[" + (Get-Painted $script:C_Green ("{0}" -f $Index)) + "/" + (Get-Painted $script:C_Green ("{0}" -f $Total)) + "]")
 }
@@ -196,13 +144,7 @@ function Convert-RvaToOffset([byte[]]$Data, $Layout, [uint32]$Rva) {
 }
 
 function Get-PlausibleTimeDateStamp {
-    # A uniformly random 32-bit stamp decodes to an arbitrary instant in
-    # 1970-2106, and most of those are impossible: pre-2001 (no PE), far
-    # future, or 03:14 local-time junk. An impossible timestamp is itself a
-    # fingerprint, so pick a believable one instead: a random instant inside
-    # a 30..180 day window ending today, truncated to a whole minute (the
-    # granularity the linker itself uses). This removes the build-date
-    # correlation without introducing the "impossible date" tell.
+
     $epoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
     $now = [DateTime]::UtcNow
     $daysBack = Get-Random -Minimum 30 -Maximum 181
@@ -235,10 +177,7 @@ function Invoke-MutateRichHeader([byte[]]$Data, $Layout) {
     }
     if ($rich -lt 0) { return "Rich Header - not found (skipped)" }
     $xorKey = Read-UInt32 $Data ($rich + 4)
-    # "DanS" is stored as four ASCII bytes (D,a,n,S = 44 61 6E 53) and read
-    # back little-endian, so the uint32 the scanner must match is 0x536E6144.
-    # The former 0x534E6144 decoded to "DaNS", so the marker was never found
-    # and the wipe silently fell back to 0x80 instead of the DanS offset.
+
     $dansXored = 0x536E6144 -bxor $xorKey
     $dans = -1
     for ($i = 0x80; $i -lt $rich; $i += 4) {
@@ -342,16 +281,12 @@ function Get-ExceptionRanges([byte[]]$Data, $Layout) {
         if ($end -le $begin) { continue }
         [void]$ranges.Add(@{ Begin = $begin; End = $end })
     }
-    # Sort by Begin so the junk-fill loop below can stop at the first range
-    # starting past a padding run instead of walking every entry.
+
     return ($ranges | Sort-Object -Property Begin)
 }
 
 function Invoke-MutatePolymorphicJunk([byte[]]$Data, $Layout) {
-    # Bound: only runs of >= 64 bytes of 0x00/0xCC that sit inside an
-    # EXECUTABLE section carrying .pdata coverage are considered, and only the
-    # parts of such a run that fall outside every exception range are filled.
-    # Real code, real data and any exception-covered bytes are never written.
+
     $nops = @(
         @(0x90),
         @(0x66, 0x90),
@@ -365,11 +300,6 @@ function Invoke-MutatePolymorphicJunk([byte[]]$Data, $Layout) {
     $filled = 0
     $exceptions = @(Get-ExceptionRanges $Data $Layout)
 
-    # Locate padding runs with a native regex per section instead of a per-byte
-    # PowerShell loop. The old loop called Test-RangeCovered once for every
-    # padding byte, and a packed section is several MB of 0x00 slack, so the
-    # function-call overhead alone was the ~20s stall. Encoding 28591 is
-    # Latin-1, which maps bytes 1:1 so match indices are byte offsets.
     $padRun = [regex]'[\x00\xCC]{64,}'
 
     for ($i = 0; $i -lt $Layout.NumSections; $i++) {
@@ -384,11 +314,6 @@ function Invoke-MutatePolymorphicJunk([byte[]]$Data, $Layout) {
         if ($end -le $rawPtr) { continue }
         $secVa = Read-UInt32 $Data ($sec + 12)
 
-        # Skip a section that carries no exception coverage at all. Compiler
-        # emitted code always has .pdata entries, so a section with none is
-        # almost certainly hand-written asm (the thread-hijack stub), where a run
-        # of 0x00/0xCC is real data rather than slack. Section NAMES cannot be
-        # used for this - mutation step 4 renames every section.
         $secHasExceptions = $false
         foreach ($r in $exceptions) {
             if ($r.Begin -ge $secVa -and $r.Begin -lt ($secVa + $rawSize)) { $secHasExceptions = $true; break }
@@ -403,9 +328,6 @@ function Invoke-MutatePolymorphicJunk([byte[]]$Data, $Layout) {
             $runBegin = [uint32]($secVa + $m.Index)
             $runEnd = [uint32]($runBegin + $m.Length)
 
-            # Split the run around any exception range overlapping it and fill
-            # each uncovered gap that is still >= 64 bytes. Runs are few, so this
-            # stays cheap; only the per-byte scan was expensive.
             $cursor = $runBegin
             foreach ($r in $exceptions) {
                 if ($r.End -le $cursor) { continue }
@@ -476,13 +398,7 @@ function Invoke-MutateDOSStub([byte[]]$Data, $Layout) {
 }
 
 function Invoke-MutateExportName([byte[]]$Data, $Layout) {
-    # The export directory's DLL-name field otherwise carries the link-time
-    # TargetName into every build verbatim: a stable in-memory signature
-    # ("Ameger Injector - x64.dll"). Overwrite it in place with crypto-random
-    # alphanumerics of identical length (null terminator preserved), so file
-    # size and every RVA stay valid. The loader locates this DLL by file path
-    # and resolves its exports by function name; the directory's own name is
-    # never read by the loader or the repo validator.
+
     $rva = Read-UInt32 $Data ($Layout.DataDirOffset + 0)
     $size = Read-UInt32 $Data ($Layout.DataDirOffset + 4)
     if ($rva -eq 0 -or $size -lt 40) { return "Export Name - none present (skipped)" }
@@ -558,9 +474,7 @@ try {
         Write-Host ""
         Write-Host ("  " + (Get-Painted $script:C_Bold "Mutating:") + " " + (Get-Painted $script:C_Dim $f))
         Write-Host ""
-        # applied = a mutation that returned a non-skipped result; skipped = a
-        # mutation that explicitly reported "skipped"; failed = one that threw.
-        # They partition $total, so the closing summary is always self-consistent.
+
         $applied = 0
         $skipped = 0
         $failedSteps = 0
@@ -578,10 +492,6 @@ try {
             }
         }
 
-        # Fail closed: a mutation that throws already set $failed above, and
-        # this structural re-validation catches one that silently corrupted the
-        # section table. Either way the file is not written and the caller
-        # refuses to continue on a nonzero exit, so a bad image never ships.
         try {
             $check = Get-PeLayout $bytes
             if ($check.NumSections -ne $layout.NumSections) { throw "section count changed" }
@@ -609,11 +519,7 @@ try {
             }
         }
         if ($written) {
-            # Keep "{0}/{1} mutations applied" exactly 23 chars: Create.bat pads the
-            # "Runtime SHA-256:" line to match this column. A ", N skipped" suffix
-            # pushes the path right; that is intentional, it stays readable.
-            # "[+]" and the two numerals are painted green; the separating slash and
-            # the trailing words stay in the host default (same rule as Get-StepCounter).
+
             $tail = (Get-Painted $script:C_Green ("{0}" -f $applied)) + "/" +
                     (Get-Painted $script:C_Green ("{0}" -f $total)) + " mutations applied"
             if ($skipped -gt 0) { $tail += (", " + $skipped + " skipped") }

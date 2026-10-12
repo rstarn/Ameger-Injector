@@ -1,28 +1,3 @@
-# Post-build integration verifier for Ameger Injector.
-#
-# Create.bat calls this after the interface EXE is built. Five checks, all
-# fatal (exit 1) on failure:
-#   Embed - the interface EXE must contain the runtime DLL's 8 SHA-256 words
-#           (AmegerRuntimeHash0..7, passed from Create.bat) as little-endian
-#           dwords, in order. A sequential search proves the build really
-#           linked against the mutated runtime DLL instead of leaving the
-#           default zero constants (which Main.cpp rejects at startup).
-#   Magic - the deployed Configuration.ini must start with the "SYSCFG01"
-#           DPAPI marker, proving the shipped config is the encrypted copy
-#           rather than a plaintext (or absent) file.
-#   PayloadHash - the deployed Jlov.dll must match the PayloadSha256 pin in
-#           the plaintext master config, proving the shipped payload is the
-#           reviewed asset rather than a stale or substituted DLL.
-#   DeployedPin - the shipped Configuration.ini (DPAPI-encrypted, or plaintext
-#           under the explicit opt-out) must pin the exact payload digest that
-#           ships beside it, so the launcher's startup hash check passes.
-#   ConfigKeys - the shipped Configuration.ini (encrypted or plaintext) must
-#           carry non-empty PayloadName, RuntimeName, ExportMap and DllDir keys, which
-#           the launcher needs to resolve the renamed runtime DLL and its
-#           renamed exports. A key silently dropped during the config merge
-#           would otherwise ship a config the launcher cannot use.
-#
-# Exit code 0 = verified, 1 = fatal.
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("Embed", "Magic", "PayloadHash", "DeployedPin", "ConfigKeys")]
@@ -31,24 +6,17 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
 
-    # Comma-separated "0x........" words (AmegerRuntimeHash0..7). A single
-    # string, not [string[]]: powershell.exe -File does not bind array
-    # parameters reliably, and Create.bat invokes this with -File.
     [string]$Words,
 
     [string]$Magic,
 
-    # Plaintext master Configuration.ini; only read by -Check PayloadHash.
     [string]$Config,
 
-    # Expected payload SHA-256; only used by -Check DeployedPin.
     [string]$ExpectPin
 )
 
 $ErrorActionPreference = "Stop"
 
-# Same styling rule as BuildPE.ps1: paint only when stdout is a real console,
-# so redirected build logs and CI captures stay free of escape sequences.
 $script:UseColor = -not [Console]::IsOutputRedirected
 $script:Esc = [char]27
 $script:C_Green = "$($script:Esc)[92m"
@@ -84,9 +52,6 @@ if ($Check -eq "Embed") {
         exit 1
     }
 
-    # Walk the image once, advancing past each match, so the 8 words must occur
-    # in order (and not overlap). Bytes are compared little-endian, matching the
-    # uint32 constants the compiler emits for AMEGER_RUNTIME_DLL_HASH0..7.
     $pos = 0
     $last = $data.Length - 4
     for ($i = 0; $i -lt $wordList.Count; $i++) {
@@ -124,10 +89,6 @@ if ($Check -eq "PayloadHash") {
         exit 1
     }
 
-    # Parse the plaintext master directly rather than trusting a caller-supplied
-    # hash, so the pin and the shipped DLL are checked against the same reviewed
-    # file. Key match is case-insensitive, matching the runtime's own ini reader;
-    # a missing or empty pin is fatal (fail closed, never ship an unpinned DLL).
     $pin = $null
     foreach ($line in [IO.File]::ReadAllLines($Config)) {
         $trimmed = $line.Trim()
@@ -158,11 +119,12 @@ if ($Check -eq "DeployedPin") {
         Write-Fail "Expected a payload SHA-256"
         exit 1
     }
+    if ([string]::IsNullOrEmpty($Magic)) {
+        Write-Fail "Expected a config magic"
+        exit 1
+    }
 
-    # The deployed config may be DPAPI-encrypted (magic-prefixed) or plaintext
-    # (explicit opt-out). Recover the UTF-8 text the same way the runtime does:
-    # strip the magic and Unprotect in the CurrentUser scope, or read directly.
-    $magicBytes = [Text.Encoding]::ASCII.GetBytes("SYSCFG01")
+    $magicBytes = [Text.Encoding]::ASCII.GetBytes($Magic)
     $isEncrypted = $false
     if ($data.Length -gt $magicBytes.Length) {
         $isEncrypted = $true
@@ -209,9 +171,12 @@ if ($Check -eq "DeployedPin") {
 }
 
 if ($Check -eq "ConfigKeys") {
-    # Recover the config text exactly like DeployedPin: the deployed file may
-    # be DPAPI-encrypted (magic-prefixed) or plaintext (explicit opt-out).
-    $magicBytes = [Text.Encoding]::ASCII.GetBytes("SYSCFG01")
+    if ([string]::IsNullOrEmpty($Magic)) {
+        Write-Fail "Expected a config magic"
+        exit 1
+    }
+
+    $magicBytes = [Text.Encoding]::ASCII.GetBytes($Magic)
     $isEncrypted = $false
     if ($data.Length -gt $magicBytes.Length) {
         $isEncrypted = $true
@@ -234,9 +199,6 @@ if ($Check -eq "ConfigKeys") {
         $text = [Text.Encoding]::UTF8.GetString($data)
     }
 
-    # The launcher resolves the deployed runtime DLL and its renamed exports
-    # from these three keys, so each must be present and non-empty. Key match
-    # is case-insensitive, matching the runtime's own ini reader.
     $present = @{}
     foreach ($line in ($text -split "\r?\n")) {
         $trimmed = $line.Trim()
@@ -257,7 +219,6 @@ if ($Check -eq "ConfigKeys") {
     exit 0
 }
 
-# Check -eq "Magic"
 if ([string]::IsNullOrEmpty($Magic)) {
     Write-Fail "Expected a config magic string"
     exit 1

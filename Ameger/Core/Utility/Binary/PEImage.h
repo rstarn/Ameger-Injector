@@ -8,38 +8,23 @@
 
 namespace PE_IMAGE
 {
-// Strict host+shell PE validator for manual-map payloads.
-// What: proves a raw file image is safe to map (headers, sections, dirs,
-//   thunks) before any byte is copied into the target. Why one header-inline
-//   copy: both the host (ValidateDllFile*) and the in-target shell
-//   (MMI_MapSections) must enforce identical rules, and the shell cannot call
-//   host code - inlining folds the checks into its code_seg. How: Validate()
-//   fills a VIEW then runs the staged checks; every helper below is
-//   overflow-safe and fail-closed (false/invalid on any anomaly).
-	// Upper bound for SizeOfImage and file size (1 GB). Larger images are
-	// rejected outright to bound copy/scan work in both host and shell.
+
 	constexpr DWORD MAX_IMAGE_SIZE = 0x40000000;
-	// Upper bound for NumberOfSections. Keeps the O(n^2) overlap walk bounded.
+
 	constexpr WORD MAX_SECTION_COUNT = 96;
 
-	// Validation knobs, derived from INJ_MM_* flags via BuildPeValidationOptions.
-	// Each true member enables one staged check in Validate().
 	struct OPTIONS
 	{
-		bool RequireDll = false; // IMAGE_FILE_DLL characteristic required
-		bool RequireExports = false; // export dir must validate
-		bool RequireRelocations = false; // base-reloc dir must validate
-		bool ResolveImports = false; // classic import dir must validate
-		bool ResolveDelayImports = false; // delay-import dir must validate
-		bool EnableExceptions = false; // exception dir must exist
-		bool InitializeSecurityCookie = false; // load-config size sanity
-		bool ExecuteTls = false; // TLS dir shape sanity when present
+		bool RequireDll = false;
+		bool RequireExports = false;
+		bool RequireRelocations = false;
+		bool ResolveImports = false;
+		bool ResolveDelayImports = false;
+		bool EnableExceptions = false;
+		bool InitializeSecurityCookie = false;
+		bool ExecuteTls = false;
 	};
 
-	// Validated image cursor. What: raw bytes plus resolved header pointers
-	// for the MapRva/FindSection helpers. Filled by Validate() on success;
-	// meaningless on failure. Fields: Data/Size (file bytes), NtHeaders
-	// (in-Data pointer), Sections (in-Data section table).
 	struct VIEW
 	{
 		const BYTE * Data = nullptr;
@@ -48,38 +33,27 @@ namespace PE_IMAGE
 		const IMAGE_SECTION_HEADER * Sections = nullptr;
 	};
 
-	// Contiguous readable run for one RVA. What: Data points into VIEW bytes,
-	// Available is the bytes left in that section (or headers). Empty
-	// (null Data) means the RVA is unmapped. Produced by MapRva().
 	struct MAPPING
 	{
 		const BYTE * Data = nullptr;
 		size_t Available = 0;
 	};
 
-	// True when [offset, offset+count) lies fully inside [0, total) without
-	// wrapping. Overflow-safe: the subtraction form never adds past SIZE_MAX.
 	__forceinline bool RangeWithin(size_t offset, size_t count, size_t total)
 	{
 		return offset <= total && count <= total - offset;
 	}
 
-	// True for nonzero powers of two (alignment values). Params: value (in).
 	__forceinline bool IsPowerOfTwo(DWORD value)
 	{
 		return value != 0 && (value & (value - 1)) == 0;
 	}
 
-	// True when value is a multiple of a power-of-two alignment. Params:
-	// value/alignment (in). Non-power-of-two alignments always fail.
 	__forceinline bool IsAligned(DWORD value, DWORD alignment)
 	{
 		return IsPowerOfTwo(alignment) && (value & (alignment - 1)) == 0;
 	}
 
-	// Locates the section owning an RVA (span = max(VirtualSize, RawData)).
-	// Params: view (validated cursor), rva (in). Returns: owning section or
-	// null when the RVA falls in no section (headers handled by MapRva).
 	__forceinline const IMAGE_SECTION_HEADER * FindSection(const VIEW & view, DWORD rva)
 	{
 		const IMAGE_FILE_HEADER & file_header = view.NtHeaders->FileHeader;
@@ -156,10 +130,7 @@ namespace PE_IMAGE
 
 			if (!IMAGE_SNAP_BY_ORDINAL(thunk.u1.Ordinal))
 			{
-				// MapRva takes a 32-bit RVA: a crafted 64-bit thunk with
-				// high bits set would truncate here while the shell adds the
-				// full width (validator/shell divergence). Reject high-bit
-				// RVAs outright; legitimate x64 images never set them.
+
 				if ((thunk.u1.AddressOfData >> 32) != 0)
 				{
 					return false;
@@ -175,10 +146,6 @@ namespace PE_IMAGE
 		return false;
 	}
 
-	// Counts the null-terminated thunk entries at rva (excluding the
-	// terminator). Returns false when unterminated or when any name entry is
-	// malformed - the same walk ValidateThunkTable performs, but with the
-	// count exposed so callers can bound the parallel IAT.
 	__forceinline bool MeasureThunkTable(const VIEW & view, DWORD rva, size_t & count_out)
 	{
 		count_out = 0;
@@ -248,28 +215,11 @@ namespace PE_IMAGE
 				return false;
 			}
 
-			// FirstThunk is the IAT the resolver writes resolved pointers into.
-			// A descriptor with a valid OriginalFirstThunk but FirstThunk == 0
-			// passes the ILT check above, yet the loader would write at
-			// pImageBase + 0 - the DOS/NT headers. Require a non-zero, in-image
-			// IAT as the PE spec mandates. OriginalFirstThunk == 0 descriptors
-			// stay valid: FirstThunk is then the thunk_rva checked above, and a
-			// bound IAT is never walked here as a name table.
 			if (!descriptor.FirstThunk || !RangeWithin(descriptor.FirstThunk, sizeof(IMAGE_THUNK_DATA64), view.NtHeaders->OptionalHeader.SizeOfImage))
 			{
 				return false;
 			}
 
-			// The ILT check above proves the name table is fully terminated,
-			// but said nothing about the destination IAT beyond its first
-			// entry: a truncated IAT (second entry outside the image) passes
-			// that check, and the resolver loop then exits at the boundary
-			// with a prefix bound while still reporting success. Measure the
-			// ILT length and require the whole IAT (entries + terminator) to
-			// be in-image for the same count. Bounds-only (no name walk), so
-			// a bound IAT carrying addresses instead of thunks is not
-			// misread. OriginalFirstThunk == 0 needs no second range: IAT and
-			// ILT are the same bytes already validated above.
 			if (descriptor.OriginalFirstThunk)
 			{
 				size_t ilt_count = 0;
@@ -310,13 +260,6 @@ namespace PE_IMAGE
 				return true;
 			}
 
-			// ImportAddressTableRVA is the delay IAT the resolver writes into,
-			// so it must be non-zero and in-image for the same reason as the
-			// classic FirstThunk above. ImportNameTableRVA is the read-only
-			// name table walked by ValidateThunkTable. The name-table check
-			// alone leaves a truncated delay IAT (same prefix-success shape
-			// as the classic case), so the full IAT range for the measured
-			// name count is required bounds-only below.
 			if (!MapRva(view, descriptor.DllNameRVA).Data ||
 				!descriptor.ImportAddressTableRVA ||
 				!RangeWithin(descriptor.ImportAddressTableRVA, sizeof(IMAGE_THUNK_DATA64), view.NtHeaders->OptionalHeader.SizeOfImage) ||
@@ -429,13 +372,8 @@ namespace PE_IMAGE
 					return false;
 				}
 
-				// 64-bit add: the 32-bit form wraps (0xFFFFFF00+0xFFF -> 0xFF)
-				// and a wrapped small value passes the bound check while the
-				// shell (ULONGLONG math) rejects it - validator/shell
-				// divergence. Widen first, then compare. No new import/syscall.
 				const ULONGLONG patch_rva = static_cast<ULONGLONG>(block.VirtualAddress) + static_cast<ULONGLONG>(entries[index] & 0x0FFF);
-				// Guard the subtraction: SizeOfImage < sizeof(ULONG_PTR) would
-				// wrap to a huge bound and disable the check entirely.
+
 				if (view.NtHeaders->OptionalHeader.SizeOfImage < sizeof(ULONG_PTR) ||
 					patch_rva > static_cast<ULONGLONG>(view.NtHeaders->OptionalHeader.SizeOfImage - sizeof(ULONG_PTR)))
 				{
@@ -530,12 +468,6 @@ namespace PE_IMAGE
 				return FILE_ERR_INVALID_PE_LAYOUT;
 			}
 
-			// Headers occupy image [0, size_of_headers). A section mapped at
-			// VirtualAddress < size_of_headers would be copied over the just
-			// written headers by MMI_MapSections and subsequently trusted
-			// (NT headers re-read from the overwritten copy). Reject any
-			// virtual overlap with the headers outright. Pure integer check:
-			// no syscall, import, or timing surface.
 			if (static_cast<ULONGLONG>(section.VirtualAddress) < static_cast<ULONGLONG>(size_of_headers))
 			{
 				return FILE_ERR_INVALID_PE_LAYOUT;
@@ -549,13 +481,6 @@ namespace PE_IMAGE
 				}
 			}
 
-			// Pairwise overlap: virtual ranges [VirtualAddress, end) must be
-			// disjoint (a later section would otherwise overwrite an earlier
-			// one, including its import tables), and file ranges
-			// [PointerToRawData, +SizeOfRawData) must be disjoint (shared
-			// file bytes mapped to two RVAs break the header trust above).
-			// section_count <= 96 so O(n^2) is bounded; ULONGLONG math cannot
-			// wrap (both ends already proven <= size_of_image / size).
 			for (WORD prior = 0; prior < index; ++prior)
 			{
 				const IMAGE_SECTION_HEADER & other = sections[prior];

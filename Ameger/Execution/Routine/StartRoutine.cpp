@@ -2,10 +2,6 @@
 
 #include "Execution/Routine/StartRoutine.h"
 
-// Method dispatcher: validates handles up front, then forwards to the
-// per-method implementation. Only LM_HijackThread exists; anything else is a
-// caller bug reported as INVALID_LAUNCH_METHOD. See the header for the full
-// param/return contract.
 DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, LAUNCH_METHOD Method, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
 {
 	if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE || !pRoutine)

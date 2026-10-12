@@ -4,13 +4,6 @@
 
 #include <process.h>
 
-// Watchdog + WinINet fetch implementation (see DownloadManager.h for the
-// inactivity-bound contract). process.h provides _beginthreadex for the
-// watchdog thread, which the free-function entry below keeps name-free.
-
-// Free-function trampoline for the watchdog thread. Declared a friend above so
-// it can reach the private WatchdogProc without a member-function pointer,
-// which would bake the class name into the binary (see the header comment).
 unsigned __stdcall DownloadWatchdogEntry(void * param)
 {
     static_cast<DownloadManager *>(param)->WatchdogProc();
@@ -53,8 +46,6 @@ bool DownloadManager::StartWatchdog()
 
     m_bWatchdogStop.store(false);
 
-    // _beginthreadex rather than CreateThread: the thread may run LOG in
-    // instrumented builds, which needs per-thread CRT state.
     const uintptr_t thread_handle = _beginthreadex(nullptr, 0, DownloadWatchdogEntry, this, 0, nullptr);
     if (!thread_handle)
     {
@@ -102,8 +93,6 @@ void DownloadManager::WatchdogProc()
             continue;
         }
 
-        // Latch the timeout. The direct WinINet download loop polls TimedOut()
-        // between reads and stops on its own, so there is no binding to abort.
         m_bTimedOut.store(true);
     }
 }

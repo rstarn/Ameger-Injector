@@ -5,17 +5,6 @@
 #include <type_traits>
 #include <utility>
 
-// Lightweight RAII guards (no STL handle deps, no exceptions).
-// What: UniqueHandle (local HANDLE), RemoteAllocation (target address space),
-//   ScopeExit/MakeScopeExit (rollback callback). Why: every acquisition path
-//   has multiple early returns, and a leaked suspend or remote mapping is a
-//   crash or a Warden-visible artifact. How: hold as a local; release() detaches
-//   ownership when the resource must outlive the scope (documented recovery
-//   leaks); reset() frees early. Move-only throughout.
-
-// Owning wrapper for a local kernel HANDLE. Closes via CloseHandle on
-// destruction/reset; treats both null and INVALID_HANDLE_VALUE as empty.
-// Move-only: copying would double-close. reset() with no arg just releases.
 class UniqueHandle
 {
 	HANDLE m_Handle = nullptr;
@@ -62,14 +51,11 @@ public:
 		m_Handle = handle;
 	}
 
-	// Non-owning peek; the guard still frees on scope exit.
 	HANDLE get() const
 	{
 		return m_Handle;
 	}
 
-	// Detaches ownership without closing (for handles the target or another
-	// owner must keep). Returns the raw value; the guard becomes empty.
 	HANDLE release()
 	{
 		HANDLE handle = m_Handle;
@@ -77,24 +63,17 @@ public:
 		return handle;
 	}
 
-	// True when a real handle is held (filters both null sentinels).
 	explicit operator bool() const
 	{
 		return m_Handle != nullptr && m_Handle != INVALID_HANDLE_VALUE;
 	}
 
-	// Implicit read as HANDLE for Win32 calls; never transfers ownership.
 	operator HANDLE() const
 	{
 		return m_Handle;
 	}
 };
 
-// Owning wrapper for a VirtualAllocEx block in another process. Frees via
-// VirtualFreeEx(MEM_RELEASE) on destruction/reset. release() detaches so a
-// possibly-live remote stub/mapping stays mapped (the documented recovery
-// leak, reclaimed when the target exits). Move-only for the same reason as
-// UniqueHandle.
 class RemoteAllocation
 {
 	HANDLE m_Process = nullptr;
@@ -135,8 +114,6 @@ public:
 		reset();
 	}
 
-	// Frees the current block (if any), then optionally takes a new one.
-	// Params: process/address (new ownership; defaults detach to empty).
 	void reset(HANDLE process = nullptr, void * address = nullptr)
 	{
 		if (m_Process && m_Process != INVALID_HANDLE_VALUE && m_Address)
@@ -148,14 +125,11 @@ public:
 		m_Address = address;
 	}
 
-	// Non-owning peek at the remote base; the guard still frees it on exit.
 	void * get() const
 	{
 		return m_Address;
 	}
 
-	// Detaches without freeing: use when the remote thread may still execute
-	// from the block (timeout/recovery) so freeing would crash the target.
 	void release()
 	{
 		m_Process = nullptr;
@@ -163,10 +137,6 @@ public:
 	}
 };
 
-// Runs a noexcept callback at scope exit unless dismissed. Used for remote
-// scrub (secure-wipe) passes that must not throw past a live suspend.
-// Template param Callback: callable type (deduced via MakeScopeExit).
-// Dismiss via dismiss() when the guarded action completed another way.
 template<typename Callback>
 class ScopeExit
 {
@@ -190,16 +160,12 @@ public:
 		}
 	}
 
-	// Cancels the exit callback (the guarded cleanup happened explicitly).
 	void dismiss()
 	{
 		m_Active = false;
 	}
 };
 
-// Deduction helper so call sites write MakeScopeExit([&]{...}) instead of
-// naming the lambda type. Params: callback (must be noexcept-invocable;
-// enforced by static_assert in the ctor). Returns: the ScopeExit guard.
 template<typename Callback>
 ScopeExit<Callback> MakeScopeExit(Callback callback)
 {

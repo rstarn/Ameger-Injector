@@ -2,11 +2,6 @@
 
 #include "System/Information/ProcessInformation.h"
 
-// Snapshot implementation (see ProcessInformation.h for the cursor contract).
-// What: takes one SystemProcessInformation snapshot, anchors on the target
-//   PID, and answers handle-free (state/reason/TID) plus handle-needing
-//   (TEB/alertable/worker) queries with all offsets download-dependent.
-// Advances a linked entry by its NextEntryOffset. Params: pCurrent (in entry).
 #define NEXT_SYSTEM_PROCESS_ENTRY(pCurrent) ReCa<SYSTEM_PROCESS_INFORMATION *>(ReCa<BYTE *>(pCurrent) + pCurrent->NextEntryOffset)
 
 ProcessInformation::ProcessInformation()
@@ -35,13 +30,6 @@ ProcessInformation::ProcessInformation()
 	m_BufferSize	= 0x10000;
 	m_pFirstProcess = nullptr;
 
-	// No wait-stub decoding here any more. Victim selection is Running-only
-	// (see FindHijackThread): alertability is never tested, so the five
-	// syscall-stub return addresses, their decoder, the ntdll consensus and
-	// the win32u module load are all gone. Besides correctness (hijacking a
-	// waiter corrupts its Rax - see FindHijackThread), this removes a
-	// LoadLibraryW(win32u) loader notification per hijack and five
-	// disassemblies worth of startup work.
 	LOG(3, "ProcessInformation initialized\n");
 
 }
@@ -86,10 +74,6 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 
 	m_pCurrentProcess = m_pFirstProcess;
 
-	// Test the current entry first, then advance only while a next entry
-	// exists. The old loop condition (NEXT(cur) != cur) was evaluated before
-	// the body, so it terminated on the last entry without ever comparing its
-	// UniqueProcessId - the final process in the list could never match.
 	for (;;)
 	{
 		if (m_pCurrentProcess->UniqueProcessId == ReCa<void *>(PID))
@@ -158,9 +142,7 @@ bool ProcessInformation::RefreshInformation()
 
 	while (ntRet == STATUS_INFO_LENGTH_MISMATCH)
 	{
-		// Free the undersized buffer exactly once and clear the pointer before
-		// any early return: the size guard below used to free it a second time
-		// (double free) because the pointer was left dangling.
+
 		delete[] ReCa<BYTE *>(m_pFirstProcess);
 		m_pFirstProcess = nullptr;
 
@@ -169,8 +151,6 @@ bool ProcessInformation::RefreshInformation()
 			return false;
 		}
 
-		// Grow monotonically: a build that reports a smaller (or zero) required
-		// size must not shrink the buffer and spin the loop without progress.
 		ULONG next_size = size_out + 0x1000;
 		if (next_size <= m_BufferSize)
 		{
@@ -251,8 +231,6 @@ void * ProcessInformation::GetTEB()
 		return nullptr;
 	}
 
-	// Reuse the caller's handle for this TID when available; only open when
-	// we were not given one.
 	const HANDLE borrowed = BorrowCurrentThreadHandle(MDWD(m_pCurrentThread->ClientId.UniqueThread));
 	const bool owns_handle = borrowed == nullptr;
 	HANDLE hThread = borrowed ? borrowed : OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, MDWD(m_pCurrentThread->ClientId.UniqueThread));
@@ -279,16 +257,12 @@ void * ProcessInformation::GetTEB()
 
 bool ProcessInformation::IsThreadWorkerThread()
 {
-	// Fail closed whenever the thread cannot be classified: treat it as a
-	// worker so the caller skips it rather than hijacking on a guess. This
-	// matches the missing-offsets guard below.
+
 	if (!m_pCurrentThread)
 	{
 		return true;
 	}
 
-	// Fail-closed when the PDB offsets are not ready: treat as worker so the
-	// thread is skipped rather than hijacked on a stale guess.
 	if (!g_DynamicOffsetsReady.load(std::memory_order_acquire) || !g_DynamicOffsets.TebSameTebFlags)
 	{
 		return true;
@@ -296,7 +270,7 @@ bool ProcessInformation::IsThreadWorkerThread()
 	BYTE * teb = ReCa<BYTE *>(GetTEB());
 	if (!teb)
 	{
-		// Unreadable TEB: cannot prove this is not a loader worker.
+
 		return true;
 	}
 
@@ -306,7 +280,5 @@ bool ProcessInformation::IsThreadWorkerThread()
 		return ((TebInfo & g_DynamicOffsets.SameTebFlagsLoaderWorkerMask) != 0);
 	}
 
-	// TEB present but its flags are unreadable: same fail-closed verdict.
 	return true;
 }
-

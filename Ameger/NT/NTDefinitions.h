@@ -2,22 +2,12 @@
 
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
-// Undocumented/native OS types for the loader, hijack, and PDB-offset code.
-// What: NTSTATUS helpers, status codes, KUSER base, NtCurrentProcess, and the
-//   Win11 LDR/PEB/process structures (see below). Why local defs: the shell
-//   runs in the target without headers/DbgHelp and resolves everything by
-//   PDB-downloaded offsets (DynamicOffsets), so static SDK layouts are never
-//   trusted for LDR/TLS/inverted-table walks. How: host code uses these for
-//   typing; remote walks go through NtOffsets + ReadPtrField/WritePtrField.
 #pragma region nt (un)defines
 
-// True when an NTSTATUS is a failure (< 0). Params: status (in). Complement
-// of NT_SUCCESS; both parenthesize the arg for expression safety.
 #ifndef NT_FAIL
 #define NT_FAIL(status) (status < 0)
 #endif
 
-// True when an NTSTATUS succeeded (>= 0, includes warnings). Params: status.
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(status) (status >= 0)
 #endif
@@ -30,11 +20,6 @@
 #undef RtlZeroMemory
 #endif
 
-// Frequently returned NTSTATUS codes. SUCCESS = ok; UNSUCCESSFUL = generic
-// failure (used when the inverted table yields no entry); NOT_IMPLEMENTED =
-// unreached-state guard; INFO_LENGTH_MISMATCH = enumeration buffer too small
-// (grow and retry); APISET_NOT_HOSTED = virtual apiset with no host - benign
-// only for api-ms-/ext-ms- names (see MMI_IsApisetName), fatal otherwise.
 #define STATUS_SUCCESS				0x00000000
 #define STATUS_UNSUCCESSFUL			0xC0000001
 #define STATUS_NOT_IMPLEMENTED		0xC0000002
@@ -43,16 +28,9 @@
 
 typedef LONG KPRIORITY;
 
-// 0x7FFE0000 is the fixed user-shared mapping base (documented ABI, not a
-// per-build offset). The Cookie FIELD offset inside it was 0x330 and is now
-// download-dependent: use KUSER_SHARED_DATA + g_DynamicOffsets.KuserCookie
-// (see DynamicOffsets.h). No P_KUSER_SHARED_DATA_COOKIE macro remains.
 #define KUSER_SHARED_DATA (DWORD)0x7FFE0000
 
-// Pseudo-handle for the calling process (-1). Valid for Nt* calls that accept
-// a process handle; never CloseHandle it and never pass it to Win32 handle
-// duplication as a real handle.
-#define NtCurrentProcess() ( (HANDLE)(LONG_PTR) -1 ) 
+#define NtCurrentProcess() ( (HANDLE)(LONG_PTR) -1 )
 
 #pragma endregion
 
@@ -85,7 +63,6 @@ typedef enum class _KWAIT_REASON : UCHAR
 	WrQueue = 0x0F
 } KWAIT_REASON;
 
-
 typedef enum _LDR_DDAG_STATE : int
 {
 	LdrModulesMerged					= -5,
@@ -115,7 +92,7 @@ typedef enum _LDR_DLL_LOAD_REASON : int
 	LoadReasonDynamicLoad					= 4,
 	LoadReasonAsImageLoad					= 5,
 	LoadReasonAsDataLoad					= 6,
-	LoadReasonEnclavePrimary				= 7, 
+	LoadReasonEnclavePrimary				= 7,
 	LoadReasonEnclaveDependency				= 8,
 	LoadReasonPatchImage					= 9
 } LDR_DLL_LOAD_REASON, * PLDR_DLL_LOAD_REASON;
@@ -132,9 +109,6 @@ typedef enum _LDR_HOT_PATCH_STATE
 
 #pragma endregion
 
-// AMEGER_PEB/LDR snapshot: offsets below are compile-time documentation only.
-// Runtime code must use g_DynamicOffsets (PDB) + RtlGetVersion API; no
-// injection path dereferences these fields via hardcoded offsets.
 struct AMEGER_PEB;
 
 typedef struct _ANSI_STRING
@@ -298,9 +272,6 @@ static_assert(offsetof(AMEGER_PEB_LDR_DATA, InLoadOrderModuleListHead) == 16);
 static_assert(offsetof(AMEGER_PEB_LDR_DATA, InMemoryOrderModuleListHead) == 32);
 static_assert(offsetof(AMEGER_PEB_LDR_DATA, InInitializationOrderModuleListHead) == 48);
 
-// AMEGER_PEB/LDR snapshot: offsets below are compile-time documentation only.
-// Runtime code must use g_DynamicOffsets (PDB) + RtlGetVersion API; no
-// injection path dereferences these fields via hardcoded offsets.
 struct AMEGER_PEB
 {
 	BOOLEAN InheritedAddressSpace;
@@ -354,7 +325,6 @@ struct AMEGER_PEB
 	};
 
 	union
-
 
 	{
 		PVOID KernelCallbackTable;
@@ -487,7 +457,6 @@ typedef union _LDRP_LOAD_CONTEXT_FLAGS
 	};
 } LDRP_LOAD_CONTEXT_FLAGS, * PLDRP_LOAD_CONTEXT_FLAGS;
 
-
 typedef struct _TLS_ENTRY
 {
 	LIST_ENTRY				TlsEntryLinks;
@@ -497,4 +466,3 @@ typedef struct _TLS_ENTRY
 } TLS_ENTRY, * PTLS_ENTRY;
 
 static_assert(sizeof(TLS_ENTRY) == 72);
-

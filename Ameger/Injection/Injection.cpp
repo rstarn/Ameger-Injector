@@ -4,23 +4,11 @@
 #include "Injection/ManualMapping/ManualMappingCore.h"
 #include "System/Handle/HandleHijack.h"
 
-// Injection orchestration (memory payload entry + handle acquisition).
-// What: validates the request, acquires process/thread handles (sponsor
-//   reuse, then donor scan, never a loud direct open when hijacking is on),
-//   dispatches to ManualMap, and verifies the result. Single attempt only:
-//   a retry into a target whose DllMain already ran leaves unreclaimable
-//   loader state (inverted table, TLS index), so failures ask for a target
-//   restart instead. The payload always arrives as caller-owned bytes, so
-//   nothing here touches the disk: no temp copies, no name scrambling.
 DWORD __stdcall InitializeRuntime();
 
 namespace
 {
-	// Acquires a target process handle. What: sponsor duplicate + roundtrip
-	// proof first, donor-table scan second, fail-closed when neither yields.
-	// Params: Pid (target), AccessMask (rights needed), Flags (hijack steering),
-	// SponsorValue (pre-opened handle value, 0 = none), Out (out handle),
-	// ErrorData (out detail). Returns: INJ_* code.
+
 	DWORD OpenTargetProcess(DWORD Pid, DWORD AccessMask, DWORD Flags, ULONG_PTR SponsorValue, UniqueHandle & Out, ERROR_DATA & ErrorData)
 	{
 		Out.reset();
@@ -31,14 +19,8 @@ namespace
 			Stats.Attempted = 1;
 			Stats.Source = static_cast<DWORD>(HijackSource::Scan);
 
-			// Only a sponsor that passed identity validation may serve as the
-			// scan's dup source below. Passing an unvalidated value risks
-			// duplicating from a handle to the wrong process (wrong-object
-			// dup or false miss). No new import/syscall; single HANDLE local.
 			HANDLE ValidatedSponsorOwner = nullptr;
 
-			// 1. Sponsor: cooperating holder (normally the injector itself,
-			//    which runs this DLL in-process) pre-opened the target.
 			if (SponsorValue)
 			{
 				HANDLE Sponsor = ReCa<HANDLE>(SponsorValue);
@@ -77,23 +59,13 @@ namespace
 				LOG(0, "Sponsor handle failed validation\n");
 			}
 
-			// 2. Foreign-donor scan. Its counters stay in Stats even when it
-			//    finds nothing, so the UI can tell "empty table" apart from
-			//    "denied query" (SnapStatus) instead of showing zeros.
-			//    The scan overwrites the whole struct, so preserve our
-			//    sponsor fields across the call.
 			if (!(Flags & INJ_NO_DONOR_SCAN))
 			{
 				HANDLE Hijacked = nullptr;
 				const DWORD SavedSponsorValidated = Stats.SponsorValidated;
 				const DWORD SavedSponsorProbed = Stats.SponsorProbed;
 				const DWORD SavedDonorHandle = Stats.DonorHandle;
-				// Pass the sponsor handle so a target-owned entry duplicates from
-				// it rather than OpenProcess(PROCESS_DUP_HANDLE, target) - the
-				// direct open this whole path exists to avoid. Only the
-				// validated sponsor above (ValidatedSponsorOwner) is passed;
-				// a failed/stale sponsor stays null so the scan opens the
-				// target itself instead of duplicating from the wrong object.
+
 				const DWORD HijackRet = HijackProcessHandle(Pid, AccessMask, Hijacked, &Stats,
 					ValidatedSponsorOwner);
 				Stats.SponsorValidated = SavedSponsorValidated;
@@ -119,9 +91,6 @@ namespace
 				Stats.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 
-			// No donor: fail closed. There is no direct OpenProcess fallback -
-			// a fresh OpenProcess is the loudest acquisition telemetry and
-			// this path exists to avoid it.
 			Stats.Source = static_cast<DWORD>(HijackSource::Scan);
 			RecordHijackOutcome(Stats, false);
 			LOG(0, "Handle acquisition found no donor; refusing (no direct fallback)\n");
@@ -171,9 +140,6 @@ namespace
 	};
 }
 
-// Appends the terminal record to the error ring (CoreLastError reads it back)
-// and returns ErrorCode, so every exit below funnels through here with its
-// advanced code and call-site line intact.
 DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD ErrorCode, const ERROR_DATA & error_data)
 {
 	if (ErrorCode && Data.GenerateErrorLog)
@@ -202,9 +168,6 @@ DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD Err
 	return ErrorCode;
 }
 
-// Body of Memory_Inject. Split from the exported entry because a
-// function-try-block handler cannot see body locals, so error_data would be
-// unreachable from the catch.
 static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 {
 	LOG(0, "CoreExecute called with pData = %p\n", pData);
@@ -216,8 +179,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		return INJ_ERR_NO_DATA;
 	}
 
-	// Hoisted above the try so the handler below can read it; the catch at the
-	// end of this function reports it through the error ring.
 	ERROR_DATA error_data{ 0 };
 
 	try
@@ -236,13 +197,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		return INJ_ERR_NO_RAW_DATA;
 	}
 
-	// RawSize is caller-supplied and it is what bounds every read PE_IMAGE::Validate
-	// performs, so it has to be validated against something other than itself. The
-	// file-path entry already enforces MAX_IMAGE_SIZE in ValidateDllFile
-	// (Tools.cpp:178); this path enforced nothing, so an oversized RawSize made
-	// the validator - and then the staging WriteProcessMemory - read past the end
-	// of the caller's buffer. Floor: the DOS header must be readable. Ceiling: the
-	// shared one, so both entry points reject the same payloads.
 	if (pData->RawSize < sizeof(IMAGE_DOS_HEADER) || pData->RawSize > PE_IMAGE::MAX_IMAGE_SIZE)
 	{
 		LOG(0, "In-memory payload size out of range: %08X\n", pData->RawSize);
@@ -258,16 +212,10 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
-	// Clear last run's telemetry so a failure this run cannot be reported as the
-	// previous run's success. String stats are excluded: they are filled once at
-	// import-resolution time, before any injection, and zeroing them makes the
-	// interface report them as unavailable.
 	ResetHijackStats();
 	ResetMapStats();
 	ResetThreadExecStats();
 
-	// Memory-only: the descriptor is normalized in place (mode and the
-	// memory-map bit) and hDllOut is written back to the caller's struct.
 	pData->Flags |= INJ_MM_MAP_FROM_MEMORY;
 
 	DWORD RetVal = INJ_ERR_SUCCESS;
@@ -280,7 +228,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		LOG(0, "Resolving imports failed: %08X\n", RetVal);
 
 		error_data = import_handler_error_data;
- 
 
 		return InitErrorStruct(Data, -1, INJ_ERR_IMPORT_HANDLER_NOT_DONE, error_data);
 	}
@@ -311,18 +258,14 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	DWORD access_mask = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION;
 	if (Data.Flags & INJ_HANDLE_HIJACKING)
 	{
-		// The acquired handle doubles as the scan's target-owner source for
-		// the thread pass: pre-grant the duplicate rights so the target is
-		// never opened a second time.
+
 		access_mask |= PROCESS_DUP_HANDLE;
 	}
 	UniqueHandle hTargetProc;
 	const DWORD OpenRet = OpenTargetProcess(Data.ProcessID, access_mask, Data.Flags, Data.hHandleValue, hTargetProc, error_data);
 	if (OpenRet != INJ_ERR_SUCCESS)
 	{
-		// OpenTargetProcess fills ErrorData on its own failure paths (the
-		// meaningful hijack code, or GetLastError for a direct open). Only
-		// fall back to GetLastError when it left the sentinel in place.
+
 		if (error_data.AdvErrorCode == INJ_ERR_ADVANCED_NOT_DEFINED)
 		{
 			INIT_ERROR_DATA(error_data, GetLastError());
@@ -353,8 +296,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 		LOG(0, "QueryFullProcessImageNameW failed: %08X\n", (DWORD)error_data.AdvErrorCode);
 
-		
-
 		return InitErrorStruct(Data, -1, INJ_ERR_CANT_GET_EXE_FILENAME, error_data);
 	}
 
@@ -366,8 +307,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
 		LOG(0, "Failed to extract exe name from path\n");
-
-		
 
 		return InitErrorStruct(Data, -1, INJ_ERR_INVALID_EXE_PATH, error_data);
 	}
@@ -388,8 +327,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 		LOG(0, "32-bit targets not supported in this x64-only build\n");
 
-		
-
 		return InitErrorStruct(Data, false, INJ_ERR_PLATFORM_MISMATCH, error_data);
 	}
 	FileErr = ValidateDllFileInMemory(Data.RawData, Data.RawSize, IMAGE_FILE_MACHINE_AMD64, Data.Flags);
@@ -399,8 +336,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		INIT_ERROR_DATA(error_data, FileErr);
 
 		LOG(0, "Invalid file specified\n");
-
-		
 
 		return InitErrorStruct(Data, native_target, FileErr, error_data);
 	}
@@ -418,8 +353,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 	LOG(0, "Load finished\n");
 
-	
-	
 	pData->hDllOut = hOut;
 
 	return InitErrorStruct(Data, native_target, RetVal, error_data);
@@ -433,9 +366,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 	LOG(0, "CoreExecute failed with an unhandled exception\n");
 
-	// Same reasoning as the Inject_Internal catch: keep the advanced code
-	// reachable, so the record can name the failing line instead of reducing
-	// the whole run to one hex value.
 	if (pData && pData->GenerateErrorLog)
 	{
 		ERROR_INFO info{ };
@@ -458,7 +388,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	}
 }
 
-// Exported entry (CoreExecute). See Inject_Internal for the wrapper rationale.
 DWORD __stdcall Memory_Inject(MEMORY_INJECTIONDATA * pData)
 {
 #pragma EXPORT_FUNCTION("CoreExecute", __FUNCDNAME__)

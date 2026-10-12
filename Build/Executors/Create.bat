@@ -1,13 +1,4 @@
 @echo off
-rem Create.bat - one-shot release builder.
-rem What: cleans Release/Cache, draws per-build seeds + deployed names, builds
-rem   the runtime DLL (timestamp/mutate/rename exports/hash), builds the
-rem   launcher with the runtime hash embedded, deploys + pins the payload, and
-rem   ships a DPAPI-encrypted config. Why one script: the hash/pin/name/map
-rem   values must agree across binaries and config, so they are drawn once here
-rem   and verified at every gate (verify_embed/magic/pin/keys). How: six numbered
-rem   stages below; any gate failure aborts (fail-closed) and never ships a
-rem   partial release. No plaintext config is ever shipped (see :protect_config).
 setlocal EnableExtensions DisableDelayedExpansion
 
 set "NO_PAUSE=0"
@@ -29,15 +20,9 @@ if defined ESC (
     set "C_YELLOW=%ESC%[93m"
 )
 
-rem This script lives in Build\Executors\, so the repository root is two levels
-rem up. Rooting at "%~dp0.." resolved to Build\ itself and made every path
-rem below expand to Build\Build\Release.
 for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\Build"
 set "OUT_ROOT=%ROOT%\Build\Release"
-rem Resolved to the per-build random folder after :generate_names (V-05).
-rem Empty until then so any use before the override fails visibly instead of
-rem silently targeting the stock "DLLs" name this stage exists to remove.
 set "DLL_DIR="
 set "DEPS_RELEASE=%OUT_ROOT%"
 set "RELEASE_CACHE=%OUT_ROOT%\Cache"
@@ -51,28 +36,13 @@ set "CONFIG_SCRIPT=%SCRIPTS_DIR%\ProtectConfig.ps1"
 set "VERIFY_SCRIPT=%SCRIPTS_DIR%\VerifyEmbedMagic.ps1"
 set "NAMES_SCRIPT=%SCRIPTS_DIR%\ShuffleNaming.ps1"
 set "RENAME_SCRIPT=%SCRIPTS_DIR%\ShuffleExports.ps1"
-set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinMasterPin.ps1"
-rem Per-build deployed file names and the runtime export-rename map. Written
-rem here, consumed by :protect_config, and kept in Cache so the Protect stages
-rem that run after this script can resolve the deployed runtime DLL. It is
-rem never shipped and is swept with the rest of the build residue.
+set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinPayload.ps1"
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
 set "PAYLOAD_ASSET=%ROOT%\Assets\DLL\Jlov.dll"
-rem Optional pre-protected payload drop point. If this file exists (or
-rem AMEGER_PAYLOAD points somewhere) it is deployed instead of the pristine
-rem asset. The master PayloadSha256 pin is NEVER rewritten: it stays the
-rem pristine asset pin, and the shipped config is pinned to the deployed digest
-rem instead (see :deploy_payload and :protect_config).
 set "PAYLOAD_PROTECTED=%ROOT%\Assets\DLL\Jlov.protected.dll"
-rem The deployed payload path is resolved from the per-build name drawn by
-rem :generate_names (V-02): no stable Jlov.dll is ever shipped.
 set "PAYLOAD_DEST="
-rem Stock runtime build output name (the runtime vcxproj TargetName). Referenced
-rem only before the per-build rename below; after the rename the release folder
-rem carries no file by this name.
 set "RUNTIME_STOCK_DLL=%DEPS_RELEASE%\Ameger Injector - x64.dll"
-rem The Interface embeds the runtime DLL's SHA-256 and refuses a mismatched DLL.
 set "LIBRARY_PROJ=%ROOT%\Interface\Template\AmegerInjector.vcxproj"
 set "INTERFACE_PROJ=%ROOT%\Interface\Template\AmegerInjectorInterface.vcxproj"
 set "OUT64=%OUT_ROOT%"
@@ -81,8 +51,6 @@ set "INTERFACE64_OBJ=%CACHE_INTERFACE%"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "MSBUILD="
 
-rem "repin" utility mode: refresh the master PayloadSha256 pin to the current
-rem payload asset, then exit before any build/deploy. See :repin_payload.
 if "%REPIN%"=="1" goto :repin_payload
 echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Checking MSBuild...
 echo.
@@ -118,9 +86,6 @@ if errorlevel 1 goto :clean_error
 echo   %C_GREEN%[+]%C_RESET% Clean layout prepared in %C_GREEN%%RELEASE_CACHE%%C_RESET%.
 echo.
 echo.
-rem Per-build deployed file names (V-02/V-03/V-04). Drawn before anything is
-rem built or deployed so the runtime rename below, the payload copy, and the
-rem launcher link use the same names for the whole run.
 call :generate_names
 if errorlevel 1 goto :names_error
 set "DLL_DIR=%OUT_ROOT%\%DLLDIR_NAME%"
@@ -129,9 +94,6 @@ if not exist "%DLL_DIR%" (
   echo   %C_RED%ERROR: unable to create the per-build DLL folder; refusing to deploy stable names.%C_RESET%
   goto :clean_error
 )
-rem Deployed config file (V-06): per-build random basename, fixed .ini
-rem extension so the launcher's magic scan finds it. Set here (after the draw)
-rem so every verify/encrypt step below resolves one path.
 set "DEPLOYED_CONFIG=%OUT_ROOT%\%CONFIG_NAME%.ini"
 set "PAYLOAD_DEST=%DLL_DIR%\%PAYLOAD_NAME%"
 set "INTERFACE_EXE=%OUT64%\%EXE_NAME%.exe"
@@ -142,20 +104,11 @@ echo   %C_GREEN%[+]%C_RESET% Deployed DLL folder: %C_GREEN%%DLLDIR_NAME%%C_RESET
 echo.
 echo.
 
-rem Adaptivity: keep the master PayloadSha256 pinned to whatever payload asset is
-rem currently in place, so swapping the DLL back and forth never fails the build
-rem on a stale pin. AMEGER_STRICT_PAYLOAD=1 restores the abort-on-mismatch gate for
-rem the "exactly the reviewed asset" check. The launch-time anti-tamper pin is
-rem unaffected: the shipped config still pins the exact deployed bytes.
 call :maybe_adopt_payload
 if errorlevel 1 goto :payload_error
 
 echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Building Injector...
 set "MUTATE_ARGS="
-rem AMEGER_REFUSE_UNMUTATED=1 is a refusal opt-out, not a skip: it suppresses
-rem the seed, timestamp and mutation stages only so the run reaches the explicit
-rem refusal at :refuse_unmutated. It always aborts and never ships an unmutated
-rem binary, so the name states the actual behavior.
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :seeds_ready
 where powershell.exe >nul 2>&1
 if errorlevel 1 goto :seeds_missing
@@ -165,14 +118,6 @@ set "AmegerStringSeed="
 for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SEED_SCRIPT%"`) do set "%%A=%%B"
 if not defined AmegerMmapSentinel goto :seeds_missing
 if not defined AmegerStringSeed goto :seeds_missing
-rem Per-build stub byte-shape seed (RemoteThreadHijack.asm). Reuse the
-rem sentinel draw, but MASM has no 0x prefix (unlike the C++ ClCompile
-rem consumers), so convert it to a decimal literal here. Mask to 31 bits so
-rem set /a never yields a negative value; the draw is forced odd, so the
-rem result is never 0. Fail closed instead of letting the stub silently
-rem lose its per-build variance. The seed's low 3 bits select the FP-area
-rem addressing form, the FP instruction width and the RSP capture form; the
-rem stub's own header comment documents each pair.
 set /a "AmegerStubSeed=(%AmegerMmapSentinel%) & 0x7FFFFFFF"
 if not defined AmegerStubSeed goto :seeds_missing
 if "%AmegerStubSeed%"=="0" goto :seeds_missing
@@ -216,9 +161,6 @@ echo   %C_RED%ERROR: BuildPE.ps1 was not found; refusing to continue with an unm
 goto :failure
 
 :runtime_mutate_ready
-rem V-32: rename the runtime DLL's exported function names in place, per build,
-rem before the SHA-256 below is taken so the launcher embeds the digest of the
-rem renamed DLL. The map is captured for the deployed config and the name state.
 call :rename_exports
 if errorlevel 1 goto :rename_export_error
 call :write_names_state
@@ -236,21 +178,12 @@ if not defined H4 goto :hash_error
 if not defined H5 goto :hash_error
 if not defined H6 goto :hash_error
 if not defined H7 goto :hash_error
-set "RUNTIME_HASH_ARGS=/p:AmegerRuntimeHash0=%H0% /p:AmegerRuntimeHash1=%H1% /p:AmegerRuntimeHash2=%H2% /p:AmegerRuntimeHash3=%H3% /p:AmegerRuntimeHash4=%H4% /p:AmegerRuntimeHash5=%H5% /p:AmegerRuntimeHash6=%H6% /p:AmegerRuntimeHash7=%H7% /p:AmegerStringSeed=%AmegerStringSeed% /p:AmegerExeName=%EXE_NAME%"
-rem Rename the runtime DLL to the per-build random name drawn by
-rem :generate_names (V-03). The hash above was taken from the stock path after
-rem the export rename, and AddPE/BuildPE already ran on it, so this is the last
-rem step that touches the stock name. A failed move must abort rather than ship
-rem a folder whose runtime DLL is missing or misnamed.
+set "RUNTIME_HASH_ARGS=/p:AmegerRuntimeHash0=%H0% /p:AmegerRuntimeHash1=%H1% /p:AmegerRuntimeHash2=%H2% /p:AmegerRuntimeHash3=%H3% /p:AmegerRuntimeHash4=%H4% /p:AmegerRuntimeHash5=%H5% /p:AmegerRuntimeHash6=%H6% /p:AmegerRuntimeHash7=%H7% /p:AmegerStringSeed=%AmegerStringSeed% /p:AmegerExeName=%EXE_NAME% /p:AmegerConfigMagic=%CONFIG_MAGIC%"
 set "RUNTIME_DLL_NAME=%RUNTIME_NAME%"
 set "RUNTIME_DLL=%DLL_DIR%\%RUNTIME_DLL_NAME%"
 if not exist "%DLL_DIR%" mkdir "%DLL_DIR%"
 move /y "%RUNTIME_STOCK_DLL%" "%RUNTIME_DLL%" >nul
 if not exist "%RUNTIME_DLL%" goto :runtime_rename_error
-rem Value column is shared with BuildPE.ps1's closing summary line; both start
-rem at 2-space indent. "11/11 mutations applied" is 23 chars, "Runtime SHA-256:"
-rem is 16, so the 8 spaces below land the hash under the path. If you retune one,
-rem retune the other.
 echo   %C_GREEN%[+]%C_RESET% Runtime SHA-256:        %RUNTIME_SHA256%
 echo.
 call :build_project "%INTERFACE_PROJ%" x64 "%OUT64%" "%INTERFACE64_OBJ%" "%TOOLSET_ARG%" "%SDK_ARG%" "%RUNTIME_HASH_ARGS%"
@@ -261,9 +194,6 @@ echo.
 echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Deploying release binaries...
 echo.
 echo   %C_GREEN%[+]%C_RESET% Runtime binaries are in %C_GREEN%%OUT_ROOT%%C_RESET%.
-rem Deploy the payload first: :protect_config pins the shipped config to the
-rem digest of the file actually deployed, so the payload must already be in
-rem place when the config is encrypted.
 call :deploy_payload
 if errorlevel 1 goto :payload_error
 call :protect_config
@@ -273,12 +203,6 @@ echo.
 
 echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping intermediates into Cache and verifying...
 echo.
-rem The deployed launcher name lives in %INTERFACE_EXE% (per-build V-04);
-rem every step below resolves it from there so a renamed launcher can never
-rem be silently ignored by a hardcoded path.
-rem (verify, timestamp, mutation, manifest). Assert the release root really
-rem holds exactly that one EXE so a renamed or leftover second binary can never
-rem be silently ignored by every later step.
 set "EXE_COUNT=0"
 for %%F in ("%OUT64%\*.exe") do set /a "EXE_COUNT+=1"
 if not "%EXE_COUNT%"=="1" (
@@ -293,12 +217,6 @@ call :verify "%INTERFACE_EXE%" "x64 Interface"
 if errorlevel 1 goto :verify_error
 call :verify_embed
 if errorlevel 1 goto :verify_content_error
-rem Encryption is mandatory: the launcher unconditionally rejects plaintext
-rem (no plaintext fallback by design, since a readable config is a
-rem self-describing on-disk artifact). The old opt-out gated this check off
-rem and shipped a release the launcher could never load. Always prove the
-rem SYSCFG01 marker; the :protect_config refusal below guarantees no
-rem plaintext config reaches this point.
 call :verify_config_magic
 if errorlevel 1 goto :verify_content_error
 call :verify_deployed_pin
@@ -327,16 +245,9 @@ if errorlevel 1 goto :timestamp_error
 if not exist "%MUTATE_SCRIPT%" goto :mutate_exe_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MUTATE_SCRIPT%" "%INTERFACE_EXE%"
 if errorlevel 1 goto :mutate_exe_error
-rem AddPE/BuildPE rewrite headers, section names, code-cave slack and the DOS
-rem stub. None of that should touch the .rdata runtime-hash dwords, but the
-rem earlier :verify_embed ran BEFORE these mutations; re-prove the embed here
-rem so a mutation that disturbed it fails closed instead of shipping.
 call :verify_embed
 if errorlevel 1 goto :verify_content_error
 
-rem The baseline must be recorded AFTER the EXE mutations above, not earlier:
-rem BuildPE.ps1 renames .text to .main and friends, so a manifest captured
-rem before that point would describe a binary that no longer exists.
 call :write_section_manifest
 if errorlevel 1 goto :manifest_error
 echo.
@@ -391,9 +302,6 @@ exit /b 0
 
 :prepare_cache
 if not exist "%DEPS_RELEASE%" mkdir "%DEPS_RELEASE%"
-rem DLL_DIR is created after :generate_names draws the per-build folder name
-rem (V-05), not here: creating the stock "DLLs" first would leave the stable
-rem name this pipeline exists to remove.
 if not exist "%RELEASE_CACHE%" mkdir "%RELEASE_CACHE%"
 if not exist "%CACHE_RUNTIME%" mkdir "%CACHE_RUNTIME%"
 if not exist "%CACHE_INTERFACE%" mkdir "%CACHE_INTERFACE%"
@@ -402,9 +310,6 @@ if not exist "%CACHE_INTERFACE%" exit /b 1
 exit /b 0
 
 :generate_names
-rem Draw the per-build deployed file names (V-02/V-03/V-04). Fail closed: a missing
-rem script, missing PowerShell or malformed output must abort rather than ship
-rem a stable name.
 if not exist "%NAMES_SCRIPT%" (
   echo   %C_RED%ERROR: ShuffleNaming.ps1 not found; refusing to deploy stable names.%C_RESET%
   exit /b 1
@@ -419,12 +324,14 @@ set "RUNTIME_NAME="
 set "EXE_NAME="
 set "DLLDIR_NAME="
 set "CONFIG_NAME="
+set "CONFIG_MAGIC="
 for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%NAMES_SCRIPT%"`) do set "%%A=%%B"
 if not defined PAYLOAD_NAME exit /b 1
 if not defined RUNTIME_NAME exit /b 1
 if not defined EXE_NAME exit /b 1
 if not defined DLLDIR_NAME exit /b 1
 if not defined CONFIG_NAME exit /b 1
+if not defined CONFIG_MAGIC exit /b 1
 if /i "%PAYLOAD_NAME%"=="%RUNTIME_NAME%" exit /b 1
 if /i "%PAYLOAD_NAME%"=="%EXE_NAME%" exit /b 1
 if /i "%PAYLOAD_NAME%"=="%DLLDIR_NAME%" exit /b 1
@@ -438,10 +345,6 @@ if /i "%DLLDIR_NAME%"=="%CONFIG_NAME%" exit /b 1
 exit /b 0
 
 :rename_exports
-rem V-32: overwrite the runtime DLL's exported names with same-length random
-rem replacements, in place, and capture the rename map. Fail closed on a missing
-rem script or a script-reported failure: a stable export name on disk is exactly
-rem what this stage exists to remove.
 if not exist "%RENAME_SCRIPT%" (
   echo   %C_RED%ERROR: ShuffleExports.ps1 not found; refusing to ship stable export names.%C_RESET%
   exit /b 1
@@ -466,10 +369,6 @@ echo   %C_GREEN%[+]%C_RESET% Runtime exports renamed (map captured).
 exit /b 0
 
 :write_names_state
-rem Persist the per-build names and export map for :protect_config and for the
-rem Protect stages that run after this script. Fail closed: a failed write would
-rem leave ProtectDLL/ProtectEXE unable to resolve the deployed runtime DLL or
-rem the launcher EXE.
 if not exist "%RELEASE_CACHE%" mkdir "%RELEASE_CACHE%"
 if not exist "%RELEASE_CACHE%" exit /b 1
 >"%NAMES_STATE%" echo PAYLOAD_NAME=%PAYLOAD_NAME%
@@ -477,6 +376,7 @@ if not exist "%RELEASE_CACHE%" exit /b 1
 >>"%NAMES_STATE%" echo EXE_NAME=%EXE_NAME%
 >>"%NAMES_STATE%" echo DLLDIR_NAME=%DLLDIR_NAME%
 >>"%NAMES_STATE%" echo CONFIG_NAME=%CONFIG_NAME%
+>>"%NAMES_STATE%" echo CONFIG_MAGIC=%CONFIG_MAGIC%
 >>"%NAMES_STATE%" echo EXPORT_MAP=%EXPORT_MAP%
 if not exist "%NAMES_STATE%" exit /b 1
 exit /b 0
@@ -486,11 +386,6 @@ set "PROJECT=%~1"
 set "ARCH=%~2"
 set "PROJECT_OUT=%~3"
 set "PROJECT_INT=%~4"
-rem The toolset/SDK/hash arguments are consumed directly as %~5/%~6/%~7 on the
-rem MSBuild line below. They are deliberately NOT copied into the caller's
-rem globals here: re-assigning TOOLSET_ARG/SDK_ARG inside a called label would
-rem clobber the caller's values for no benefit (nothing in this label reads
-rem them by name).
 if not exist "%PROJECT%" exit /b 2
 if not exist "%PROJECT_OUT%" mkdir "%PROJECT_OUT%"
 if not exist "%PROJECT_OUT%" exit /b 2
@@ -506,39 +401,25 @@ echo   %C_GREEN%OK%C_RESET% %~2: %C_GREEN%"%~1"%C_RESET%
 exit /b 0
 
 :verify_embed
-rem The interface embeds the runtime DLL's 8 SHA-256 words (AmegerRuntimeHash0..7
-rem computed above); prove they are really present, in order, as little-endian
-rem dwords rather than the default zero constants.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check Embed -Path "%INTERFACE_EXE%" -Words "%H0%,%H1%,%H2%,%H3%,%H4%,%H5%,%H6%,%H7%"
 exit /b %ERRORLEVEL%
 
 :verify_config_magic
-rem Encryption is on, so the deployed config must carry the SYSCFG01 marker.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check Magic -Path "%DEPLOYED_CONFIG%" -Magic SYSCFG01
+if not defined CONFIG_MAGIC exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check Magic -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
 :verify_deployed_pin
-rem Fail closed: the shipped config must pin the digest of the payload actually
-rem deployed. A stale pin would make the launcher abort its startup hash check.
-rem The verifier decrypts the deployed config (or reads it plaintext under the
-rem explicit opt-out) and compares its PayloadSha256 to %DEPLOYED_SHA%.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check DeployedPin -Path "%DEPLOYED_CONFIG%" -ExpectPin "%DEPLOYED_SHA%"
+if not defined CONFIG_MAGIC exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check DeployedPin -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%" -ExpectPin "%DEPLOYED_SHA%"
 exit /b %ERRORLEVEL%
 
 :verify_config_keys
-rem Fail closed: the shipped config must carry the per-build PayloadName,
-rem RuntimeName and ExportMap keys (V-02/V-03/V-32) the launcher uses to
-rem resolve the renamed runtime DLL and its renamed exports. A key silently
-rem dropped during the config merge would otherwise ship a config the launcher
-rem cannot use. The verifier decrypts the deployed config (or reads it
-rem plaintext under the explicit opt-out), so this runs regardless of the
-rem encryption opt-out.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigKeys -Path "%DEPLOYED_CONFIG%"
+if not defined CONFIG_MAGIC exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigKeys -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
 :remove_import_artifacts
-rem Fail closed: a leftover .lib/.exp in the release folder is a build fingerprint,
-rem so a failed delete must abort the build rather than silently ship it.
 for %%F in ("%~1\*.lib" "%~1\*.exp") do if exist "%%~F" (
   del /f /q "%%~F"
   if exist "%%~F" exit /b 1
@@ -546,16 +427,10 @@ for %%F in ("%~1\*.lib" "%~1\*.exp") do if exist "%%~F" (
 exit /b 0
 
 :sweep_artifacts
-rem Same fail-closed rule for the intermediates: a .pdb left in the release
-rem folder leaks the original symbol paths, so a failed move must abort.
 for %%F in ("%DEPS_RELEASE%\Ameger Injector - *.pdb") do if exist "%%~F" (
   move "%%~F" "%CACHE_RUNTIME%\" >nul
   if exist "%%~F" exit /b 1
 )
-rem Sweep every remaining PDB in the release root rather than a hardcoded name:
-rem the interface TargetName is "Host - $(PlatformShortName)" (Host - x64), and
-rem the previous "Injector - x64.pdb" name never matched it, so the interface
-rem PDB was left in the shipped folder.
 for %%F in ("%OUT64%\*.pdb") do if exist "%%~F" (
   move "%%~F" "%CACHE_INTERFACE%\" >nul
   if exist "%%~F" exit /b 1
@@ -563,26 +438,6 @@ for %%F in ("%OUT64%\*.pdb") do if exist "%%~F" (
 exit /b 0
 
 :protect_config
-rem Ship a DPAPI-encrypted copy of the config next to the EXE so the deployed
-rem folder exposes no readable target name or stealth toggles. The plaintext
-rem master in Build\ stays the editable source of truth.
-rem
-rem The master's PayloadSha256 is the pristine asset pin and is never rewritten
-rem (see :deploy_payload). The shipped config must instead pin the payload file
-rem actually deployed, so ProtectConfig.ps1 derives the pin by hashing
-rem %PAYLOAD_DEST% (-PinPayload); :verify_deployed_pin then decrypts the result
-rem and proves it carries that digest.
-rem
-rem Fail closed: never ship a plaintext or absent config. The runtime requires
-rem Configuration.ini next to the EXE, so a silent miss here would produce a
-rem broken release. There is no plaintext opt-out (see the refusal above).
-rem
-rem The deployed config also carries the per-build PayloadName, RuntimeName,
-rem ExportMap and DllDir (V-02/V-03/V-32/V-05) so the launcher resolves the
-rem renamed runtime DLL, its renamed exports, and the randomized folder. They
-rem are passed explicitly here because the destination does not exist yet;
-rem ProtectDLL.bat's later re-encryption preserves them from the existing
-rem destination instead.
 if not defined DEPLOYED_SHA (
   echo   %C_RED%ERROR: deployed payload SHA-256 unavailable; refusing to ship an unpinned config.%C_RESET%
   exit /b 1
@@ -603,13 +458,10 @@ if not defined EXPORT_MAP (
   echo   %C_RED%ERROR: runtime export map unavailable; refusing to ship an unstamped config.%C_RESET%
   exit /b 1
 )
-rem No plaintext opt-out: the launcher unconditionally rejects plaintext
-rem (DecryptConfigBlob refuses anything without the SYSCFG01 marker), so
-rem shipping a plaintext config produces an unloadable release by
-rem construction. Worse, a readable config is a self-describing on-disk
-rem artifact (target name, toggles, payload pin) - exactly what the DPAPI
-rem layer exists to remove for stealth. Refuse the build instead of shipping
-rem a release that can never load.
+if not defined CONFIG_MAGIC (
+  echo   %C_RED%ERROR: per-build config magic unavailable; refusing to ship a static-magic config.%C_RESET%
+  exit /b 1
+)
 if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
   echo   %C_RED%ERROR: AMEGER_ENCRYPT_CONFIG=0 is refused; the launcher rejects plaintext configs, so this would ship an unloadable release.%C_RESET%
   echo   %C_RED%Rebuild without the opt-out to ship the encrypted config.%C_RESET%
@@ -628,7 +480,7 @@ if errorlevel 1 (
   echo   %C_RED%ERROR: PowerShell unavailable; refusing to ship a plaintext config.%C_RESET%
   exit /b 1
 )
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%PAYLOAD_DEST%" -PayloadName "%PAYLOAD_NAME%" -RuntimeName "%RUNTIME_NAME%" -ExportMap "%EXPORT_MAP%" -DllDir "%DLLDIR_NAME%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%PAYLOAD_DEST%" -PayloadName "%PAYLOAD_NAME%" -RuntimeName "%RUNTIME_NAME%" -ExportMap "%EXPORT_MAP%" -DllDir "%DLLDIR_NAME%" -ConfigMagic "%CONFIG_MAGIC%"
 if errorlevel 1 (
   echo   %C_RED%ERROR: config encryption failed; refusing to ship a plaintext config.%C_RESET%
   exit /b 1
@@ -637,22 +489,6 @@ echo   %C_GREEN%[+]%C_RESET% Configuration encrypted for deployment.
 exit /b 0
 
 :deploy_payload
-rem Ship the target payload next to the EXE so the release folder is
-rem self-contained. Fail closed: a missing asset or a failed copy would leave
-rem the injector without the DLL it targets, so never skip silently.
-rem
-rem Source resolution, in order:
-rem   1. %AMEGER_PAYLOAD%          explicit path to a prepared DLL
-rem   2. Assets\DLL\Jlov.protected.dll   conventional drop point
-rem   3. Assets\DLL\Jlov.dll       the pristine asset (default)
-rem Option 1/2 exist so an already VMProtect'd payload can be shipped without
-rem hand-editing anything. The master PayloadSha256 is NEVER rewritten: it
-rem stays the pristine asset pin. When the pristine asset is deployed it is
-rem verified against that pin here; when a prepared DLL is deployed the shipped
-rem config is pinned to the deployed digest instead (:protect_config), leaving
-rem the master untouched.
-rem To intentionally swap the pristine asset, run "Create.bat repin" first: it
-rem refreshes the master pin so the verify below matches the new DLL.
 set "PAYLOAD_SRC=%PAYLOAD_ASSET%"
 set "PAYLOAD_IS_PREPARED="
 if defined AMEGER_PAYLOAD (
@@ -672,8 +508,6 @@ if errorlevel 1 (
   echo   %C_RED%ERROR: failed to copy payload to %PAYLOAD_DEST%%C_RESET%
   exit /b 1
 )
-rem Digest of the file actually deployed. :protect_config pins the shipped
-rem config to this value, so failing to compute it must abort.
 set "DEPLOYED_SHA="
 for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$h=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes('%PAYLOAD_DEST%'))) -replace '-',''); Write-Output ('DEPLOYED_SHA=' + $h)"`) do set "%%A=%%B"
 if not defined DEPLOYED_SHA (
@@ -681,9 +515,6 @@ if not defined DEPLOYED_SHA (
   exit /b 1
 )
 if not defined PAYLOAD_IS_PREPARED (
-  rem Pristine asset: the deployed copy must match the reviewed master pin. A
-  rem stale or substituted asset would silently defeat the injector's
-  rem pinned-hash startup check, so verify now and abort on mismatch.
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check PayloadHash -Path "%PAYLOAD_DEST%" -Config "%CONFIG_MASTER%"
   if errorlevel 1 (
     echo   %C_RED%ERROR: deployed payload failed hash verification.%C_RESET%
@@ -696,21 +527,12 @@ if not defined PAYLOAD_IS_PREPARED (
     exit /b 1
   )
 ) else (
-  rem Prepared payload: its digest cannot equal the pristine pin, so the
-  rem shipped config is pinned to it instead and the master is left alone.
   echo   %C_YELLOW%[+]%C_RESET% Prepared payload deployed; master pin left pristine.%C_RESET%
 )
 echo   %C_GREEN%[+]%C_RESET% Payload deployed: %C_GREEN%%PAYLOAD_DEST%%C_RESET%
 exit /b 0
 
 :write_section_manifest
-rem Record the post-mutation section names of both shippable binaries. The
-rem protection stages need a baseline to tell "already virtualized" apart from
-rem "renamed by BuildPE": this project deliberately rewrites section names
-rem (.text becomes .main and friends), so any heuristic based on "is the name
-rem standard" reports our own build as already protected and blocks it. A
-rem recorded baseline makes the comparison exact. The manifest lives in Cache
-rem so it never ships in the release folder.
 set "MANIFEST=%RELEASE_CACHE%\pe-sections.txt"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$out=@(); foreach($p in @('%INTERFACE_EXE%','%PAYLOAD_DEST%')){ if(-not (Test-Path -LiteralPath $p)){exit 1}; $b=[IO.File]::ReadAllBytes($p); $e=[BitConverter]::ToInt32($b,0x3C); $c=$e+4; $n=[BitConverter]::ToUInt16($b,$c+2); $z=[BitConverter]::ToUInt16($b,$c+16); $s=$c+20+$z; $names=@(); for($i=0;$i -lt $n;$i++){ $o=$s+40*$i; $nm=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0); $x=[BitConverter]::ToUInt32($b,$o+36); if($x -band 0x20000000){ $names += ($nm + '+X') } else { $names += $nm } }; $out += ([IO.Path]::GetFileName($p) + ':' + ($names -join ',')) }; [IO.File]::WriteAllLines('%MANIFEST%',$out)"
 if errorlevel 1 exit /b 1
@@ -718,21 +540,6 @@ if not exist "%MANIFEST%" exit /b 1
 exit /b 0
 
 :scrub_build_cache
-rem Post-success residue scrub. Runs only after the build, deployment and every
-rem verification gate have passed (it is called from the success tail, after
-rem :write_section_manifest). The MSBuild tlog directories record the exact
-rem CL/link command lines -- including the per-build /p:AmegerMmapSentinel,
-rem /p:AmegerStringSeed, /p:AmegerStubSeed and /p:AmegerRuntimeHash* values --
-rem and the .recipe/.obj/.pch/.iobj/.ipdb files and any build PDB leak source
-rem paths and symbols. No later stage reads any of it, and Create.bat wipes the
-rem whole Cache at the start of the next run, so it is pure residue on the
-rem build machine.
-rem
-rem Everything directly under Cache is removed except the artifacts the
-rem protection stages consume: pe-sections.txt (the ProtectDLL/ProtectEXE
-rem section baseline), BuildNames.state (the per-build deployed names + export
-rem map) and the Protect.*.state idempotency records. Default is scrub; set
-rem AMEGER_KEEP_BUILD_CACHE=1 to retain the residue for debugging.
 if /i "%AMEGER_KEEP_BUILD_CACHE%"=="1" (
   echo   %C_YELLOW%[!]%C_RESET% Build-cache scrub skipped ^(AMEGER_KEEP_BUILD_CACHE=1^); residue retained.
   exit /b 0
@@ -746,8 +553,6 @@ echo.
 exit /b 0
 
 :scrub_entry
-rem %~1 = a name directly under Cache. Preserve consumed artifacts, delete the
-rem rest, and fail closed if a delete does not stick (locked/held file).
 call :scrub_preserved "%~1"
 if not errorlevel 1 exit /b 0
 rmdir /s /q "%RELEASE_CACHE%\%~1" 2>nul
@@ -759,12 +564,9 @@ if exist "%RELEASE_CACHE%\%~1" (
 exit /b 0
 
 :scrub_preserved
-rem Consumed by later stages and kept across runs. Exit 0 to preserve, 1 to scrub.
 if /i "%~1"=="pe-sections.txt" exit /b 0
 if /i "%~1"=="Protect.payload.state" exit /b 0
 if /i "%~1"=="Protect.exe.state" exit /b 0
-rem The per-build names + export map the Protect stages read to resolve the
-rem deployed payload/runtime DLLs. Kept for the same reason as pe-sections.txt.
 if /i "%~1"=="BuildNames.state" exit /b 0
 exit /b 1
 
@@ -858,12 +660,6 @@ echo %C_RED%ERROR: AMEGER_REFUSE_UNMUTATED=1 would ship unmutated binaries (stab
 goto :failure
 
 :maybe_adopt_payload
-rem Default-ON adaptivity. Pin the master to the current pristine asset so a build
-rem right after a payload swap succeeds; RepinMasterPin is a no-op when the asset
-rem already matches, so steady-state runs stay silent. AMEGER_STRICT_PAYLOAD=1 opts
-rem out and keeps the original abort-on-mismatch behavior. Best effort: with
-rem PowerShell, the script or the payload absent, return 0 so the precise
-rem :deploy_payload gate remains the source of truth.
 if /i "%AMEGER_STRICT_PAYLOAD%"=="1" exit /b 0
 where powershell.exe >nul 2>&1
 if errorlevel 1 exit /b 0
@@ -877,22 +673,12 @@ if errorlevel 1 (
 exit /b 0
 
 :repin_payload
-rem "repin" utility mode. Refresh the plaintext master PayloadSha256 pin to the
-rem current payload asset so a build after a payload swap verifies against the
-rem new digest instead of failing closed on the stale pin. Sanctioned replacement
-rem for hand-editing Configuration.ini (its own comment forbids that). It does not
-rem weaken the gate: :deploy_payload still verifies the shipped DLL against the
-rem pin the master now carries, so a later substitution still fails the build.
-rem Asset resolution mirrors :deploy_payload minus the prepared path: the master
-rem always tracks the pristine asset, so AMEGER_PAYLOAD overrides it; the
-rem Jlov.protected.dll drop point is deliberately NOT used here - that belongs to
-rem the prepared-payload path that leaves the master pristine.
 if not exist "%CONFIG_MASTER%" (
   echo   %C_RED%ERROR: master config not found: %CONFIG_MASTER%%C_RESET%
   goto :failure
 )
 if not exist "%REPIN_SCRIPT%" (
-  echo   %C_RED%ERROR: RepinMasterPin.ps1 not found; refusing to re-pin.%C_RESET%
+  echo   %C_RED%ERROR: RepinPayload.ps1 not found; refusing to re-pin.%C_RESET%
   goto :failure
 )
 where powershell.exe >nul 2>&1

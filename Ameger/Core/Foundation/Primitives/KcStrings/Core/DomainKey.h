@@ -4,67 +4,31 @@
 #include <cstdint>
 #include <intrin.h>
 
-// Anti-constant-folding layer shared by every string tier.
-//
-// Why: a decrypt that is a pure XOR over a compile-time-constant key is itself
-// a compile-time constant expression. MSVC /O2 evaluates it and emits the
-// PLAINTEXT into .rdata, which defeats the whole suite. Measured, not
-// theorised: 28 of 31 ntdll symbol names sat in the shipped runtime DLL as
-// plaintext, pooled in source order by the string-literal optimiser.
-//
-// Fix: the decrypt output is masked with a per-call key derived from rdtsc,
-// then unmasked. The two passes cancel, so caller-visible semantics are
-// unchanged, but the plaintext is no longer a value the compiler can know at
-// compile time and so can never reach the image. Correctness no longer depends
-// on the optimiser declining to emulate the cipher.
-//
-// THE VOLATILE READ IS THE ACTUAL MECHANISM, and getting it wrong fails
-// silently. A first attempt held the key in a plain local and routed the two
-// passes through a staged buffer; that still leaked every name, because SROA
-// promotes the buffer to registers and the optimiser then cancels
-// `(c ^ k ^ d) ^ d` to `c ^ k` and constant-folds. Keying off a volatile member
-// is what forces each pass to re-read and forbids assuming the two reads agree.
-// A compiler that caches or CSEs these reads reintroduces the leak silently, so
-// the gate in Interface/Source/Main.cpp is the backstop.
 namespace kc_strings
 {
 namespace detail
 {
-// Per-build rotation for every string-tier key. CreateSeeds.ps1 emits a fresh
-// AmegerStringSeed on every build (passed as /p: to both projects); mixing it
-// into each tier's key schedule makes all .rdata ciphertext change on every
-// link, so no cross-build byte signature survives even with identical sources.
-// A stock build without the seed define falls back to a fixed nonzero sugar.
+
 #ifndef AMEGER_STRING_SEED
 #define AMEGER_STRING_SEED 0x1B873593u
 #endif
 inline constexpr std::uint32_t kStringSeed = static_cast<std::uint32_t>(AMEGER_STRING_SEED);
-// Derives one mask byte from a per-call key. Params: key (volatile-sourced
-// domain key), idx (byte position; index-dependent so the mask is not a
-// repeated dword). Returns: the mask byte for that position.
+
 __forceinline std::uint8_t DomainByte(std::uint32_t key, std::size_t idx) noexcept
 {
-    // Index-dependent so the mask is not one uniform dword, which would make
-    // the two passes even more attractive to simplify.
+
     return static_cast<std::uint8_t>((key >> ((idx % 4) * 8)) ^ (idx * 0xC2B2AE35u));
 }
 
-// Per-decrypt volatile mask. What: holds one rdtsc-derived key and serves
-// mask bytes for the two canceling passes. Why volatile member: forces each
-// Byte() call to re-read so the optimiser cannot prove the passes cancel and
-// fold to plaintext (see the header note). Single decrypt lifetime only.
 class DomainMask
 {
     volatile std::uint32_t m_key;
 
     __forceinline std::uint32_t Compute() noexcept
     {
-        // rdtsc is opaque to the optimiser: it cannot constant-fold it, which
-        // is what makes the construction work at all. Taken once per decrypt.
+
         const std::uint64_t ticks = __rdtsc();
 
-        // Mix in this frame's address so a hoisted or replayed tick value
-        // cannot serve as a stable key across call sites.
         std::uint32_t k = static_cast<std::uint32_t>(ticks ^ (ticks >> 32));
         k ^= static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&ticks));
         k *= 0x85EBCA6Bu;
@@ -81,9 +45,6 @@ public:
     }
 };
 
-// Volatile-zeroes an N-element staging buffer. What: post-decrypt scrub so
-// stack plaintext does not linger for dumps. Params: p (buffer of N CharT).
-// The volatile store is what prevents dead-store elimination.
 template <typename CharT, std::size_t N>
 __forceinline void Wipe(CharT * p) noexcept
 {
@@ -93,5 +54,5 @@ __forceinline void Wipe(CharT * p) noexcept
         v[i] = static_cast<CharT>(0);
     }
 }
-} // namespace detail
-} // namespace kc_strings
+}
+}

@@ -6,16 +6,9 @@
 
 #include "Core/DomainKey.h"
 
-// Single-layer narrow strings: KernelCloak encrypted_string.h replica.
-// What: compile-time ciphertext (KcEncryptedString) plus stack plaintext view
-//   (KcDecryptedString). Template params: N (bytes incl. null), Key (per-site
-//   key from __COUNTER__/__LINE__/seed so identical literals differ).
-// See Core/KcStrSuite.h for the usage rules and the usermode deltas.
 namespace kc_strings
 {
-// Compile-time ciphertext blob. Constructed once as `static constexpr` inside
-// the KC_STR lambda so the literal never reaches the image; see XorString.h
-// for why the constant-expression form is load-bearing.
+
 template <std::size_t N, std::uint32_t Key>
 class KcEncryptedString
 {
@@ -34,9 +27,6 @@ public:
 	{
 	}
 
-	// Decrypts into the caller's N-byte stack buffer via the two canceling
-	// DomainMask passes (anti-folding) and wipes staging. Params: out
-	// (caller stack buffer, N bytes). Never points at .rdata or heap.
 	__forceinline void Decrypt(char * out) const noexcept
 	{
 		const kc_strings::detail::DomainMask mask;
@@ -62,8 +52,6 @@ public:
 	}
 };
 
-// Stack plaintext view (non-copyable, wipe-on-dtor). Use as a
-// full-expression temporary; read via c_str(). Never store c_str().
 template <std::size_t N, std::uint32_t Key>
 class KcDecryptedString
 {
@@ -103,6 +91,6 @@ __forceinline KcDecryptedString<N, Key> KcMakeDecrypted(const KcEncryptedString<
 {
 	return KcDecryptedString<N, Key>(enc);
 }
-} // namespace kc_strings
+}
 
 #define KC_STR(s) ::kc_strings::KcMakeDecrypted([]() -> const auto & { constexpr std::uint32_t kc_k = static_cast<std::uint32_t>((__COUNTER__ + 1) * 0x45D9F3Bu ^ __LINE__ * 0x1B873593u ^ sizeof(s) * 0xCC9E2D51u ^ ::kc_strings::detail::kStringSeed); static constexpr ::kc_strings::KcEncryptedString<sizeof(s), kc_k> kc_e(s, std::make_index_sequence<sizeof(s)>{}); return kc_e; }())

@@ -1,26 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem ---------------------------------------------------------------------------
-rem ProtectEXE.bat - VMProtect stage for the deployed launcher.
-rem
-rem Runs against the release copy of the Interface EXE (Build\Release\*.exe),
-rem after Create.bat has produced it. The runtime DLL is untouched.
-rem
-rem One extra invariant is enforced here that the DLL stage does not need: the
-rem launcher embeds the runtime DLL's SHA-256 as eight little-endian dwords and
-rem refuses to start when they disagree. Virtualization rewrites the EXE's code
-rem sections, so the embedded words are re-verified against the live runtime DLL
-rem afterwards. A mismatch aborts rather than shipping a launcher that bricks on
-rem start.
-rem
-rem CLI shape (vmpsoft.com console documentation):
-rem   VMProtect_Con.exe <file> [output] [-pf proj] [-sf script] [-lf lic]
-rem                                 [-bd yyyy-mm-dd] [-wm name] [-we]
-rem Protection *modes* (Ultra / Mutation / Virtualization) and the Complexity
-rem and Instances figures are properties of the .vmp project, not CLI flags.
-rem ---------------------------------------------------------------------------
-
 set "NO_PAUSE=0"
 if defined CREATE_NO_PAUSE set "NO_PAUSE=%CREATE_NO_PAUSE%"
 if /i "%~1"=="/nopause" set "NO_PAUSE=1"
@@ -37,8 +17,6 @@ if defined ESC (
     set "C_YELLOW=%ESC%[93m"
 )
 
-rem This script lives in Build\Executors\Protection\, so the repository root is
-rem three levels up. Two levels would land on Build\ itself.
 for %%I in ("%~dp0..\..\..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\Build"
 set "OUT_ROOT=%BUILD_DIR%\Release"
@@ -47,19 +25,10 @@ set "WORK_DIR=%RELEASE_CACHE%\Protect"
 set "ASSET_TPL=%ROOT%\Assets\Template"
 set "SCRIPTS_DIR=%BUILD_DIR%\Scripts"
 set "BUILD_VMP_SCRIPT=%SCRIPTS_DIR%\BuildVMP.ps1"
-rem Kept outside WORK_DIR so the idempotency record survives the cleanup.
 set "STATE_FILE=%RELEASE_CACHE%\Protect.exe.state"
 set "VERIFY_SCRIPT=%BUILD_DIR%\Scripts\VerifyEmbedMagic.ps1"
-rem Per-build deployed runtime DLL name (V-03). Create.bat records it before
-rem the Protect stages run. Absent state is not fatal here: the launcher can
-rem still be virtualized, and the embedded-hash gate below fails closed unless
-rem the runtime DLL is present.
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "RUNTIME_NAME="
-rem The .vmp project is matched against the ORIGINAL launcher name, never the
-rem random deployed name (V-04): Assets\Template holds "Host - x64.exe.vmp",
-rem and a plain scan can hand this stage the payload's project. Mirrors
-rem ProtectDLL.bat's PAYLOAD_ORIGINAL_NAME guard for the same reason.
 set "EXE_ORIGINAL_NAME=Host - x64.exe"
 set "VMP_PROJECT=%AMEGER_VMP_PROJECT_EXE%"
 set "VMP_CON="
@@ -87,13 +56,7 @@ if not defined TARGET goto :target_missing
 if not exist "%TARGET%" goto :target_missing
 if not "%EXE_CANDIDATES%"=="1" goto :target_ambiguous
 for %%N in ("%TARGET%") do set "TARGET_NAME=%%~nxN"
-rem The runtime DLL name is random per build (V-03): resolve it from the name
-rem state Create.bat recorded instead of assuming an rtdll_* prefix.
 call :read_runtime_name
-rem Per-build DLL folder (V-05), same source as the runtime name. Older states
-rem predate it, in which case the stock "DLLs" layout applies. Resolved here
-rem rather than at the top so the folder is never assumed before the state that
-rem names it has been read.
 if defined DLLDIR_NAME (set "DLL_DIR=%OUT_ROOT%\%DLLDIR_NAME%") else (set "DLL_DIR=%OUT_ROOT%\DLLs")
 if defined RUNTIME_NAME if exist "%DLL_DIR%\%RUNTIME_NAME%" set "RUNTIME_DLL=%DLL_DIR%\%RUNTIME_NAME%"
 echo   %C_GREEN%[+]%C_RESET% Target:  %C_GREEN%%TARGET%%C_RESET%
@@ -123,7 +86,6 @@ call :vmp_settings
 echo.
 call :read_state
 echo.
-rem Deliberately not gated on AMEGER_FORCE_VMP: STATE_MATCH=output is an exact-hash match against our recorded protected output, so re-protecting would only double-virtualize. FORCE_VMP overrides the heuristic VMP_PRESENT check above instead.
 if /i "%STATE_MATCH%"=="output" (
   echo   %C_GREEN%[+]%C_RESET% Already protected; nothing to do.
   goto :already_done
@@ -146,14 +108,9 @@ call :sha256_of "%TARGET%" SRC_SHA
 if errorlevel 1 goto :hash_error
 if not defined SRC_SHA goto :hash_error
 echo   Source SHA-256: %C_GREEN%%SRC_SHA%%C_RESET%
-rem Work on a build-local copy of the project with a randomized protector
-rem segment name, so the segment is not a fixed executable section that
-rem identifies every build as protected.
 call :prepare_project
 if errorlevel 1 goto :project_error
 echo   %C_GREEN%[+]%C_RESET% Segment name: %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(randomized per build)%C_RESET%
-rem -we promotes VMProtect warnings to errors so a partial protection cannot
-rem pass for a completed one.
 "%VMP_CON%" "%TARGET%" "%WORK_DIR%\out.exe" -pf "%PROJ_WORK%" -we > "%WORK_DIR%\vmp.log" 2>&1
 if errorlevel 1 (
   echo   %C_RED%ERROR: VMProtect reported a failure; see the log tail below.%C_RESET%
@@ -165,9 +122,6 @@ if errorlevel 2 goto :fc_error
 if errorlevel 1 goto :output_invalid
 echo.
 echo   %C_GREEN%OK%C_RESET% Protected output validated.
-rem Confirm the output really carries the VMProtect segment we asked for before
-rem the bytes are deployed. Verification only: the binary is never renamed or
-rem patched here.
 call :verify_segment "%WORK_DIR%\out.exe"
 if errorlevel 1 goto :segment_error
 echo   %C_GREEN%[+]%C_RESET% VM segment: %C_GREEN%%VM_SEG%%C_RESET% (verified)
@@ -182,10 +136,6 @@ echo.
 
 echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Verifying embedded runtime hash...
 echo.
-rem The launcher will abort at startup if these eight dwords stop matching the
-rem runtime DLL, so confirm virtualization did not disturb them. A missing
-rem runtime DLL or verifier is not a reason to skip silently: that would ship a
-rem launcher whose embedded hash was never re-checked after virtualization.
 if not defined RUNTIME_DLL goto :embed_unavailable
 if not exist "%VERIFY_SCRIPT%" goto :embed_unavailable
 call :runtime_hash_words
@@ -196,9 +146,6 @@ echo   %C_GREEN%[+]%C_RESET% Embedded runtime hash intact after virtualization.
 goto :embed_ok
 
 :embed_unavailable
-rem No opt-out: skipping the post-virtualization embedded-hash check would
-rem ship a launcher whose eight AmegerRuntimeHash dwords were never
-rem re-proven, so a drifted build loads as "verified" and bricks at startup.
 echo   %C_RED%ERROR: cannot verify the embedded runtime hash after virtualization.%C_RESET%
 echo   %C_RED%       The runtime DLL or %VERIFY_SCRIPT% was not found; refusing to ship an unverified launcher.%C_RESET%
 goto :failure
@@ -222,8 +169,6 @@ echo Interface x64: %C_GREEN%%TARGET%%C_RESET%
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
 
-rem ---------------------------------------------------------------------------
-
 :already_protected
 echo.
 echo Launcher is already VMProtect-protected; release unchanged.
@@ -232,14 +177,6 @@ if "%NO_PAUSE%"=="0" pause
 exit /b 0
 
 :check_already_protected
-rem Detect an already-protected image against the baseline that Create.bat
-rem recorded in Cache\pe-sections.txt. A ".vmp*" name prefix is not a usable
-rem signal (VMProtect 3.8.4 emitted ".Tlp" for this project), and neither is
-rem "is the section name standard" (BuildPE.ps1 deliberately renames .text to
-rem .main and friends, so that heuristic flags our own pristine build as
-rem protected and blocks protection forever). Comparing against the recorded
-rem post-mutation baseline is exact: any EXECUTABLE section absent from the
-rem baseline was added by the protector.
 set "VMP_PRESENT="
 set "BASELINE="
 if exist "%RELEASE_CACHE%\pe-sections.txt" for /f "usebackq tokens=1,* delims=:" %%A in ("%RELEASE_CACHE%\pe-sections.txt") do if /i "%%A"=="%TARGET_NAME%" set "BASELINE=%%B"
@@ -274,7 +211,6 @@ set "TARGET=%CANDIDATE%"
 exit /b 0
 
 :prepare_project
-rem Randomized per build so the protector's segment is not a stable signature.
 set "PROJ_WORK=%WORK_DIR%\project.vmp"
 set "SEG_NAME="
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BUILD_VMP_SCRIPT%" -Project "%VMP_PROJECT%" -Out "%PROJ_WORK%"`) do set "%%A=%%B"
@@ -287,10 +223,6 @@ if defined AMEGER_VMP_CON if exist "%AMEGER_VMP_CON%" (
   set "VMP_CON=%AMEGER_VMP_CON%"
   goto :vmp_con_bat_check
 )
-rem Match the install family, not one folder name. VMProtect ships as
-rem "VMProtect", "VMProtect Professional", "VMProtect Ultimate" and so on, so a
-rem hardcoded "VMProtect" prefix silently misses every edition except the
-rem plain one. Later matches never override an earlier find.
 call :scan_vmp_dirs "%ProgramFiles%"
 call :scan_vmp_dirs "%ProgramW6432%"
 call :scan_vmp_dirs "%ProgramFiles(x86)%"
@@ -300,38 +232,16 @@ if not defined VMP_CON for /f "delims=" %%E in ('where VMProtect_Con.exe 2^>nul'
 if not defined VMP_CON for /f "delims=" %%E in ('where vmpconsole.exe 2^>nul') do if not defined VMP_CON set "VMP_CON=%%E"
 if not defined VMP_CON exit /b 1
 :vmp_con_bat_check
-rem Normalize before use. AMEGER_VMP_CON is very commonly set with surrounding
-rem quotes, and a for-variable scanned out of a quoted list can carry them too.
-rem Either way a quoted value breaks the invocation below: "%VMP_CON%" expands
-rem to ""C:\Program Files\..."" and cmd reports '""C:\Program" is not
-rem recognized' because it parses the doubled quote as part of the command. A
-rem filesystem path never legitimately contains a quote, so drop them all.
 set "VMP_CON=%VMP_CON:"=%"
 if not exist "%VMP_CON%" exit /b 1
-rem Reject batch/cmd wrappers. Invoking a .bat without CALL transfers control
-rem and never returns, so a wrapper's "exit /b 0" would end this script right
-rem after the call site and report success having protected nothing. Compare
-rem the extension exactly: the old findstr matched the echoed, quoted path,
-rem whose trailing quote defeated the "$" end-of-line anchor, so the guard
-rem never fired and the caller's :vmp_wrapper branch was unreachable.
 for %%X in ("%VMP_CON%") do if /i "%%~xX"==".bat" exit /b 2
 for %%X in ("%VMP_CON%") do if /i "%%~xX"==".cmd" exit /b 2
 exit /b 0
 
 :scan_vmp_dirs
-rem "for /d" is required here: a plain "for" treats a quoted wildcard as a
-rem literal filename and never expands it, so the family match silently finds
-rem nothing. The quotes are still required because the install path has a space.
 for /d %%D in ("%~1\VMProtect*") do if not defined VMP_CON for %%E in ("%%~fD\VMProtect_Con.exe" "%%~fD\VMProtect_Console.exe" "%%~fD\vmpconsole.exe") do if not defined VMP_CON if exist "%%E" set "VMP_CON=%%E"
 exit /b 0
 
-rem Project resolution order: explicit override, then the shared template in
-rem Assets\Template named after the ORIGINAL launcher, then a copy beside this
-rem script, then any project in either folder. Assets\Template is the canonical
-rem home so the build tree stays free of .vmp files. The name-matched step is
-rem load-bearing: two templates exist and a plain alphabetical scan can hand
-rem this stage the wrong binary's project. The deployed launcher name is random
-rem per build (V-04), so the match uses the original launcher name instead.
 :find_project
 if defined AMEGER_VMP_PROJECT_EXE if exist "%AMEGER_VMP_PROJECT_EXE%" (
   set "VMP_PROJECT=%AMEGER_VMP_PROJECT_EXE%"
@@ -357,21 +267,10 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$x=[xml][IO.
 exit /b %ERRORLEVEL%
 
 :vmp_settings
-rem Report what the resolved project actually contains rather than a hardcoded
-rem reminder, so this block can never drift from the .vmp on disk. The
-rem CompilationType values are reported verbatim and deliberately not
-rem interpreted: VMProtect documents Mutation, Virtualization and
-rem "ultra (virtualization+mutation)" as three distinct compilation types
-rem (VMProtectBeginMutation / VMProtectBeginVirtualization /
-rem VMProtectBeginUltra), so the numeric values are not a bitmask and this
-rem script must not guess which one means what.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$x=[xml][IO.File]::ReadAllText('%VMP_PROJECT%'); $p=$x.Document.Protection; Write-Host ('    Input         : ' + $p.InputFileName); Write-Host ('    VM complexity : ' + $p.VMComplexity); Write-Host ('    VM instances  : ' + $p.VMInstances); Write-Host ('    Options       : ' + $p.Options); Write-Host '    Procedures    :'; foreach($q in $p.Procedures.Procedure){ Write-Host ('      - ' + $q.MapAddress + '  CompilationType=' + $q.CompilationType + '  Complexity=' + $q.Complexity) }"
 exit /b 0
 
 :read_runtime_name
-rem Read the per-build deployed runtime DLL name from the state Create.bat
-rem recorded. Best effort: an absent or malformed state leaves RUNTIME_NAME
-rem empty, which routes to the embedded-hash gate's fail-closed warn path.
 set "RUNTIME_NAME="
 if not exist "%NAMES_STATE%" exit /b 0
 for /f "usebackq tokens=1,* delims==" %%A in ("%NAMES_STATE%") do set "%%A=%%B"
@@ -396,7 +295,6 @@ if defined SRC if /i "%CUR%"=="%SRC%" (
 )
 exit /b 0
 
-rem Usage: call :sha256_of <file> <varname>
 :sha256_of
 set "SHA256="
 if not exist "%~1" exit /b 1
@@ -424,28 +322,14 @@ exit /b 0
 if not exist "%WORK_DIR%\out.exe" exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$b=[IO.File]::ReadAllBytes('%WORK_DIR%\out.exe'); if($b.Length -lt 2){exit 1}; if($b[0] -ne 0x4D -or $b[1] -ne 0x5A){exit 1}; exit 0"
 if errorlevel 1 exit /b 1
-rem A byte-identical output means VMProtect silently passed the file through,
-rem which would mean the launcher is shipped unprotected.
-rem fc returns 0 = identical, 1 = differ, 2 = open/compare error. Only 1 proves
-rem the protector rewrote the bytes; a 2 is inconclusive and must fail closed.
 fc /b "%WORK_DIR%\out.exe" "%TARGET%" > nul
 if errorlevel 2 exit /b 2
 if not errorlevel 1 exit /b 1
 exit /b 0
 
-rem Usage: call :verify_segment <protected PE>
-rem Confirms the output carries a section whose name is the generated SEG_NAME
-rem with an optional trailing digit run. VMProtect appends a numeric suffix, so
-rem the project's ".XXXX" lands in the section table as ".XXXX0". Any other
-rem name means protection did not run with our generated project, so fail
-rem closed rather than deploy the artifact. Verification only: the binary is
-rem never renamed or patched.
 :verify_segment
 set "VM_SEG="
 set "VM_SEG_STATUS="
-rem A status token is parsed instead of relying on the child's exit code:
-rem for /f does not propagate a command's errorlevel reliably, and the value
-rem would be silently lost. PowerShell always exits 0 and reports via stdout.
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$seg='%SEG_NAME%'; $b=[IO.File]::ReadAllBytes('%~1'); $e=[BitConverter]::ToInt32($b,0x3C); $c=$e+4; $n=[BitConverter]::ToUInt16($b,$c+2); $z=[BitConverter]::ToUInt16($b,$c+16); $s=$c+20+$z; $found=$null; for($i=0;$i -lt $n;$i++){ $o=$s+40*$i; $nm=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0); if($nm.StartsWith($seg)){ $found=$nm; break } }; if($null -eq $found){ Write-Output 'VM_SEG_STATUS=missing'; Write-Output 'VM_SEG='; exit 0 }; Write-Output ('VM_SEG=' + $found); if($found -match ('^' + [regex]::Escape($seg) + '[0-9]*$')){ Write-Output 'VM_SEG_STATUS=ok' } else { Write-Output 'VM_SEG_STATUS=mismatch' }; exit 0"`) do set "%%A=%%B"
 if /i "%VM_SEG_STATUS%"=="ok" exit /b 0
 if /i "%VM_SEG_STATUS%"=="missing" (
@@ -504,9 +388,6 @@ echo   %C_RED%ERROR: no launcher EXE found in the release folder.%C_RESET%
 goto :failure
 
 :target_ambiguous
-rem The release root must hold exactly one launcher EXE. A second one means a
-rem leftover or misnamed build output; silently virtualizing the first match
-rem could protect the wrong binary and leave the real launcher unmutated.
 echo   %C_RED%ERROR: expected exactly one launcher EXE in %OUT_ROOT%, found %EXE_CANDIDATES%.%C_RESET%
 echo   %C_RED%       Refusing to guess which EXE to protect.%C_RESET%
 goto :failure

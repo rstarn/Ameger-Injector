@@ -1,16 +1,5 @@
 #pragma once
 
-// Win11 native structure shapes (fallback/typing only, never runtime truth).
-// What: LDR/DDAG/PEB/process/thread struct snapshots for prototypes and
-// sizeof() fallbacks when the PDB lacks a type. Why kept: Ldrp* signatures
-// need opaque types and allocators need a size guess. Rule: field accesses
-// Legacy shape snapshot: field accesses in injection paths must use
-// DYNAMIC_NT_OFFSETS (downloaded PDB) via ReadPtrField/WritePtrField, never
-// ->DllBase etc. directly in remote code. This struct remains only as an
-// opaque handle type for Ldrp* prototypes and sizeof() fallbacks; the
-// static_asserts below pin the reverse-engineered Win11 shape for
-// compile-time documentation, not runtime truth.
-
 #include "NT/NTDefinitions.h"
 
 typedef struct _LDR_DDAG_NODE_WIN11
@@ -122,4 +111,3 @@ static_assert(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DdagNode) == 152);
 static_assert(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, OriginalBase) == 248);
 static_assert(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, CheckSum) == 288);
 static_assert(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, HotPatchState) == 304);
-

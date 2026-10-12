@@ -37,14 +37,7 @@
     <LinkIncremental>false</LinkIncremental>
     <AmegerMmapSentinel>1337</AmegerMmapSentinel>
     <AmegerStringSeed>0x1B873593</AmegerStringSeed>
-    <!-- Per-build stub byte-shape seed for RemoteThreadHijack.asm. Create.bat
-         passes a fresh value through /p: (same plumbing as AmegerMmapSentinel);
-         undefined or empty falls back to 0, which selects the legacy stub
-         bytes. MASM has no C-style 0x prefix, so the value must already be a
-         MASM numeric literal (decimal, or hex with a trailing h). The low 3
-         bits pick one encoding of the FP-area addressing form, the FP
-         instruction width (xsave/fxsave) and the RSP capture form; see the
-         stub's own header comment for the exact pairs. -->
+
     <AmegerStubSeed Condition="'$(AmegerStubSeed)' == ''">0</AmegerStubSeed>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

@@ -4,10 +4,6 @@
 
 #include "System/Symbol/Parser/SymbolParser.h"
 
-// DbgHelp query implementation (see SymbolParser.h for the fail-closed set).
-// What: session bind plus symbol/type/field/enum lookups with multi-spelling
-//   fallbacks (TEB/_TEB, etc.). Every offset the shell needs flows through
-//   here into DYNAMIC_NT_OFFSETS; absent types fail rather than guess.
 SYMBOL_PARSER::SYMBOL_PARSER()
 {
 
@@ -59,10 +55,6 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 		}
 	}
 
-	// Resolve DbgHelp for as long as this parser lives. A module that cannot
-	// be loaded (or a symbol missing from it) leaves the table empty and the
-	// parser not-ready - the same fail-closed outcome callers already handle
-	// for a failed SymInitialize, without a static import anywhere.
 	if (!m_Module)
 	{
 		if (!dyn::LoadDbgHelp(m_Api, m_Module))
@@ -96,11 +88,6 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 		m_bInitialized = true;
 	}
 
-	// DbgHelp's ANSI entry point takes a narrow path. The loader stores the
-	// PDB path as a wstring (it came from the CodeView record via
-	// CharArrayToStdWstring), so convert it here rather than changing the
-	// stored type. A path wider than MAX_PATH cannot be handed to DbgHelp and
-	// fails closed below.
 	std::string pdb_path;
 	const std::wstring & pdb_path_wide = pSymbolObject->GetFilepath();
 
@@ -244,7 +231,7 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 		return SYMBOL_ERR_INVALID_SYMBOL_NAME;
 	}
 	DWORD64 type_id64 = 0;
-	// GetTypeId opens+closes its own ULTRA region; never double-END on early out.
+
 	DWORD ret = GetTypeId(szTypeName, type_id64);
 	if (ret != SYMBOL_ERR_SUCCESS)
 	{
@@ -273,7 +260,7 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 	DWORD result = SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	if (m_Api.SymGetTypeInfo(m_hProcess, m_SymbolTable, type_id, TI_FINDCHILDREN, children))
 	{
-		// Convert once: PDB child names are wide; target field is narrow UTF-8/ASCII.
+
 		wchar_t want_w[128]{ 0 };
 		const int want_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szFieldName, -1, want_w, _countof(want_w));
 		if (want_len > 0)
@@ -299,7 +286,7 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 				{
 					continue;
 				}
-				// Sanity: a field past 8KB inside TEB/PEB/LDR is corruption, not drift.
+
 				if (field_offset > 0x2000)
 				{
 					continue;
@@ -337,7 +324,7 @@ DWORD SYMBOL_PARSER::GetFieldOffsetAny(const char * const * TypeNames, size_t Ty
 			continue;
 		}
 		DWORD off = 0;
-		// Each GetFieldOffset manages its own ULTRA region; no END here on retry.
+
 		if (GetFieldOffset(TypeNames[i], szFieldName, off) == SYMBOL_ERR_SUCCESS)
 		{
 			OffsetOut = off;
@@ -443,17 +430,17 @@ DWORD SYMBOL_PARSER::GetEnumValueAny(const char * const * TypeNames, size_t Type
 					else if (value.vt == VT_UINT) v = value.uintVal;
 					else
 					{
-						/* integer-only VARIANT: nothing to release */;
+						 ;
 						continue;
 					}
-					/* integer-only VARIANT: nothing to release */;
+					 ;
 					ValueOut = v;
 					LOG(2, "SYMBOL_PARSER: %s::%s = %lu\n", TypeNames[t], szConstantName, v);
 					found = true;
 				}
 				else
 				{
-					/* integer-only VARIANT: nothing to release */;
+					 ;
 				}
 			}
 		}
@@ -496,9 +483,6 @@ void SYMBOL_PARSER::Cleanup()
 		m_hProcess = nullptr;
 	}
 
-	// Drop dbghelp again: the module list must not carry it once the PDB is
-	// closed. Released after the last SymCleanup so the session is torn down
-	// before the library that owns it.
 	dyn::ReleaseModule(m_Module);
 
 	m_Api = dyn::DbgHelpTable{};

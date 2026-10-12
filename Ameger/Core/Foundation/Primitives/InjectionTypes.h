@@ -2,18 +2,9 @@
 
 #include <Windows.h>
 
-// Shared cross-boundary types for host, remote shell, and launcher.
-// What: the mode/method enums, the INJ_HANDLE_HIJACKING flag, and the POD
-// telemetry structs (HijackStats, THREAD_EXEC_STATS, MAP_STATS,
-// STRING_STATS). Why one home: the runtime DLL and the interface compile
-// these separately, so the layout (DWORD-only, static_asserted sizes) is the
-// contract - a field reorder here breaks both sides. How: include this header
-// on both sides; never duplicate these definitions.
-
 #ifndef AMEGER_INJECTION_MODE_DEFINED
 #define AMEGER_INJECTION_MODE_DEFINED
-// Payload delivery mode. Only manual-map exists; the enum stays so future
-// modes slot in without changing the MEMORY_INJECTIONDATA layout.
+
 enum class INJECTION_MODE
 {
 	IM_ManualMap
@@ -22,110 +13,65 @@ enum class INJECTION_MODE
 
 #ifndef AMEGER_LAUNCH_METHOD_DEFINED
 #define AMEGER_LAUNCH_METHOD_DEFINED
-// Thread-execution method for the mapped shell. Only hijack-thread exists;
-// the switch in StartRoutine rejects anything else.
+
 enum class LAUNCH_METHOD
 {
 	LM_HijackThread
 };
 #endif
 
-// Handle-acquisition strategy flag (General group, shared by the public
-// runtime header and the internal one; defined once here so every TU,
-// runtime PCH or interface, sees the same value).
-// Macros cannot be PascalCase - identifiers that the preprocessor owns
-// (INJ_*, INJ_MM_*, SR_*, FILE_*) keep their existing screaming-caps form.
 #define INJ_HANDLE_HIJACKING			0x0040
 
-// Thread-access contract for the hijack path. The launcher pre-opens the
-// sponsor thread with at least this mask, and the runtime duplicates (or
-// re-opens, on the donor-scan path) its working handle with it. It must be one
-// definition shared by both binaries: the runtime escalates nothing itself,
-// so a sponsor opened with a narrower mask degrades silently to the donor
-// scan (an extra enumeration, visible in the trace only as "sponsor not
-// usable"). The mask bundles the hijack trio (SUSPEND_RESUME for freeze,
-// GET/SET_CONTEXT for the RIP redirect) with the query bits the path needs to
-// verify what it holds (GetThreadId needs QUERY_INFORMATION,
-// GetProcessIdOfThread needs QUERY_LIMITED_INFORMATION) - a correctly
-// duplicated minimal handle without those fails its own verification.
 inline constexpr DWORD INJ_THREAD_HIJACK_ACCESS =
 	THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
 	THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION;
 
-// Which path actually produced the working handle. The values are ordered by
-// how "hijacked" the result is, so callers can rank results with a plain
-// comparison (Sponsor > Scan > Direct) instead of an ad-hoc switch.
 enum class HijackSource : DWORD
 {
-	Direct = 0,  // direct OpenProcess / OpenThread (not a hijack)
-	Scan = 1,    // duplicated a qualifying handle owned by a foreign process
-	Sponsor = 2  // reused the cooperating pre-open held by the injector
+	Direct = 0,
+	Scan = 1,
+	Sponsor = 2
 };
 
-// Full record of the last handle-acquisition attempt, one slot per handle kind
-// (process / thread). Pure DWORD layout so it can cross the DLL boundary and be
-// consumed by the interface (see GetLastHijackStats). All fields are DWORD
-// unsigned values, so the same PascalCase rules apply as elsewhere.
 struct HijackStats
 {
-	// Outcome
-	DWORD Attempted = 0;      // 1 when a hijack path was entered
-	DWORD Success = 0;        // 1 when a handle was acquired
+
+	DWORD Attempted = 0;
+	DWORD Success = 0;
 	DWORD Source = static_cast<DWORD>(HijackSource::Direct);
-	DWORD FailCode = 0;       // injector error code when Success == 0
+	DWORD FailCode = 0;
 
-	// Provenance: which process owned the handle, which value was taken,
-	// which value we ended up with, and what rights it carries.
-	DWORD DonorPid = 0;       // owner of the source handle
-	DWORD DonorHandle = 0;    // source handle value inside the donor
-	DWORD NewHandle = 0;      // duplicated value inside our own process
-	DWORD GrantedAccess = 0;  // mask the acquired handle actually carries
+	DWORD DonorPid = 0;
+	DWORD DonorHandle = 0;
+	DWORD NewHandle = 0;
+	DWORD GrantedAccess = 0;
 
-	// Foreign-donor scan accounting
-	DWORD TotalHandles = 0;     // raw table entries before filtering
-	DWORD Examined = 0;         // entries that passed the type filter
-	DWORD DupDenied = 0;        // duplications refused (donor lacked rights)
-	DWORD VerifyRejected = 0;   // dups that failed functional verification
-	DWORD OwnersOpened = 0;     // distinct donor processes opened (failures included)
-	DWORD Calibrated = 0;       // 1 when the object-type index self-calibrated
-	DWORD SnapStatus = 0;       // NTSTATUS of the enumeration (0 = fine or N/A)
-	DWORD BudgetSkipped = 0;    // candidates skipped by the owner/dup-attempt budgets
+	DWORD TotalHandles = 0;
+	DWORD Examined = 0;
+	DWORD DupDenied = 0;
+	DWORD VerifyRejected = 0;
+	DWORD OwnersOpened = 0;
+	DWORD Calibrated = 0;
+	DWORD SnapStatus = 0;
+	DWORD BudgetSkipped = 0;
 
-	// Sponsor pre-open accounting (process handle; threads are pre-opened by
-	// the interface too and recorded here when the sponsor thread is used)
-	DWORD SponsorValidated = 0;  // identity + name query passed
-	DWORD SponsorProbed = 0;     // full alloc/write/read/release roundtrip passed
+	DWORD SponsorValidated = 0;
+	DWORD SponsorProbed = 0;
 };
 
 static_assert(sizeof(HijackStats) == 72);
 
-// What the thread-hijack shell did to the victim thread, recorded in the target
-// and read back by the host (see GetLastThreadExecStats).
-//
-// The host used to print "Thread context restored automatically" as a fixed
-// string with nothing behind it: it asserted a restore that may never have
-// happened, and said nothing about which thread was used or whether the saved
-// context was actually reinstated.
 struct THREAD_EXEC_STATS
 {
-	DWORD Attempted = 0;        // 1 when the thread-hijack path was entered
-	DWORD Success = 0;          // 1 when the thread is back on its own code
-	DWORD HijackedTid = 0;      // thread that was hijacked
-	DWORD FailCode = 0;         // injector error code when Success == 0
+	DWORD Attempted = 0;
+	DWORD Success = 0;
+	DWORD HijackedTid = 0;
+	DWORD FailCode = 0;
+	DWORD DonorRounds = 0;
 };
 
-static_assert(sizeof(THREAD_EXEC_STATS) == 16);
+static_assert(sizeof(THREAD_EXEC_STATS) == 20);
 
-// What the manual-map shell actually cleaned from the mapped image, recorded by
-// the shell in the target and read back by the host after the shell returns.
-// This is the only way to report the post-cleanup state, because the PE header
-// (which holds the data directories) is erased before the interface inspects
-// the target.
-//   CleanedMask - bit i set => data directory i was non-zero and got zeroed.
-//   *Size       - the pre-cleanup size of that directory (0 = was absent).
-//   ExportSize reuses the former Reserved slot: export names ("ManualEntry"
-//   style) are the last plaintext strings in a mapped image, so the shell
-//   wipes the export directory exactly like the import ones.
 struct MAP_STATS
 {
 	DWORD CleanedMask = 0;
@@ -135,24 +81,20 @@ struct MAP_STATS
 	DWORD RelocSize = 0;
 	DWORD TlsSize = 0;
 	DWORD ExportSize = 0;
+	DWORD Verified = 0;
+	DWORD ResidualMask = 0;
 };
 
-static_assert(sizeof(MAP_STATS) == 28);
+static_assert(sizeof(MAP_STATS) == 36);
 
-// What the string tiers actually did at import-resolve time, recorded by the
-// runtime in the target and read back by the host (see GetLastStringStats).
-//
-// The host used to print hardcoded claims here ("30+ symbols", "22 hook names",
-// "5 tiers"), which asserted things it had no way of observing. These counters
-// are the measured values behind those lines, so the host reports facts.
 struct STRING_STATS
 {
-	DWORD SymbolsDeclared = 0;  // encrypted NT names the runtime declares
-	DWORD SymbolsResolved = 0;  // of those, successfully resolved at runtime
-	DWORD HookNamesBuilt = 0;   // hook names built from ciphertext
-	DWORD TiersTotal = 0;       // tiers covered by the round-trip self-test
-	DWORD TiersPassed = 0;      // of those, that round-tripped correctly
-	DWORD Reported = 0;         // 1 once the runtime has filled this in
+	DWORD SymbolsDeclared = 0;
+	DWORD SymbolsResolved = 0;
+	DWORD HookNamesBuilt = 0;
+	DWORD TiersTotal = 0;
+	DWORD TiersPassed = 0;
+	DWORD Reported = 0;
 	DWORD Reserved = 0;
 };
 

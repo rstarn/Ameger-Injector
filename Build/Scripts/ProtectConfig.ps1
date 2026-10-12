@@ -1,74 +1,45 @@
-# DPAPI-encrypts a plaintext configuration into a runtime copy.
-#
-# A plaintext Configuration.ini names the target process and every stealth
-# toggle, so it is a self-describing on-disk artifact. This writes an
-# encrypted copy (CurrentUser scope) for deployment; the plaintext master in
-# Build\ stays editable and is only used when no encrypted copy is present.
-#
-# Usage:
-#   ProtectConfig.ps1 -Source <plaintext.ini> -Destination <encrypted.ini>
-#   ProtectConfig.ps1 -Source <plaintext.ini> -Destination <encrypted.ini> `
-#                     -PinPayload <deployed-payload> `
-#                     -PayloadName <name> -RuntimeName <name> -ExportMap <map>
-#   ProtectConfig.ps1 -Source <plaintext.ini> -Destination <plaintext.ini> `
-#                     -PinPayload <deployed-payload> -Plaintext
-#
-# -PinPayload overrides the PayloadSha256 value in the output with the SHA-256
-# of the named file. The master config carries the pristine asset pin and is
-# never rewritten; the deployed config, however, must pin the exact DLL that
-# ships beside it, which is a different digest once a prepared or protected
-# payload is deployed. Deriving the pin here (rather than copying the master's)
-# keeps the two consistent without mutating the master.
-#
-# -PayloadName, -RuntimeName, -ExportMap and -DllDir are the per-build anti-detection
-# values (V-02/V-03/V-32): the deployed payload file name, the deployed runtime
-# DLL file name, and the runtime DLL export-rename map. The master config does
-# not carry them; Create.bat passes them for the initial deploy. When they are
-# NOT passed (the legacy path used by ProtectDLL.bat to re-encrypt the config
-# after virtualizing the payload), the values already present in the existing
-# Destination are preserved verbatim, so the shipped config keeps a stable
-# rename map across re-encryptions.
-#
-# -Plaintext writes the merged text without DPAPI. It is the explicit opt-out
-# path (AMEGER_ENCRYPT_CONFIG=0), never a silent fallback: the default still
-# encrypts, and an encryption failure is fatal.
-#
-# Format: 8-byte ASCII magic "SYSCFG01" followed by a raw DPAPI blob of the
-# exact input bytes (BOM included), which Interface/Source/Main.cpp
-# (DecryptConfigBlob) reverses before the normal UTF-8 parse. The magic is
-# what distinguishes an encrypted file from a legacy plaintext one.
-#
-# Exit codes: 0 = written, 1 = fatal.
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Destination,
 
-    # Optional payload file whose SHA-256 becomes the PayloadSha256 pin in the
-    # output. A prepared/protected payload does not match the pristine asset
-    # pin in the master, so the caller passes the deployed payload here.
     [string]$PinPayload,
 
-    # Per-build deployed payload file name (V-02).
     [string]$PayloadName,
 
-    # Per-build deployed runtime DLL file name (V-03).
     [string]$RuntimeName,
 
-    # Per-build runtime export-rename map, "old=new,..." (V-32).
     [string]$ExportMap,
-    # Per-build deployed DLL folder name (V-05).
+
     [string]$DllDir,
 
-    # Write the merged text without DPAPI. Explicit opt-out only.
+    [string]$ConfigMagic,
+
     [switch]$Plaintext
 )
 
 $ErrorActionPreference = "Stop"
-$magic = [Text.Encoding]::ASCII.GetBytes("SYSCFG01")
+if ([string]::IsNullOrEmpty($ConfigMagic)) {
+    foreach ($p in @($Destination, $Source)) {
+        if (-not [string]::IsNullOrEmpty($ConfigMagic)) { break }
+        if (Test-Path -LiteralPath $p) {
+            $probe = [IO.File]::ReadAllBytes($p)
+            if ($probe.Length -gt 8) {
+                $head = [Text.Encoding]::ASCII.GetString($probe, 0, 8)
+                if ($head -match '^[A-Za-z0-9]{8}$') { $ConfigMagic = $head }
+            }
+        }
+    }
+    if ([string]::IsNullOrEmpty($ConfigMagic)) {
+        Write-Host "ProtectConfig: no config magic supplied and neither file carries one; refusing a static fallback"
+        exit 1
+    }
+}
+if ($ConfigMagic -notmatch '^[A-Za-z0-9]{8}$') {
+    Write-Host "ProtectConfig: config magic must be 8 ASCII alphanumerics"
+    exit 1
+}
+$magic = [Text.Encoding]::ASCII.GetBytes($ConfigMagic)
 
-# Reads a config file as plaintext: decrypts a SYSCFG01-prefixed blob in the
-# CurrentUser scope, or returns the bytes as UTF-8 text. Returns $null when the
-# file is absent or unreadable so a caller can fall back to "no value".
 function Read-ConfigText([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
     $raw = [IO.File]::ReadAllBytes($Path)
@@ -89,8 +60,6 @@ function Read-ConfigText([string]$Path) {
     return [Text.Encoding]::UTF8.GetString($raw)
 }
 
-# Case-insensitive ini lookup matching the runtime's own reader (first '='
-# splits key from value).
 function Get-IniValue([string]$Text, [string]$Key) {
     if ($null -eq $Text) { return $null }
     foreach ($line in [regex]::Split($Text, "\r?\n")) {
@@ -103,10 +72,6 @@ function Get-IniValue([string]$Text, [string]$Key) {
     return $null
 }
 
-# Removes any existing PayloadName/RuntimeName/ExportMap lines, then inserts the
-# supplied pairs (deterministic order) at the end of the [General] section,
-# anchored on the PayloadSha256 line so the values never land in a later
-# section. Keys with no value are omitted.
 function Set-IniKeys([string]$Text, $Pairs) {
     $order = @("PayloadName", "RuntimeName", "ExportMap", "DllDir")
     $rx = '^\s*(PayloadName|RuntimeName|ExportMap|DllDir)\s*='
@@ -134,8 +99,7 @@ function Set-IniKeys([string]$Text, $Pairs) {
         }
     }
     if ($anchor -lt 0) {
-        # No anchor at all: synthesize a [General] header so the keys do not
-        # silently land in whatever section happens to be last.
+
         $lines.Insert(0, "")
         $lines.Insert(0, "[General]")
         $anchor = 0
@@ -149,9 +113,6 @@ function Set-IniKeys([string]$Text, $Pairs) {
 
 if (-not (Test-Path -LiteralPath $Source)) { Write-Host "ProtectConfig: source not found: $Source"; exit 1 }
 
-# Resolve the pin override, if any, before touching the source. Fail closed if
-# the payload cannot be read: a config whose pin does not match the deployed
-# DLL makes the launcher abort at startup.
 $pinOverride = $null
 if (-not [string]::IsNullOrEmpty($PinPayload)) {
     if (-not (Test-Path -LiteralPath $PinPayload)) {
@@ -166,10 +127,6 @@ $hasNewKeys = (-not [string]::IsNullOrEmpty($PayloadName)) -or
               (-not [string]::IsNullOrEmpty($ExportMap)) -or
               (-not [string]::IsNullOrEmpty($DllDir))
 
-# Already encrypted? Leave it alone so the step is idempotent. An override or
-# a new-key injection cannot be applied to an encrypted source (there is no
-# plaintext to rewrite), so that combination is a hard error rather than a
-# silent no-op.
 $existing = [IO.File]::ReadAllBytes($Source)
 $isEncrypted = $false
 if ($existing.Length -gt $magic.Length) {
@@ -193,7 +150,6 @@ if ($isEncrypted) {
     exit 0
 }
 
-# --- plaintext source: build the output text -----------------------------
 $text = [Text.Encoding]::UTF8.GetString($existing)
 $modified = $false
 
@@ -207,8 +163,6 @@ if ($null -ne $pinOverride) {
     Write-Host ("ProtectConfig: PayloadSha256 pinned to " + $pinOverride)
 }
 
-# The three per-build values: prefer the caller's arguments; otherwise carry
-# over whatever the existing destination already carries (legacy re-encrypt).
 $preserved = $null
 if ((-not $hasNewKeys) -and (Test-Path -LiteralPath $Destination)) {
     $preserved = Read-ConfigText $Destination
@@ -258,7 +212,7 @@ if ($modified) {
 }
 
 if ($Plaintext) {
-    # Explicit opt-out: write the merged text without DPAPI.
+
     [IO.File]::WriteAllBytes($Destination, $plain)
     Write-Host "ProtectConfig: wrote plaintext (opt-out)."
     exit 0

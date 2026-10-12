@@ -1,34 +1,3 @@
-# Per-build in-place rename of a PE's exported function names (V-32).
-#
-# The runtime DLL exports a fixed set of names (CoreExecute, CoreStart, ...)
-# that survive every build verbatim: a stable on-disk and in-memory signature.
-# This script overwrites every name in the export name pointer table with a
-# same-length random replacement (first character a letter, the rest
-# alphanumeric), in place, so the file size and the whole export directory
-# layout stay byte-for-byte valid.
-#
-# Ordering constraint: the Windows loader resolves exports by name with a
-# binary search over the name pointer table, which MUST remain sorted in ASCII
-# order. To keep it sorted while every name is random, each table slot is given
-# a distinct first letter, and those letters are assigned in ascending order by
-# table index. A smaller first byte always sorts first regardless of the tail,
-# so the rewritten table stays strictly ascending.
-#
-# The replacement map (old=new, in export-name-table order) is printed for
-# Create.bat to ship inside the DPAPI-encrypted deployed config, and the file
-# is re-parsed to prove (a) no original name remains and (b) every new name
-# still resolves at the ordinal it had before.
-#
-# A file with no export directory (e.g. the launcher EXE) is handled
-# gracefully: an empty map is printed and the file is left untouched.
-#
-# Output (stdout, parsed by Create.bat with "tokens=1,* delims=="):
-#   EXPORT_MAP=<old>=<new>,<old>=<new>,...
-#   RENAME_STATUS=ok
-# Diagnostics go to stderr so they never pollute the captured stdout.
-#
-# Strict Windows PowerShell 5.1. Exit 0 = done (map printed), 1 = fatal.
-
 param(
     [Parameter(Mandatory = $true)][string]$Path
 )
@@ -47,8 +16,6 @@ function Fail([string]$Reason) {
 
 if (-not (Test-Path -LiteralPath $Path)) { Fail ("file not found: " + $Path) }
 
-# Read with the same transient-IO retry AddPE/BuildPE use: a freshly linked
-# binary is often briefly mapped by real-time AV scanning.
 $bytes = $null
 $read = $false
 for ($attempt = 1; $attempt -le 20 -and -not $read; $attempt++) {
@@ -67,7 +34,6 @@ for ($attempt = 1; $attempt -le 20 -and -not $read; $attempt++) {
 }
 if (-not $read) { Fail "read failed" }
 
-# --- parse the PE headers ------------------------------------------------
 if ($bytes.Length -lt 64 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) { Fail "not MZ" }
 $e = [BitConverter]::ToInt32($bytes, 0x3C)
 if ($e -le 0 -or ($e + 24) -gt $bytes.Length) { Fail "bad e_lfanew" }
@@ -104,7 +70,6 @@ function Convert-RvaToOffset([byte[]]$Data, [int]$SectionBase, [int]$Count, [uin
 $expRva = [BitConverter]::ToUInt32($bytes, $dd + 0)
 $expSz = [BitConverter]::ToUInt32($bytes, $dd + 4)
 
-# No export directory: nothing to rename (the launcher EXE). Leave it alone.
 if ($expRva -eq 0 -or $expSz -lt 40) {
     Write-Output "EXPORT_MAP="
     Write-Output "RENAME_STATUS=ok"
@@ -132,7 +97,6 @@ $anOff = Convert-RvaToOffset $bytes $secBase $nsec $anRva
 $aoOff = Convert-RvaToOffset $bytes $secBase $nsec $aoRva
 if ($afOff -lt 0 -or $anOff -lt 0 -or $aoOff -lt 0) { Fail "export table RVA unresolved" }
 
-# --- read the name table in order ----------------------------------------
 $entries = New-Object System.Collections.ArrayList
 for ($i = 0; $i -lt $nNames; $i++) {
     $nr = [BitConverter]::ToUInt32($bytes, $anOff + 4 * $i)
@@ -159,7 +123,7 @@ if ($entries.Count -gt $letters.Length) { Fail "too many exports for the orderin
 
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 try {
-    # Distinct first letters, then sorted ascending so the table stays sorted.
+
     $chosen = New-Object System.Collections.Generic.List[int]
     $oneByte = New-Object byte[] 1
     while ($chosen.Count -lt $entries.Count) {
@@ -185,8 +149,7 @@ try {
                 $tail[$k] = $alnum[$oneByte[0] % $alnum.Length]
             }
             $try = ([string]$first) + (-join $tail)
-            # No "Core" prefix may survive (case-insensitively), and no
-            # replacement may reproduce any original name verbatim.
+
             if ($try.ToLowerInvariant().StartsWith("core")) { continue }
             if ($originals.ContainsKey($try.ToLowerInvariant())) { continue }
             $cand = $try
@@ -196,7 +159,6 @@ try {
         [void]$newNames.Add($cand)
     }
 
-    # --- patch the name bytes in place -----------------------------------
     for ($i = 0; $i -lt $entries.Count; $i++) {
         $ent = $entries[$i]
         $nn = $newNames[$i]
@@ -209,7 +171,6 @@ try {
     $rng.Dispose()
 }
 
-# --- write back with the same transient-IO retry -------------------------
 $written = $false
 for ($attempt = 1; $attempt -le 20 -and -not $written; $attempt++) {
     try {
@@ -227,7 +188,6 @@ for ($attempt = 1; $attempt -le 20 -and -not $written; $attempt++) {
 }
 if (-not $written) { Fail "write failed" }
 
-# --- re-parse and verify -------------------------------------------------
 $v = [IO.File]::ReadAllBytes($Path)
 $ve = [BitConverter]::ToInt32($v, 0x3C)
 if ($v.Length -lt 64 -or $v[0] -ne 77 -or $v[1] -ne 90 -or [BitConverter]::ToUInt32($v, $ve) -ne 0x00004550) {
@@ -261,16 +221,11 @@ for ($i = 0; $i -lt $entries.Count; $i++) {
     while (($no + $len) -lt $v.Length -and $v[$no + $len] -ne 0) { $len++ }
     $got = [Text.Encoding]::ASCII.GetString($v, $no, $len)
 
-    # (a) no original name remains
     if ($got.ToLowerInvariant().StartsWith("core")) { Fail ("original-style export name still present: " + $got) }
     if ($originals.ContainsKey($got.ToLowerInvariant())) { Fail ("an original export name survived: " + $got) }
-    # the slot now carries exactly the replacement we recorded
+
     if ($got -ne $newNames[$i]) { Fail ("slot " + $i + " is " + $got + ", expected " + $newNames[$i]) }
 
-    # (b) the name still resolves at the ordinal it had before. The export
-    # ordinal table stores a zero-based index into the address-of-functions
-    # table (the loader reads AddressOfFunctions[OrdinalTable[i]]); the value
-    # is NOT pre-offset by Base.
     $vord = [BitConverter]::ToUInt16($v, $vaoOff + 2 * $i)
     if ($vord -ne $ent.Ordinal) { Fail ("ordinal index changed at slot " + $i) }
     $funcIdx = [int]$vord
@@ -279,7 +234,6 @@ for ($i = 0; $i -lt $entries.Count; $i++) {
     if ($funcRva -eq 0) { Fail ("name " + $got + " resolves to a null function RVA") }
     if ((Convert-RvaToOffset $v $vsecBase $vnsec $funcRva) -lt 0) { Fail ("name " + $got + " resolves outside every section") }
 
-    # the table must stay sorted (loader binary search)
     if ($null -ne $prev -and [string]::CompareOrdinal($prev, $got) -ge 0) {
         Fail ("name table order broken at slot " + $i)
     }

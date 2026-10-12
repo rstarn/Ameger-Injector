@@ -6,12 +6,6 @@
 #include "System/Download/DownloadManager.h"
 #include "Core/Utility/Tools/Tools.h"
 
-// PDB acquisition for one module (ntdll). What: finds the cached PDB or
-// downloads it from the symbol server, verifies GUID/age, and maps it for
-// the parser. Why: every LDR/TEB/PDB offset comes from this file, so a
-// mismatched PDB would silently corrupt remote walks. How: Initialize (async
-// via InitializeRuntime) -> IsReady poll -> parser consumes -> PurgePdb
-// deletes the artifact. Non-copyable; interrupt via Interrupt().
 class SYMBOL_LOADER
 {
 	HANDLE			m_hPdbFile		= NULL;
@@ -23,17 +17,12 @@ class SYMBOL_LOADER
 
 	DownloadManager m_DlMgr;
 	std::atomic<bool>	m_bStartDownload{false};
-	
+
 	bool m_bReady = false;
 
-	// Directory created for the cached PDB (<cache root>\Symbols). Tracked so
-	// PurgePdb can best-effort remove only a directory this loader made.
 	std::wstring	m_szPdbDir		= std::wstring();
 	bool			m_bCreatedPdbDir = false;
 
-	// The per-run cache root this loader was handed. PurgePdb removes the whole
-	// tree on completion: the leaf is random per run, so an un-removed root
-	// cannot be cleaned up by any later run and would accumulate on disk.
 	std::wstring	m_szRootPath	= std::wstring();
 
 	bool VerifyExistingPdb(const GUID & guid, DWORD age);
@@ -46,18 +35,10 @@ public:
 	SYMBOL_LOADER();
 	~SYMBOL_LOADER();
 
-	// Starts (or reuses) the PDB for szModulePath under the cache path.
-	// Params: szModulePath (module to match GUID/age), path (cache root),
-	// Redownload (force fetch), AutoDownload (start the transfer immediately
-	// instead of waiting on SetDownload). Returns: SYMBOL_* code.
 	DWORD Initialize(const std::wstring & szModulePath, const std::wstring & path, bool Redownload, bool AutoDownload = false);
-	// Unmaps the PDB and stops the download. Call before PurgePdb.
+
 	void Cleanup();
 
-	// Deletes the cached PDB from disk. Called once import resolution is done
-	// and the file is no longer mapped: a multi-megabyte ntdll.pdb left on
-	// disk is a timestamped artifact that identifies what the tool did.
-	// Call Cleanup() first (releases m_hPdbFile), then this.
 	void PurgePdb();
 
 	void SetDownload(bool bDownload);
@@ -91,7 +72,7 @@ struct PDBHeader7
 struct RootStream7
 {
 	int num_streams;
-	int stream_sizes[ANYSIZE_ARRAY]; 
+	int stream_sizes[ANYSIZE_ARRAY];
 };
 
 struct GUID_StreamData

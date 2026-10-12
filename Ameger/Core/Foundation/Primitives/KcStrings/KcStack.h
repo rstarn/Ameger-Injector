@@ -5,19 +5,9 @@
 
 #include "Core/DomainKey.h"
 
-// Char-by-char stack strings: KernelCloak stack_string.h replica.
-// What: each literal char becomes a KcObfuscatedChar<CharT,C,Key,Idx> template
-//   param, XORed at compile time and decoded per-char through a volatile read
-//   so no literal byte reaches the binary. Max 20 chars (KC_SC_1..20).
-//   Template params: CharT (char/wchar_t), C (the plaintext char), Key
-//   (per-site KC_STACK_KEY_), Idx (position, feeds KeyByte).
-// NOTE vs upstream: Decode() casts explicitly through int so the shed
-// /W4 /WX build stays clean (C4244). Semantics unchanged.
 namespace kc_strings
 {
-// One obfuscated character. KeyByte() derives the per-index keystream;
-// Encrypted holds C^KeyByte at compile time; Decode() re-reads through a
-// volatile so the optimiser cannot fold back to C.
+
 template <typename CharT, CharT C, std::uint32_t Key, std::size_t Idx>
 struct KcObfuscatedChar
 {
@@ -34,26 +24,13 @@ struct KcObfuscatedChar
 		return static_cast<CharT>(static_cast<int>(enc) ^ static_cast<int>(KeyByte()));
 	}
 };
-} // namespace kc_strings
+}
 
 #define KC_STACK_KEY_ (static_cast<std::uint32_t>((__COUNTER__ + 1) * 0x45D9F3Bu ^ __LINE__ * 0x1B873593u ^ 0xDEADBEEFu ^ ::kc_strings::detail::kStringSeed))
 
 namespace kc_strings
 {
-// Bounds gate for the store macros below.
-//
-// The macros were plain indexed assignments, so nothing tied the arity of a
-// KC_SC_N/KC_SWC_N expansion to the declared extent of the destination buffer.
-// A mismatch was a silent out-of-bounds stack write with no diagnostic, which
-// is the one memory-unsafe failure mode in this suite: every other tier sizes
-// its buffer from the literal. Routing the store through KcStore lets the
-// compiler prove Idx < N against the caller's array type, turning that
-// overflow into a compile error instead of a stack smash.
-//
-// Idx leads the parameter list so a call site can write KcStore<idx>(buf, v)
-// and have CharT/N still deduce from the buffer. The function is __forceinline,
-// so an accepted store compiles down to the same single mov the macro emitted
-// before - the assert costs nothing at run time.
+
 template <std::size_t Idx, typename CharT, std::size_t N>
 __forceinline void KcStore(CharT (&buf)[N], CharT value) noexcept
 {
@@ -62,7 +39,7 @@ __forceinline void KcStore(CharT (&buf)[N], CharT value) noexcept
 
 	buf[Idx] = value;
 }
-} // namespace kc_strings
+}
 
 #define KC_SC_(name, key, idx, c) ::kc_strings::KcStore<idx>(name, ::kc_strings::KcObfuscatedChar<char, c, key, idx>::Decode())
 #define KC_SWC_(name, key, idx, c) ::kc_strings::KcStore<idx>(name, ::kc_strings::KcObfuscatedChar<wchar_t, c, key, idx>::Decode())

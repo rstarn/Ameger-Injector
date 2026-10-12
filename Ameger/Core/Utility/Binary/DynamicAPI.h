@@ -1,36 +1,5 @@
 #pragma once
 
-// Runtime-resolved third-party modules (dbghelp / wininet).
-//
-// Why this exists: the shipped PE must not statically import dbghelp.dll or
-// wininet.dll. A manual-mapping carrier that imports either module is a
-// textbook indicator: the import table is the first thing a module walk reads,
-// it survives every string-encryption effort, and it is byte-identical in every
-// build. Resolving the handful of functions below by name at the moment they
-// are needed - and releasing the module as soon as they are not - keeps the
-// import table limited to KERNEL32/ADVAPI32/USER32 and keeps both modules out
-// of the process module list for the rest of the run.
-//
-// Rules followed by both subsystems:
-//   - the module name and every export name are compile-time ciphertext
-//     (XOR_STR_A/XOR_STR_W), so nothing in .rdata names either module or the
-//     symbols used here;
-//   - a symbol that cannot be resolved fails closed: the loader returns false
-//     and frees whatever it loaded, and callers treat that as "symbols
-//     unavailable" exactly as they already treat a failed SymInitialize;
-//   - callers go through these tables ONLY. Naming a DbgHelp/WinINet function
-//     directly (or taking its address) reintroduces the static import, so no
-//     call site may do either. This includes the oleauto VARIANT helpers: the
-//     local shape below is what the TI_GET_VALUE buffer actually needs.
-//
-// Usage is strictly pairing: Load() -> use -> Free(). Each load frees the
-// module again, so the module list never carries dbghelp/wininet outside the
-// window that genuinely needs them.
-
-// Headers for the types only. Neither header creates an import: the import
-// table is produced by *calling* a function (or taking its address), and every
-// call below goes through a resolved pointer. Including them here keeps this
-// header self-contained rather than relying on the PCH having pulled them in.
 #include <Windows.h>
 #include <wininet.h>
 #include <DbgHelp.h>
@@ -43,9 +12,7 @@
 
 namespace dyn
 {
-	// Hand-written VARIANT: only used as a 16-byte TI_GET_VALUE buffer for
-	// integer enum constants. Declaring it locally is what removes the
-	// oleaut32 VariantInit/VariantClear imports the parser previously carried.
+
 	struct VARIANT_INT
 	{
 		WORD	vt;
@@ -65,10 +32,6 @@ namespace dyn
 			UINT		uintVal;
 		};
 	};
-
-	// ------------------------------------------------------------------
-	// DbgHelp: used only while a PDB is being parsed for offsets.
-	// ------------------------------------------------------------------
 
 	using Fn_SymInitialize		= BOOL(__stdcall *)(HANDLE, PCSTR, BOOL);
 	using Fn_SymCleanup			= BOOL(__stdcall *)(HANDLE);
@@ -91,18 +54,9 @@ namespace dyn
 		Fn_SymGetTypeInfo		SymGetTypeInfo		= nullptr;
 	};
 
-	// Resolves the DbgHelp entry points into table and returns a handle that
-	// must be passed to FreeModule once the caller is done. Returns false (and
-	// leaves module = nullptr) when the module or any symbol is unavailable.
 	inline bool LoadDbgHelp(DbgHelpTable & table, HMODULE & module)
 	{
-		// Names deliberately unsuffixed: dbghelp.dll exports SymInitialize AND
-		// SymInitializeW as two different functions, and only the unsuffixed
-		// one is the entry point the SDK import library (and therefore the
-		// previous static build) bound. Resolving the W variant silently
-		// changes DbgHelp's behaviour - it skips the module-load bookkeeping
-		// that later SymFromName calls depend on and they fail with
-		// ERROR_MOD_NOT_FOUND. Same story for SymLoadModuleEx/SymLoadModuleExW.
+
 		static const char * const kExports[] = {
 			"SymInitialize",
 			"SymCleanup",
@@ -150,10 +104,6 @@ namespace dyn
 		return true;
 	}
 
-	// ------------------------------------------------------------------
-	// WinINet: used only while a PDB is being fetched.
-	// ------------------------------------------------------------------
-
 	using Fn_InternetOpenW			= HINTERNET(__stdcall *)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
 	using Fn_InternetSetOptionW	= BOOL(__stdcall *)(HINTERNET, DWORD, LPVOID, DWORD);
 	using Fn_InternetOpenUrlW		= HINTERNET(__stdcall *)(HINTERNET, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD_PTR);
@@ -169,7 +119,6 @@ namespace dyn
 		Fn_InternetCloseHandle	InternetCloseHandle	= nullptr;
 	};
 
-	// Same contract as LoadDbgHelp: table out, handle out, fail-closed.
 	inline bool LoadWinInet(WinInetTable & table, HMODULE & module)
 	{
 		static const char * const kExports[] = {
@@ -213,7 +162,6 @@ namespace dyn
 		return true;
 	}
 
-	// Releases a module loaded above. Safe on nullptr.
 	inline void ReleaseModule(HMODULE & handle)
 	{
 		if (handle)
