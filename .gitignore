@@ -1,0 +1,12 @@
+Build/Release/
+Build/obj/
+# OpenCode integration
+.opencode/api-keys.json
+.opencode/oc-workspace/
+.oc-workspace/
+
+# Zed project settings
+.zed/settings.json.local
+
+# Proxy build artifacts
+*.proxy.log
