@@ -492,7 +492,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     {
         static const wchar_t kLetters[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
         static const wchar_t kAlnum[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        unsigned char entropy[12] = {};
+        // 16 bytes: max name is 12 chars (1 letter + 11 alnum) needing entropy[0..12];
+        // 12 bytes overran by 1 when length == 12 (entropy[12] OOB read).
+        unsigned char entropy[16] = {};
         bool haveCrypto = false;
         {
             auto bcryptName = XOR_STR_W(L"bcrypt.dll");
