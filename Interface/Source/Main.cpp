@@ -6499,6 +6499,48 @@ LUID luid{};
         PrintError(L"Failed to initialize the runtime or download symbols.");
     }
 
+    // Decide whether a failed injection may be retried by spawning a fresh,
+    // renamed process. A retry must NEVER follow a failure that already wrote
+    // the payload into the target: the runtime leaves unreclaimable loader
+    // state behind and a second attempt would map the payload a second time
+    // (a genuine double injection). Such failures are final.
+    bool InjectionFailureIsRetryable(DWORD result)
+    {
+        // "Remote mapping reached the shell" range: the payload is already in
+        // the target. The existing warning tells the operator to relaunch the
+        // target before loading again.
+        if (result >= 0x00400000u && result < 0x00500000u)
+        {
+            return false;
+        }
+
+        // Thread-hijack errors: by the time a thread is hijacked to run the
+        // loader shell, the image has been staged in the target and the shell
+        // maps it; retrying would map it a second time.
+        if (result >= 0x10200000u && result < 0x10300000u)
+        {
+            return false;
+        }
+
+        switch (result)
+        {
+            // The shell ran but did not produce a module handle, or the result
+            // could not be read back: the payload was mapped.
+        case INJ_ERR_FAILED_TO_LOAD_DLL:
+        case INJ_ERR_VERIFY_RESULT_FAIL:
+            return false;
+
+        default:
+            break;
+        }
+
+        // Everything else is a pre-mapping transient miss (open-process denied,
+        // handle-hijack found no donor, allocation failure, staging write,
+        // input validation) where the target does not yet carry the payload,
+        // so a fresh attempt cannot double-load it.
+        return true;
+    }
+
     int RunInteractiveWizard(Runtime & runtime)
     {
         // WINDOWS subsystem: never allocate or title a console. The previous
@@ -6847,9 +6889,10 @@ LUID luid{};
             threadSponsorGuard.reset();
             sponsorGuard.reset();
             PauseBeforeExit();
-            // Injection miss (busy donor, contested thread): retryable once
-            // as a fresh renamed process with a fresh spoofed parent.
-            return kResultRetryable;
+            // Only retry genuine pre-mapping misses. If the payload already
+            // reached the target, retrying would load it a second time without
+            // a fresh OK, which is the reported double-injection.
+            return InjectionFailureIsRetryable(result) ? kResultRetryable : 1;
         }
 
         threadSponsorGuard.reset();
