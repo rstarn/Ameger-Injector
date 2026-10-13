@@ -1000,9 +1000,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			}
 
 			resumed = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
+			// If resume fails, the thread stays suspended but context may have been restored.
+			// The caller must handle this case (e.g., by retaining the trampoline allocation).
 			if (!resumed)
 			{
-				restored = false;
 				return;
 			}
 

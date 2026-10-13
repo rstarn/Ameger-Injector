@@ -559,6 +559,7 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 		return;
 	}
 
+	ULONG old_protect = 0;
 	if (!ScProtectMemory(ProcessHandle, BaseAddress, Size, PAGE_READWRITE))
 	{
 		return;
@@ -568,16 +569,19 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 	BYTE * Zeros = ReCa<BYTE *>(VirtualAlloc(nullptr, Chunk, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Zeros)
 	{
+		ScProtectMemory(ProcessHandle, BaseAddress, Size, old_protect);
 		return;
 	}
 
 	BYTE * Cursor = ReCa<BYTE *>(BaseAddress);
 	SIZE_T Remaining = Size;
+	bool success = true;
 	while (Remaining)
 	{
 		const SIZE_T ThisChunk = Remaining < Chunk ? Remaining : Chunk;
 		if (!ScWriteProcessMemory(ProcessHandle, Cursor, Zeros, ThisChunk, nullptr))
 		{
+			success = false;
 			break;
 		}
 
@@ -585,6 +589,7 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 		Remaining -= ThisChunk;
 	}
 
+	ScProtectMemory(ProcessHandle, BaseAddress, Size, old_protect);
 	VirtualFree(Zeros, 0, MEM_RELEASE);
 }
 

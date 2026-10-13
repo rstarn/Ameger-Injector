@@ -112,7 +112,14 @@ bool Manager::SetTimeout(DWORD milliseconds)
 
     m_ullDeadline.store(GetTickCount64() + milliseconds);
 
-    return StartWatchdog();
+    bool started = StartWatchdog();
+    // If watchdog is running, wake it so it re-checks the new deadline immediately
+    // instead of waiting up to 250ms for its next wait cycle.
+    if (started && m_hWatchdogWake)
+    {
+        SetEvent(m_hWatchdogWake);
+    }
+    return true;
 }
 
 void Manager::StopTimeout()
