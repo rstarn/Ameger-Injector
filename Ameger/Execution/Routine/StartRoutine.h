@@ -12,8 +12,6 @@ enum class SR_REMOTE_STATE : ULONG_PTR
 
 using f_Routine			= DWORD(__fastcall *)(void * pArg);
 
-#define SR_REMOTE_DELAY 50
-
 #define SR_FP_FLAG_XSAVE 0x00000001
 #define SR_FP_AREA 128
 #define SR_FP_AREA_SIZE 864
@@ -47,6 +45,13 @@ extern "C" BYTE RemoteThreadHijackBegin[];
 extern "C" BYTE RemoteThreadHijackEnd[];
 extern "C" BYTE RemoteThreadReturnTarget[];
 extern "C" BYTE RemoteThreadState[];
+
+extern "C" BYTE RemoteThreadLeaStateIn[];
+extern "C" BYTE RemoteThreadLeaStateOut[];
+extern "C" BYTE RemoteThreadJmpReturn[];
+extern "C" BYTE RemoteThreadTebReadIn[];
+extern "C" BYTE RemoteThreadTebReadOut[];
+extern "C" BYTE RemoteThreadTebWrite[];
 
 DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
 

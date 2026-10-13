@@ -56,6 +56,19 @@ namespace
 			return E_FAIL;
 		}
 
+		// Trust model for the runtime's only network surface: the symbol host is a compile-time
+		// allowlist. Any URL that does not begin with the exact expected https:// prefix is refused
+		// before a socket is opened, so the authority can never be redirected by a crafted PDB name.
+		const std::wstring allowed_prefix = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
+		if (url.size() < allowed_prefix.size() || url.compare(0, allowed_prefix.size(), allowed_prefix) != 0)
+		{
+			LOG(1, "SYMBOL_LOADER: refusing symbol URL outside the allowlist\n");
+
+			dyn::ReleaseModule(module);
+
+			return E_FAIL;
+		}
+
 		HRESULT result = E_FAIL;
 
 		HINTERNET session = api.InternetOpenW(agent.get(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
@@ -81,6 +94,26 @@ namespace
 		{
 			LOG(1, "SYMBOL_LOADER: InternetOpenUrl failed: 0x%08X\n", GetLastError());
 
+			api.InternetCloseHandle(session);
+
+			dyn::ReleaseModule(module);
+
+			return E_FAIL;
+		}
+
+		// Certificate verification: WinINet validates the server chain and hostname by default, but
+		// only when no INTERNET_FLAG_IGNORE_CERT_* bypass is in effect. Assert that the transport is
+		// genuinely secure and that no bypass bit was set, so a downgrade or an ignored cert error is
+		// treated as a hard failure rather than silently trusted.
+		DWORD security_flags = 0;
+		DWORD security_flags_size = sizeof(security_flags);
+		if (!api.InternetQueryOptionW(request, INTERNET_OPTION_SECURITY_FLAGS, &security_flags, &security_flags_size) ||
+			(security_flags & SECURITY_FLAG_SECURE) == 0 ||
+			(security_flags & SECURITY_SET_MASK) != 0)
+		{
+			LOG(1, "SYMBOL_LOADER: TLS certificate validation not confirmed (flags 0x%08X)\n", security_flags);
+
+			api.InternetCloseHandle(request);
 			api.InternetCloseHandle(session);
 
 			dyn::ReleaseModule(module);
@@ -160,6 +193,15 @@ SYMBOL_LOADER::~SYMBOL_LOADER()
 
 bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 {
+	// Provenance/trust model for a downloaded or cached PDB. The PDB is accepted only when:
+	//   1. it came from the compile-time allowlisted https://msdl.microsoft.com host, with WinINet's
+	//      default certificate chain + hostname validation confirmed (no INTERNET_FLAG_IGNORE_CERT_*
+	//      bypass) - see DownloadUrlToFile;
+	//   2. its MSF stream 1 GUID matches the CodeView GUID recorded inside the *local* ntdll image;
+	//   3. its MSF stream 3 (DBI) age matches the module's CodeView age.
+	// Points 2 and 3 bind the file to this exact ntdll build, so a substituted or tampered PDB fails
+	// closed even if the transport were compromised. The PDB is never executed, only parsed for
+	// structure offsets.
 	LOG(2, "SYMBOL_LOADER::VerifyExistingPdb called\n");
 
 	std::ifstream f(m_szPdbPath.c_str(), std::ios::binary | std::ios::ate);

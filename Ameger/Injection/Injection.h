@@ -4,6 +4,8 @@
 
 #include "../Injection.h"
 
+#include <string>
+
 DWORD __stdcall Memory_Inject(MEMORY_INJECTIONDATA * pData);
 
 DWORD __stdcall GetSymbolState();

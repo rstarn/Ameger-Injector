@@ -29,7 +29,6 @@ set "RELEASE_CACHE=%OUT_ROOT%\Cache"
 set "CACHE_RUNTIME=%RELEASE_CACHE%\Runtime"
 set "CACHE_INTERFACE=%RELEASE_CACHE%\Injector"
 set "SCRIPTS_DIR=%BUILD_DIR%\Scripts"
-set "TIMESTAMP_SCRIPT=%SCRIPTS_DIR%\AddPE.ps1"
 set "MUTATE_SCRIPT=%SCRIPTS_DIR%\BuildPE.ps1"
 set "SEED_SCRIPT=%SCRIPTS_DIR%\CreateSeeds.ps1"
 set "CONFIG_SCRIPT=%SCRIPTS_DIR%\ProtectConfig.ps1"
@@ -138,18 +137,6 @@ goto :failure
 call :build_project "%LIBRARY_PROJ%" x64 "%DEPS_RELEASE%" "%LIBRARY64_OBJ%" "%TOOLSET_ARG%" "%SDK_ARG%" "%MUTATE_ARGS%"
 if errorlevel 1 goto :build_error
 echo.
-if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :runtime_timestamp_ready
-if not exist "%TIMESTAMP_SCRIPT%" goto :runtime_timestamp_missing
-where powershell.exe >nul 2>&1
-if errorlevel 1 goto :hash_error
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TIMESTAMP_SCRIPT%" "%RUNTIME_STOCK_DLL%"
-if errorlevel 1 goto :timestamp_fatal
-goto :runtime_timestamp_ready
-
-:runtime_timestamp_missing
-echo   %C_RED%ERROR: AddPE.ps1 was not found; refusing to continue with an untimestamped runtime DLL.%C_RESET%
-goto :failure
-
 :runtime_timestamp_ready
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :runtime_mutate_ready
 if not exist "%MUTATE_SCRIPT%" goto :runtime_mutate_missing
@@ -263,12 +250,9 @@ echo.
 echo.
 
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :refuse_unmutated
-if not exist "%TIMESTAMP_SCRIPT%" goto :timestamp_missing
-where powershell.exe >nul 2>&1
-if errorlevel 1 goto :timestamp_missing
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TIMESTAMP_SCRIPT%" "%INTERFACE_EXE%"
-if errorlevel 1 goto :timestamp_error
 if not exist "%MUTATE_SCRIPT%" goto :mutate_exe_error
+where powershell.exe >nul 2>&1
+if errorlevel 1 goto :mutate_exe_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MUTATE_SCRIPT%" "%INTERFACE_EXE%"
 if errorlevel 1 goto :mutate_exe_error
 call :verify_embed
@@ -711,24 +695,12 @@ goto :failure
 echo %C_RED%ERROR: unable to deploy the target payload.%C_RESET%
 goto :failure
 
-:timestamp_missing
-echo %C_RED%ERROR: AddPE.ps1 or PowerShell was not found; refusing to continue with an untimestamped build.%C_RESET%
-goto :failure
-
-:timestamp_fatal
-echo %C_RED%ERROR: unable to retimestamp the runtime DLL; refusing to continue with an inconsistent build.%C_RESET%
-goto :failure
-
 :mutate_fatal
 echo %C_RED%ERROR: unable to mutate the runtime DLL; refusing to continue with an inconsistent build.%C_RESET%
 goto :failure
 
 :mutate_exe_error
 echo %C_RED%ERROR: interface PE mutation failed or BuildPE.ps1 was not found; refusing to continue with an inconsistent build.%C_RESET%
-goto :failure
-
-:timestamp_error
-echo %C_RED%ERROR: retimestamping the interface EXE failed; refusing to continue with an inconsistent build.%C_RESET%
 goto :failure
 
 :refuse_unmutated

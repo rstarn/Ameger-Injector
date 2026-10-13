@@ -27,8 +27,6 @@ namespace NATIVE
 
 	WIN32_FUNC(GetProcAddress);
 
-	WIN32_FUNC(GetLastError);
-
 	NT_FUNC(LdrUnloadDll);
 
 	NT_FUNC(LdrpLoadDllInternal);
@@ -59,8 +57,6 @@ namespace NATIVE
 	NT_FUNC(NtProtectVirtualMemory);
 
 	NT_FUNC(LdrProtectMrdata);
-
-	NT_FUNC(NtDelayExecution);
 
 	NT_FUNC(LdrpHeap);
 	NT_FUNC(LdrpInvertedFunctionTable);

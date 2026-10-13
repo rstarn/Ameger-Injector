@@ -700,35 +700,39 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	memcpy(staged.data() + kWxCodePage, shellcode.data() + state_offset, data_size);
 
 	{
-		bool lea_patched = false;
-		bool jmp_patched = false;
+		// Patch sites are located through the exported labels in RemoteThreadHijack.asm
+		// (RemoteThreadLeaStateIn/Out, RemoteThreadJmpReturn, RemoteThreadTeb*). Deriving
+		// the offset from the assembler layout keeps the RIP-relative relocation correct no
+		// matter how the toolset encodes the displacement; the opcode prefix at the named
+		// site is still validated so any encoding drift fails closed at a named location.
 		const int pad32 = static_cast<int>(pad);
-		for (size_t i = 0; i + 7 <= code_size; ++i)
+		const BYTE lea_prefix[3] = { 0x48, 0x8D, 0x1D };
+		const BYTE jmp_prefix[2] = { 0xFF, 0x25 };
+
+		auto patch_rel32 = [&](const BYTE * label, const BYTE * prefix, size_t prefix_len, const char * site) -> bool
 		{
-			const bool is_lea = staged[i] == 0x48 && staged[i + 1] == 0x8D && staged[i + 2] == 0x1D;
-			if (is_lea)
+			(void)site;
+			const size_t site_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(label) - shellcode_begin);
+			if (site_offset + prefix_len + sizeof(int) > code_size)
 			{
-				int disp = 0;
-				memcpy(&disp, staged.data() + i + 3, sizeof(disp));
-				disp += pad32;
-				memcpy(staged.data() + i + 3, &disp, sizeof(disp));
-				lea_patched = true;
+				LOG(2, "Patch site %s out of range\n", site);
+				return false;
 			}
-		}
-		for (size_t i = 0; i + 6 <= code_size; ++i)
-		{
-			const bool is_jmp = staged[i] == 0xFF && staged[i + 1] == 0x25;
-			if (is_jmp)
+			if (memcmp(staged.data() + site_offset, prefix, prefix_len) != 0)
 			{
-				int disp = 0;
-				memcpy(&disp, staged.data() + i + 2, sizeof(disp));
-				disp += pad32;
-				memcpy(staged.data() + i + 2, &disp, sizeof(disp));
-				jmp_patched = true;
-				break;
+				LOG(2, "Patch site %s opcode mismatch\n", site);
+				return false;
 			}
-		}
-		if (!lea_patched || !jmp_patched)
+			int disp = 0;
+			memcpy(&disp, staged.data() + site_offset + prefix_len, sizeof(disp));
+			disp += pad32;
+			memcpy(staged.data() + site_offset + prefix_len, &disp, sizeof(disp));
+			return true;
+		};
+
+		if (!patch_rel32(RemoteThreadLeaStateIn, lea_prefix, sizeof(lea_prefix), "lea-state-in") ||
+			!patch_rel32(RemoteThreadLeaStateOut, lea_prefix, sizeof(lea_prefix), "lea-state-out") ||
+			!patch_rel32(RemoteThreadJmpReturn, jmp_prefix, sizeof(jmp_prefix), "jmp-return"))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -740,32 +744,35 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		const bool dyno_ready = g_DynamicOffsetsReady.load(std::memory_order_acquire);
 		const DWORD teb_last_error = g_DynamicOffsets.TebLastErrorValue;
-		size_t last_error_reads = 0;
-		size_t last_error_writes = 0;
+		const BYTE teb_read_prefix[5] = { 0x65, 0x44, 0x8B, 0x1C, 0x25 };
+		const BYTE teb_write_prefix[5] = { 0x65, 0x44, 0x89, 0x1C, 0x25 };
+		bool teb_patched = false;
 		if (dyno_ready && teb_last_error)
 		{
-			for (size_t i = 0; i + 9 <= code_size; ++i)
+			auto patch_teb = [&](const BYTE * label, const BYTE * prefix, const char * site) -> bool
 			{
-				const bool is_read =
-					staged[i] == 0x65 && staged[i + 1] == 0x44 && staged[i + 2] == 0x8B &&
-					staged[i + 3] == 0x1C && staged[i + 4] == 0x25;
-				if (is_read)
+				(void)site;
+				const size_t site_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(label) - shellcode_begin);
+				if (site_offset + sizeof(teb_read_prefix) + sizeof(DWORD) > code_size)
 				{
-					memcpy(staged.data() + i + 5, &teb_last_error, sizeof(teb_last_error));
-					++last_error_reads;
-					continue;
+					LOG(2, "Patch site %s out of range\n", site);
+					return false;
 				}
-				const bool is_write =
-					staged[i] == 0x65 && staged[i + 1] == 0x44 && staged[i + 2] == 0x89 &&
-					staged[i + 3] == 0x1C && staged[i + 4] == 0x25;
-				if (is_write)
+				if (memcmp(staged.data() + site_offset, prefix, sizeof(teb_read_prefix)) != 0)
 				{
-					memcpy(staged.data() + i + 5, &teb_last_error, sizeof(teb_last_error));
-					++last_error_writes;
+					LOG(2, "Patch site %s opcode mismatch\n", site);
+					return false;
 				}
-			}
+				memcpy(staged.data() + site_offset + sizeof(teb_read_prefix), &teb_last_error, sizeof(teb_last_error));
+				return true;
+			};
+
+			teb_patched =
+				patch_teb(RemoteThreadTebReadIn, teb_read_prefix, "teb-read-in") &&
+				patch_teb(RemoteThreadTebReadOut, teb_read_prefix, "teb-read-out") &&
+				patch_teb(RemoteThreadTebWrite, teb_write_prefix, "teb-write");
 		}
-		if (!last_error_reads || last_error_writes != 1)
+		if (!teb_patched)
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 

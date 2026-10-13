@@ -110,9 +110,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	WIN32_FUNC_INIT(GetProcAddress, hK32);
 
-	WIN32_FUNC_INIT(GetLastError, hK32);
-
-	if (!NATIVE::pGetModuleHandleW || !NATIVE::pGetProcAddress || !NATIVE::pGetLastError)
+	if (!NATIVE::pGetModuleHandleW || !NATIVE::pGetProcAddress)
 	{
 		INIT_ERROR_DATA(error_data, GetLastError());
 
@@ -186,8 +184,6 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	if (LoadSymbolNative(S_FUNC(LdrLockLoaderLock)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(LdrUnlockLoaderLock)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
-
-	if (LoadSymbolNative(S_FUNC(NtDelayExecution)))						return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
 	if (LoadSymbolNative(S_FUNC(LdrpHeap)))								return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(LdrpTlsList)))							return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;

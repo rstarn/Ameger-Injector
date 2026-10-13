@@ -72,7 +72,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		return INJ_ERR_WINDOWS_BUILD_UNSUPPORTED;
 	}
 
-	const DWORD remote_flags = Flags | INJ_MM_MAP_FROM_MEMORY;
+	// INJ_MM_MAP_FROM_MEMORY is forced exactly once, in Memory_InjectBody, so that the remote shell
+	// always sees an in-memory payload; the flag is not re-derived here.
+	const DWORD remote_flags = Flags;
 	INJECTION_SOURCE source = Source;
 	std::vector<BYTE> file_data;
 	PE_IMAGE::VIEW source_view;
@@ -2500,29 +2502,33 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 
 		if (MMI_InImage(pData, pResRoot, Size))
 		{
-			// Explicit walk rather than recursion, bounded at a width and a depth a real resource tree
-			// can never reach, with every step bounds checked before a single byte is dereferenced.
-			const BYTE * pending[8]{ };
-			DWORD pending_first = 0;
-			DWORD pending_count = 0;
+			// Depth-first walk with a hard depth limit and a total-directory budget. The previous
+			// implementation kept at most 8 pending directories and silently dropped the remainder, so
+			// a payload with a large resource tree (e.g. many icons) kept uncleaned name strings and
+			// RT_VERSION blobs. A real PE resource tree is only type -> name -> language deep, so the
+			// depth cap plus a visit budget visits every real subdirectory while a cyclic or corrupt
+			// tree stays bounded. No allocation is performed, so the staging semantics are unchanged.
+			constexpr int kMaxResourceDepth = 16;
+			constexpr DWORD kMaxResourceDirs = 0x2000;
+			DWORD visited_dirs = 0;
 
-			pending[pending_count++] = pResRoot;
-
-			while (pending_first < pending_count)
+			auto walk_resource_dir = [&](auto&& self, const BYTE * table, int depth) -> void
 			{
-				const BYTE * table = pending[pending_first++];
-
-				if (!table || table < pResRoot || table >= pResRoot + Size || !MMI_InImage(pData, table, sizeof(IMAGE_RESOURCE_DIRECTORY)))
+				if (depth > kMaxResourceDepth || visited_dirs >= kMaxResourceDirs ||
+					!table || table < pResRoot || table >= pResRoot + Size ||
+					!MMI_InImage(pData, table, sizeof(IMAGE_RESOURCE_DIRECTORY)))
 				{
-					continue;
+					return;
 				}
+
+				++visited_dirs;
 
 				const auto * pTable = ReCa<const IMAGE_RESOURCE_DIRECTORY *>(table);
 				const UINT entries = pTable->NumberOfNamedEntries + pTable->NumberOfIdEntries;
 
 				if (!entries || entries > 0x800)
 				{
-					continue;
+					return;
 				}
 
 				const auto * pEntry = ReCa<const IMAGE_RESOURCE_DIRECTORY_ENTRY *>(table + sizeof(IMAGE_RESOURCE_DIRECTORY));
@@ -2559,9 +2565,9 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 
 					if (pEntry[e].OffsetToData & IMAGE_RESOURCE_DATA_IS_DIRECTORY)
 					{
-						if (target < Size && pending_count < 8)
+						if (target < Size)
 						{
-							pending[pending_count++] = pResRoot + target;
+							self(self, pResRoot + target, depth + 1);
 						}
 
 						continue;
@@ -2583,7 +2589,9 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 						pDataEntry->OffsetToData = 0;
 					}
 				}
-			}
+			};
+
+			walk_resource_dir(walk_resource_dir, pResRoot, 0);
 		}
 
 		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress = 0;

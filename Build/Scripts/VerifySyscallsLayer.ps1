@@ -111,16 +111,30 @@ if ($Check -eq "Payload") {
 }
 
 if ($Check -eq "Stealth") {
-    # Page execute-read (0x20) and page no-access (0x01) are used for the mapped image and the wiped
-    # staging payload region respectively. Their presence as immediates is a coarse signal that the
-    # protection-hardening paths compiled in.
-    $rx = Get-ByteMatches $data ([int[]](0x20, 0x00, 0x00, 0x00))
-    $na = Get-ByteMatches $data ([int[]](0x01, 0x00, 0x00, 0x00))
-    if (($rx + $na) -lt 1) {
-        Write-Fail "Protection hardening constants (PAGE_EXECUTE_READ / PAGE_NOACCESS) not present"
+    # Specific instruction encodings of the NtProtectVirtualMemory protection argument. The 4th argument
+    # (NewProtect) is loaded into r9d, and the 5th argument (OldProtect pointer) is written to the x64
+    # shadow space at [rsp+20h]. Matching the immediate *together* with that shadow store is what makes
+    # the check specific: a bare "20 00 00 00" / "01 00 00 00" matches almost any x64 image, while the
+    # paired sequence only appears at a real protection call. Both instruction orders are accepted so a
+    # different scheduler decision does not produce a false negative.
+    $shadow = [int[]](0x48, 0x89, 0x4C, 0x24, 0x20)               # mov qword ptr [rsp+20h], rcx
+    $r9rx   = [int[]](0x41, 0xB9, 0x20, 0x00, 0x00, 0x00)         # mov r9d, 20h (PAGE_EXECUTE_READ)
+    $r9na   = [int[]](0x41, 0xB9, 0x01, 0x00, 0x00, 0x00)         # mov r9d, 01h (PAGE_NOACCESS)
+    $r9rwx  = [int[]](0x41, 0xB9, 0x40, 0x00, 0x00, 0x00)         # mov r9d, 40h (PAGE_EXECUTE_READWRITE)
+
+    $rx  = (Get-ByteMatches $data ([int[]]($shadow + $r9rx)))  + (Get-ByteMatches $data ([int[]]($r9rx + $shadow)))
+    $na  = (Get-ByteMatches $data ([int[]]($shadow + $r9na)))  + (Get-ByteMatches $data ([int[]]($r9na + $shadow)))
+    $rwx = (Get-ByteMatches $data ([int[]]($shadow + $r9rwx))) + (Get-ByteMatches $data ([int[]]($r9rwx + $shadow)))
+
+    if (($rx -lt 1) -or ($na -lt 1)) {
+        Write-Fail "W^X protection sequences missing (PAGE_EXECUTE_READ / PAGE_NOACCESS into NtProtectVirtualMemory)"
         exit 1
     }
-    Write-Ok ("Protection hardening constants present (rx=" + $rx + " noaccess=" + $na + ")")
+    if ($rwx -gt 0) {
+        Write-Fail "NtProtectVirtualMemory requests PAGE_EXECUTE_READWRITE (0x40); W^X regression"
+        exit 1
+    }
+    Write-Ok ("W^X protect sequences present (rx=" + $rx + " noaccess=" + $na + " rwx=" + $rwx + ")")
 
     Write-Host ("  " + (Get-Painted $script:C_Dim "static verification only; live properties are checked by the runtime verify tool"))
 }

@@ -6,7 +6,7 @@
 
 #include "System/Import/ImportHandler.h"
 #include "System/Symbol/Offsets/DynamicOffsets.h"
-#include "Injection.h"
+#include "../../Injection.h"
 #include "Execution/Routine/StartRoutine.h"
 
 #define RELOC_FLAG64(RelInfo) ((RelInfo >> 0x0C) == IMAGE_REL_BASED_DIR64)

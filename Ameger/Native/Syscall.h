@@ -121,10 +121,6 @@ using f_ScNtDuplicateObject = NTSTATUS(NTAPI *)(
 	ULONG		Options
 	);
 
-using f_ScNtClose = NTSTATUS(NTAPI *)(
-	HANDLE Handle
-	);
-
 using f_ScNtQuerySystemInformation = NTSTATUS(NTAPI *)(
 	SYSTEM_INFORMATION_CLASS	SystemInformationClass,
 	void *						SystemInformation,

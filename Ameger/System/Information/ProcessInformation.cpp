@@ -54,15 +54,28 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 		}
 	}
 
+	// Re-selecting the process that is already located in this snapshot only needs the thread cursor
+	// reset; walking the whole process list again would be wasted work. RefreshInformation clears the
+	// flag, so a rebuilt snapshot always forces a fresh walk.
+	if (hTargetProc == m_hCurrentProcess && m_ProcessLocated)
+	{
+		m_CurrentThreadIndex = 0;
+		m_pCurrentThread = &m_pCurrentProcess->Threads[0];
+
+		return true;
+	}
+
 	m_hCurrentProcess = hTargetProc;
 
 	ULONG_PTR PID = ScGetProcessId(m_hCurrentProcess);
 	if (!PID)
 	{
 		m_hCurrentProcess = nullptr;
+		m_ProcessLocated = false;
 		return false;
 	}
 
+	m_ProcessLocated = false;
 	m_pCurrentProcess = m_pFirstProcess;
 	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
 
@@ -94,6 +107,7 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 		return false;
 	}
 
+	m_ProcessLocated = true;
 	m_CurrentThreadIndex = 0;
 	m_pCurrentThread = &m_pCurrentProcess->Threads[0];
 
@@ -128,20 +142,21 @@ bool ProcessInformation::NextThread()
 
 bool ProcessInformation::RefreshInformation()
 {
-	if (!m_pFirstProcess)
-	{
-		m_pFirstProcess = ReCa<SYSTEM_PROCESS_INFORMATION *>(new(std::nothrow) BYTE[m_BufferSize]());
-		if (!m_pFirstProcess)
-		{
-			return false;
-		}
-	}
-	else
+	// Free-then-reallocate in one pass; the previous implementation recursed into itself just to
+	// reuse the allocation path. The snapshot is invalidated first so a caller that keeps the same
+	// process handle is forced to re-walk against the rebuilt buffer.
+	m_ProcessLocated = false;
+
+	if (m_pFirstProcess)
 	{
 		delete[] ReCa<BYTE *>(m_pFirstProcess);
 		m_pFirstProcess = nullptr;
+	}
 
-		return RefreshInformation();
+	m_pFirstProcess = ReCa<SYSTEM_PROCESS_INFORMATION *>(new(std::nothrow) BYTE[m_BufferSize]());
+	if (!m_pFirstProcess)
+	{
+		return false;
 	}
 
 	ULONG size_out = 0;

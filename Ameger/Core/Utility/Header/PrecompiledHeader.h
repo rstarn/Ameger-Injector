@@ -5,6 +5,7 @@
 #endif
 
 #include <Windows.h>
+#include "../../../Injection.h"
 #include "Core/Foundation/Primitives/InjectionTypes.h"
 #include "Core/Foundation/Primitives/KcStrings/Core/XorString.h"
 #include "Core/Foundation/Primitives/KcStrings/Core/KcStrSuite.h"
@@ -56,8 +57,6 @@
 
 #define ALIGN_8 __declspec(align(8))
 #define ALIGN ALIGN_8
-
-using f_raw_print_callback = void(__stdcall *)(const char * szText);
 
 inline std::atomic<f_raw_print_callback> g_print_raw_callback{nullptr};
 

@@ -106,6 +106,7 @@ namespace dyn
 
 	using Fn_InternetOpenW			= HINTERNET(__stdcall *)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
 	using Fn_InternetSetOptionW	= BOOL(__stdcall *)(HINTERNET, DWORD, LPVOID, DWORD);
+	using Fn_InternetQueryOptionW	= BOOL(__stdcall *)(HINTERNET, DWORD, LPVOID, LPDWORD);
 	using Fn_InternetOpenUrlW		= HINTERNET(__stdcall *)(HINTERNET, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD_PTR);
 	using Fn_InternetReadFile		= BOOL(__stdcall *)(HINTERNET, LPVOID, DWORD, LPDWORD);
 	using Fn_InternetCloseHandle	= BOOL(__stdcall *)(HINTERNET);
@@ -114,6 +115,7 @@ namespace dyn
 	{
 		Fn_InternetOpenW			InternetOpenW		= nullptr;
 		Fn_InternetSetOptionW	InternetSetOptionW	= nullptr;
+		Fn_InternetQueryOptionW	InternetQueryOptionW	= nullptr;
 		Fn_InternetOpenUrlW		InternetOpenUrlW	= nullptr;
 		Fn_InternetReadFile		InternetReadFile	= nullptr;
 		Fn_InternetCloseHandle	InternetCloseHandle	= nullptr;
@@ -124,6 +126,7 @@ namespace dyn
 		static const char * const kExports[] = {
 			"InternetOpenW",
 			"InternetSetOptionW",
+			"InternetQueryOptionW",
 			"InternetOpenUrlW",
 			"InternetReadFile",
 			"InternetCloseHandle",
@@ -153,9 +156,10 @@ namespace dyn
 
 		table.InternetOpenW		= reinterpret_cast<Fn_InternetOpenW>(resolved[0]);
 		table.InternetSetOptionW	= reinterpret_cast<Fn_InternetSetOptionW>(resolved[1]);
-		table.InternetOpenUrlW	= reinterpret_cast<Fn_InternetOpenUrlW>(resolved[2]);
-		table.InternetReadFile	= reinterpret_cast<Fn_InternetReadFile>(resolved[3]);
-		table.InternetCloseHandle	= reinterpret_cast<Fn_InternetCloseHandle>(resolved[4]);
+		table.InternetQueryOptionW	= reinterpret_cast<Fn_InternetQueryOptionW>(resolved[2]);
+		table.InternetOpenUrlW	= reinterpret_cast<Fn_InternetOpenUrlW>(resolved[3]);
+		table.InternetReadFile	= reinterpret_cast<Fn_InternetReadFile>(resolved[4]);
+		table.InternetCloseHandle	= reinterpret_cast<Fn_InternetCloseHandle>(resolved[5]);
 
 		module = loaded;
 

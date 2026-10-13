@@ -15,6 +15,7 @@ struct MEMORY_INJECTIONDATA
 	bool GenerateErrorLog;
 	DWORD TargetTid;
 	ULONG_PTR hThreadHandleValue;
+	const wchar_t * DllPath;
 };
 
 #define INJ_ERASE_HEADER				0x0001

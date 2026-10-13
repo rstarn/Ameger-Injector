@@ -193,12 +193,6 @@ using f_LdrProtectMrdata = VOID (__stdcall *)
 	BOOL bProtected
 );
 
-using f_NtDelayExecution = NTSTATUS (__stdcall *)
-(
-	BOOLEAN			Alertable,
-	LARGE_INTEGER * DelayInterval
-);
-
 using f_LdrpHeap					= PVOID *;
 using f_LdrpInvertedFunctionTable	= RTL_INVERTED_FUNCTION_TABLE *;
 using f_LdrpTlsList					= LIST_ENTRY *;

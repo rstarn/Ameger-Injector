@@ -222,6 +222,7 @@ namespace
         bool GenerateErrorLog;
         DWORD TargetTid;
         ULONG_PTR hThreadHandleValue;
+        const wchar_t * DllPath;
     };
 
     static_assert(sizeof(MemoryInjectionData) == sizeof(MEMORY_INJECTIONDATA),
@@ -247,6 +248,8 @@ namespace
         "MemoryInjectionData::TargetTid offset must match MEMORY_INJECTIONDATA::TargetTid");
     static_assert(offsetof(MemoryInjectionData, hThreadHandleValue) == offsetof(MEMORY_INJECTIONDATA, hThreadHandleValue),
         "MemoryInjectionData::hThreadHandleValue offset must match MEMORY_INJECTIONDATA::hThreadHandleValue");
+    static_assert(offsetof(MemoryInjectionData, DllPath) == offsetof(MEMORY_INJECTIONDATA, DllPath),
+        "MemoryInjectionData::DllPath offset must match MEMORY_INJECTIONDATA::DllPath");
 
     using f_Memory_Inject = DWORD(__stdcall *)(MemoryInjectionData *);
 
@@ -311,7 +314,6 @@ namespace
         bool delay_imports = true;
         bool clean_data = true;
         bool execute_tls = true;
-        bool from_memory = true;
         int timeout = 60000;
         std::wstring target_name;
         std::wstring expected_payload_sha256;
@@ -711,13 +713,9 @@ LUID luid{};
 
                         const unsigned char thread_state = static_cast<unsigned char>(thread->ThreadState);
                         const unsigned char thread_reason = static_cast<unsigned char>(thread->WaitReason);
-                        if (thread_state == 2)
-                        {
-                        }
-                        else if (allow_wait && is_safe_wait(thread_state, thread_reason))
-                        {
-                        }
-                        else
+                        // Accept a running thread (state 2) directly; otherwise accept only when the
+                        // caller allows waiting and the wait is safe. Everything else is skipped.
+                        if (thread_state != 2 && !(allow_wait && is_safe_wait(thread_state, thread_reason)))
                         {
                             continue;
                         }
@@ -1368,10 +1366,6 @@ LUID luid{};
             {
                 config.run_dllmain = ParseConfigBool(value, config.run_dllmain);
             }
-            else if (manual && EqualsNoCase(key, XOR_STR_W(L"LoadFromMemory").get()))
-            {
-                config.from_memory = ParseConfigBool(value, config.from_memory);
-            }
             else if (manual && EqualsNoCase(key, XOR_STR_W(L"LockLoaderLock").get()))
             {
                 config.loader_lock = ParseConfigBool(value, config.loader_lock);
@@ -1910,9 +1904,9 @@ LUID luid{};
         }
         if (is_wow64_process2)
         {
-            USHORT native_machine = 0;
             USHORT process_machine = 0;
-            if (is_wow64_process2(process, &native_machine, &process_machine))
+            USHORT native_machine = 0;
+            if (is_wow64_process2(process, &process_machine, &native_machine))
             {
                 if (process_machine == IMAGE_FILE_MACHINE_I386)
                 {
@@ -2238,10 +2232,6 @@ LUID luid{};
         if (config.execute_tls)
         {
             flags |= INJ_MM_EXECUTE_TLS;
-        }
-        if (config.from_memory)
-        {
-            flags |= INJ_MM_MAP_FROM_MEMORY;
         }
         return flags;
     }
@@ -3007,6 +2997,27 @@ LUID luid{};
         return static_cast<size_t>(-1);
     }
 
+    // Minimal "RVA -> file offset" resolver over a raw section table. Shared by the forensic and
+    // payload posture steps so the mapping logic exists in exactly one place.
+    size_t RvaToFileOffset(const IMAGE_SECTION_HEADER * sections, WORD section_count, size_t image_size, DWORD rva)
+    {
+        for (WORD s = 0; s < section_count; ++s)
+        {
+            const DWORD va = sections[s].VirtualAddress;
+            const DWORD raw = sections[s].SizeOfRawData;
+            if (raw && rva >= va && rva - va < raw)
+            {
+                const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
+                if (off < image_size)
+                {
+                    return off;
+                }
+            }
+        }
+
+        return static_cast<size_t>(-1);
+    }
+
 
     // "Acquire process handle" step. Split out of DebugAndVerifyStealth verbatim; it only prints the
     // process/thread hijack trace (or summary) chosen by the caller's verbose context.
@@ -3627,24 +3638,7 @@ LUID luid{};
                         posture_parsed = true;
                         if (export_rva && export_size)
                         {
-                            auto rva_to_offset = [&](DWORD rva) -> size_t
-                            {
-                                for (WORD s = 0; s < nt->FileHeader.NumberOfSections; ++s)
-                                {
-                                    const DWORD va = sections[s].VirtualAddress;
-                                    const DWORD raw = sections[s].SizeOfRawData;
-                                    if (raw && rva >= va && rva - va < raw)
-                                    {
-                                        const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
-                                        if (off < posture_bytes.size())
-                                        {
-                                            return off;
-                                        }
-                                    }
-                                }
-                                return static_cast<size_t>(-1);
-                            };
-                            const size_t exp_off = rva_to_offset(export_rva);
+                            const size_t exp_off = RvaToFileOffset(sections, nt->FileHeader.NumberOfSections, posture_bytes.size(), export_rva);
                             if (exp_off == static_cast<size_t>(-1) || exp_off + 40 > posture_bytes.size())
                             {
                                 posture_parsed = false;
@@ -3661,7 +3655,7 @@ LUID luid{};
                                 {
                                     for (DWORD i = 0; i < num_names; ++i)
                                     {
-                                        const size_t slot = rva_to_offset(addr_names);
+                                        const size_t slot = RvaToFileOffset(sections, nt->FileHeader.NumberOfSections, posture_bytes.size(), addr_names);
                                         if (slot == static_cast<size_t>(-1) ||
                                             slot + static_cast<size_t>(i) * 4 + 4 > posture_bytes.size())
                                         {
@@ -3670,7 +3664,7 @@ LUID luid{};
                                         }
                                         const DWORD name_rva = *ReCa<const DWORD *>(
                                             posture_bytes.data() + slot + static_cast<size_t>(i) * 4);
-                                        const size_t name_off = rva_to_offset(name_rva);
+                                        const size_t name_off = RvaToFileOffset(sections, nt->FileHeader.NumberOfSections, posture_bytes.size(), name_rva);
                                         if (name_off == static_cast<size_t>(-1))
                                         {
                                             posture_parsed = false;
@@ -3778,27 +3772,10 @@ LUID luid{};
                 }
                 payload_debug = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
 
-                auto rva_to_offset = [&](DWORD rva) -> size_t
-                {
-                    for (WORD s = 0; s < count; ++s)
-                    {
-                        const DWORD va = sections[s].VirtualAddress;
-                        const DWORD raw = sections[s].SizeOfRawData;
-                        if (raw && rva >= va && rva - va < raw)
-                        {
-                            const size_t off = static_cast<size_t>(sections[s].PointerToRawData) + (rva - va);
-                            if (off < local_pe_size)
-                            {
-                                return off;
-                            }
-                        }
-                    }
-                    return static_cast<size_t>(-1);
-                };
                 const DWORD exp_rva = payload_view.NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
                 if (exp_rva)
                 {
-                    const size_t exp_off = rva_to_offset(exp_rva);
+                    const size_t exp_off = RvaToFileOffset(sections, count, local_pe_size, exp_rva);
                     if (exp_off != static_cast<size_t>(-1) && exp_off + 40 <= local_pe_size)
                     {
                         payload_exports = *ReCa<const DWORD *>(local_pe + exp_off + 24);
@@ -5093,7 +5070,7 @@ LUID luid{};
         {
             wprintf(L"Reason: the OS gate rejected the host - Windows 11 (build 22000+) is required\n");
             wprintf(L"and this build is outside the supported families (21H2 22000+, 22H2/23H2 22621+,\n");
-            wprintf(L"24H2 26100+, 25H2 26200+; newer builds are forward-mapped). This is an\n");
+            wprintf(L"24H2 26100+, 25H2 26200+, 26H2 26300+; newer builds are forward-mapped). This is an\n");
             wprintf(L"environment issue, not a mapping or symbol failure. Update Windows.\n");
         }
         else
@@ -5195,7 +5172,7 @@ LUID luid{};
                 fwprintf(stderr, L"%lsUnsupported Windows version (code 0x%08X).%ls\n",
                     kRed, init_state, kReset);
             }
-            PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+).");
+            PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+), 26H2 (26300+).");
             PrintError(L"Windows 10 and older builds are not supported by this x64/Win11-only build.");
             PrintError(L"Failed to initialize the runtime (OS gate, not a symbol download failure).");
             return;
@@ -5281,13 +5258,6 @@ LUID luid{};
         wprintf(L"Target: %ls%ls%ls | Timeout: %ls%d%ls ms\n",
             kGreen, config.target_name.c_str(), kReset, kGreen, config.timeout, kReset);
         if (VerboseOutputEnabled()) { wprintf(L"Load flags: %ls0x%08X%ls\n", kGreen, BuildFlags(config), kReset); }
-
-        if (!config.from_memory)
-        {
-            PrintError(XOR_STR_W(L"LoadFromMemory must be enabled for payload integrity verification.").get());
-            PauseBeforeExit();
-            return 1;
-        }
 
         wprintf(L"\n");
         std::vector<BYTE> raw_data;
@@ -5503,6 +5473,7 @@ LUID luid{};
         data.hHandleValue = sponsorRaw ? ReCa<ULONG_PTR>(sponsorRaw) : 0;
         data.TargetTid = Context.SponsorTid;
         data.hThreadHandleValue = threadSponsorRaw ? ReCa<ULONG_PTR>(threadSponsorRaw) : 0;
+        data.DllPath = config.payload_name.c_str();
 
         wprintf(L"\n");
 

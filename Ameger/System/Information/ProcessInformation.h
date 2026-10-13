@@ -12,6 +12,7 @@ class ProcessInformation
 	ULONG m_BufferSize = 0;
 
 	HANDLE m_hCurrentProcess = nullptr;
+	bool m_ProcessLocated = false;
 
 	DWORD m_CurrentThreadIndex = 0;
 

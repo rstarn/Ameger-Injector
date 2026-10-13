@@ -7,6 +7,17 @@ PUBLIC RemoteThreadHijackEnd
 PUBLIC RemoteThreadReturnTarget
 PUBLIC RemoteThreadState
 
+; Patch-site labels. The C++ trampoline builder derives every relocation
+; site from these exported labels instead of scanning for opcode bytes, so a
+; change in the assembler's encoding fails closed at a named site rather than
+; silently patching the wrong location.
+PUBLIC RemoteThreadLeaStateIn
+PUBLIC RemoteThreadLeaStateOut
+PUBLIC RemoteThreadJmpReturn
+PUBLIC RemoteThreadTebReadIn
+PUBLIC RemoteThreadTebReadOut
+PUBLIC RemoteThreadTebWrite
+
 IFDEF AMEGER_STUB_SEED
 STUB_SEED EQU AMEGER_STUB_SEED
 ELSE
@@ -34,6 +45,7 @@ RemoteThreadHijackBegin:
     push r14
     push r15
 
+RemoteThreadLeaStateIn:
     lea rbx, [RemoteThreadState]
 IF STUB_RSP_CAPTURE
     lea r12, [rsp]
@@ -73,16 +85,20 @@ StubFpSaveDone:
 
     mov rax, [rbx+SR_ROUTINE]
     mov rcx, [rbx+SR_ARG]
+RemoteThreadTebReadIn:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_BUFFER], r11d
     mov qword ptr [rbx+SR_STATE], 1
     call rax
     mov [rbx+SR_RET], eax
+RemoteThreadTebReadOut:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_LAST_ERROR], r11d
     mov r11d, [rbx+SR_BUFFER]
+RemoteThreadTebWrite:
     mov gs:[TEB_LAST_ERROR], r11d
     mov qword ptr [rbx+SR_STATE], 2
+RemoteThreadLeaStateOut:
     lea rbx, [RemoteThreadState]
     mov r12, [rbx+SR_SAVED_RSP]
 
@@ -164,6 +180,7 @@ StubStackScrubDone:
     pop rcx
     pop rax
     popfq
+RemoteThreadJmpReturn:
     jmp qword ptr [RemoteThreadReturnTarget]
 
 ALIGN 16
@@ -179,10 +196,10 @@ RemoteThreadBuffer       DQ 0
 RemoteThreadFpFlags      DQ 0
 RemoteThreadFpMask       DQ 0
 RemoteThreadShellCw      DW 037Fh
-RemoteThreadShellCwPad   DW 0
+RemoteThreadShellCwPad0  DW 0
+RemoteThreadShellCwPad1  DD 0
 RemoteThreadShellMxcsr   DD 01F80h
 RemoteThreadShellMxPad   DD 0
-RemoteThreadShellTailPad DD 0
 RemoteThreadFpReserved   BYTE 48 DUP (0)
 RemoteThreadFpArea       BYTE SR_FP_AREA_SIZE DUP (0)
 RemoteThreadReturnTarget DQ 0

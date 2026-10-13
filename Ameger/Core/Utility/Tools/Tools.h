@@ -7,7 +7,7 @@
 #include "NT/NTDefinitions.h"
 
 #include "NT/NTFunctions.h"
-#include "Injection.h"
+#include "../../../Injection.h"
 
 #define ALIGN_UP(X, A) ((((ULONG_PTR)(X)) + ((ULONG_PTR)(A) - 1)) & (~(((ULONG_PTR)(A)) - 1)))
 
@@ -39,8 +39,6 @@ struct ERROR_INFO
 	DWORD			AdvErrorCode;
 	ULONG_PTR		HandleValue;
 	int				bNative;
-	std::wstring	SourceFile;
-	std::wstring	FunctionName;
 	int				Line;
 
 	BYTE *	RawData;
@@ -67,13 +65,15 @@ inline DWORD g_OSBuildNumber = 0;
 #define g_Windows11_23H2 22631
 #define g_Windows11_24H2 26100
 #define g_Windows11_25H2 26200
+#define g_Windows11_26H2 26300
 
 enum class WINDOWS_LAYOUT_FAMILY
 {
 	Windows11_21H2,
 	Windows11_22H2,
 	Windows11_24H2,
-	Windows11_25H2
+	Windows11_25H2,
+	Windows11_26H2
 };
 
 DWORD GetOSVersion(DWORD * error_code = nullptr);
@@ -103,8 +103,6 @@ bool AllowDirectHandleFallback();
 
 void ErrorLog(const ERROR_INFO & info);
 
-DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out);
-
 struct ASYNC_WORKER_SLOT
 {
 	HANDLE Thread = nullptr;
@@ -113,8 +111,6 @@ struct ASYNC_WORKER_SLOT
 };
 
 bool StartAsyncWorker(ASYNC_WORKER_SLOT & slot, LPTHREAD_START_ROUTINE entry, void * param);
-
-bool AsyncWorkerStarted(const ASYNC_WORKER_SLOT & slot);
 
 bool PollAsyncWorker(ASYNC_WORKER_SLOT & slot);
 

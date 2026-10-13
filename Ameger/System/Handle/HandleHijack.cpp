@@ -788,8 +788,8 @@ namespace
 	{
 		static_assert(sizeof(HijackStats) % sizeof(LONG) == 0, "HijackStats must be a whole number of LONGs");
 
-		LONG * dst = ReCa<LONG *>(&Dst);
-		const LONG * src = ReCa<const LONG *>(&Src);
+		volatile LONG * dst = ReCa<volatile LONG *>(&Dst);
+		const volatile LONG * src = ReCa<const volatile LONG *>(&Src);
 		for (size_t i = 0; i < sizeof(HijackStats) / sizeof(LONG); ++i)
 		{
 			InterlockedExchange(&dst[i], src[i]);
@@ -838,9 +838,17 @@ namespace
 
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
-		// This is the strongest probe in the file and it is also the loudest, so it is only reached when
-	// the sponsor path is actually in play. A commit, a one byte write, a read back and a release is
-	// indistinguishable from real use of the handle, which is the point.
+		// Trust model: this is the strongest and loudest probe in the file, and it is only reached on
+		// the sponsor path (a handle the launcher opened itself). It exists to prove the *duplicated*
+		// handle really maps the target's address space and carries both PROCESS_VM_WRITE and
+		// PROCESS_VM_READ, defeating handle-value reuse/confusion that a pid+image-name check alone
+		// cannot catch.
+		//
+		// A quieter alternative was considered and rejected: probing an existing readable region only
+		// proves VM_READ and never exercises VM_WRITE, and writing into an arbitrary pre-existing
+		// region risks corrupting the target. Because no read-only or in-place probe is provably
+		// equivalent, the allocate/write/read-back/free roundtrip is kept. It is deliberately a single
+		// minimal (0x1000) page, released immediately, and is skippable via INJ_SKIP_SPONSOR_ROUNDTRIP.
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
 		if (!Page)
 		{

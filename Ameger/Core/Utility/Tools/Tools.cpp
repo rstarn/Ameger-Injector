@@ -1,7 +1,7 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Utility/Tools/Tools.h"
-#include "Injection.h"
+#include "../../../Injection.h"
 #include "System/Import/ImportHandler.h"
 
 #include <bcrypt.h>
@@ -96,7 +96,21 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 
 	bool supported = true;
 
-	if (build_number >= 26200)
+	// The newest known family is the catch-all upper bound: any build at or above it (including builds
+	// newer than the newest release this project has been calibrated against) is mapped onto the
+	// newest known layout rather than rejected, so a future Windows update does not hard-fail the gate.
+	// Each branch below only tightens the bound for builds it is known to cover. The actual structure
+	// offsets are resolved from the downloaded ntdll PDB, not from this family value.
+	if (build_number >= 26300)
+	{
+		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_26H2;
+		if (build_number != g_Windows11_26H2)
+		{
+			LOG(1, "Forward-mapped Windows build %lu to 26H2 layout (known RTM %lu); recalibrate if loader drifts\n",
+				static_cast<unsigned long>(build_number), static_cast<unsigned long>(g_Windows11_26H2));
+		}
+	}
+	else if (build_number >= 26200)
 	{
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_25H2;
 		if (build_number != g_Windows11_25H2)
@@ -590,11 +604,6 @@ bool StartAsyncWorker(ASYNC_WORKER_SLOT & slot, LPTHREAD_START_ROUTINE entry, vo
 
 	slot.Thread = thread;
 	return true;
-}
-
-bool AsyncWorkerStarted(const ASYNC_WORKER_SLOT & slot)
-{
-	return slot.Thread != nullptr;
 }
 
 bool PollAsyncWorker(ASYNC_WORKER_SLOT & slot)

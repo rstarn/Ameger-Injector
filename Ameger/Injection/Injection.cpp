@@ -10,105 +10,105 @@ DWORD __stdcall InitializeRuntime();
 namespace
 {
 
-	DWORD OpenTargetProcess(DWORD Pid, DWORD AccessMask, DWORD Flags, ULONG_PTR SponsorValue, UniqueHandle & Out, ERROR_DATA & ErrorData)
+	DWORD OpenTargetProcess(DWORD pid, DWORD access_mask, DWORD flags, ULONG_PTR sponsor_value, UniqueHandle & out, ERROR_DATA & error_data)
 	{
-		Out.reset();
+		out.reset();
 
-		if (Flags & INJ_HANDLE_HIJACKING)
+		if (flags & INJ_HANDLE_HIJACKING)
 		{
-			HijackStats Stats{ };
-			Stats.Attempted = 1;
-			Stats.Source = static_cast<DWORD>(HijackSource::Scan);
+			HijackStats stats{ };
+			stats.Attempted = 1;
+			stats.Source = static_cast<DWORD>(HijackSource::Scan);
 
-			HANDLE ValidatedSponsorOwner = nullptr;
+			HANDLE validated_sponsor_owner = nullptr;
 
-			if (SponsorValue)
+			if (sponsor_value)
 			{
-				HANDLE Sponsor = ReCa<HANDLE>(SponsorValue);
-				if (ValidateProcessDonorHandle(Sponsor, Pid, AccessMask))
+				HANDLE sponsor = ReCa<HANDLE>(sponsor_value);
+				if (ValidateProcessDonorHandle(sponsor, pid, access_mask))
 				{
-					ValidatedSponsorOwner = Sponsor;
-					Stats.SponsorValidated = 1;
-					Stats.DonorHandle = PtrToUlong(Sponsor);
-					HANDLE Duplicated = nullptr;
-					bool duplicate_ok = NT_SUCCESS(ScNtDuplicateObject(GetCurrentProcess(), Sponsor, GetCurrentProcess(),
-						&Duplicated, AccessMask, FALSE, 0)) && Duplicated && ValidateProcessDonorHandle(Duplicated, Pid, AccessMask);
+					validated_sponsor_owner = sponsor;
+					stats.SponsorValidated = 1;
+					stats.DonorHandle = PtrToUlong(sponsor);
+					HANDLE duplicated = nullptr;
+					bool duplicate_ok = NT_SUCCESS(ScNtDuplicateObject(GetCurrentProcess(), sponsor, GetCurrentProcess(),
+						&duplicated, access_mask, FALSE, 0)) && duplicated && ValidateProcessDonorHandle(duplicated, pid, access_mask);
 					const bool roundtrip_ok = duplicate_ok &&
-						((Flags & INJ_SKIP_SPONSOR_ROUNDTRIP) != 0 || ProbeMemoryRoundtrip(Duplicated));
+						((flags & INJ_SKIP_SPONSOR_ROUNDTRIP) != 0 || ProbeMemoryRoundtrip(duplicated));
 					if (duplicate_ok && roundtrip_ok)
 					{
-						Out.reset(Duplicated);
-						Stats.Success = 1;
-						Stats.Source = static_cast<DWORD>(HijackSource::Sponsor);
-						Stats.DonorPid = GetCurrentProcessId();
-						Stats.GrantedAccess = AccessMask;
-						Stats.NewHandle = PtrToUlong(Duplicated);
-						Stats.SponsorProbed = (Flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 1;
-						Stats.FailCode = INJ_ERR_SUCCESS;
-						RecordHijackOutcome(Stats, false);
+						out.reset(duplicated);
+						stats.Success = 1;
+						stats.Source = static_cast<DWORD>(HijackSource::Sponsor);
+						stats.DonorPid = GetCurrentProcessId();
+						stats.GrantedAccess = access_mask;
+						stats.NewHandle = PtrToUlong(duplicated);
+						stats.SponsorProbed = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 1;
+						stats.FailCode = INJ_ERR_SUCCESS;
+						RecordHijackOutcome(stats, false);
 						LOG(0, "Acquired target process handle from sponsor\n");
 
 						return INJ_ERR_SUCCESS;
 					}
 
-					if (Duplicated)
+					if (duplicated)
 					{
-						CloseHandle(Duplicated);
+						CloseHandle(duplicated);
 					}
 				}
 
 				LOG(0, "Sponsor handle failed validation\n");
 			}
 
-			if (!(Flags & INJ_NO_DONOR_SCAN))
+			if (!(flags & INJ_NO_DONOR_SCAN))
 			{
-				HANDLE Hijacked = nullptr;
-				const DWORD SavedSponsorValidated = Stats.SponsorValidated;
-				const DWORD SavedSponsorProbed = Stats.SponsorProbed;
-				const DWORD SavedDonorHandle = Stats.DonorHandle;
+				HANDLE hijacked = nullptr;
+				const DWORD saved_sponsor_validated = stats.SponsorValidated;
+				const DWORD saved_sponsor_probed = stats.SponsorProbed;
+				const DWORD saved_donor_handle = stats.DonorHandle;
 
-				const DWORD HijackRet = HijackProcessHandle(Pid, AccessMask, Hijacked, &Stats,
-					ValidatedSponsorOwner);
-				Stats.SponsorValidated = SavedSponsorValidated;
-				Stats.SponsorProbed = SavedSponsorProbed;
-				if (Stats.Success == 0)
+				const DWORD hijack_ret = HijackProcessHandle(pid, access_mask, hijacked, &stats,
+					validated_sponsor_owner);
+				stats.SponsorValidated = saved_sponsor_validated;
+				stats.SponsorProbed = saved_sponsor_probed;
+				if (stats.Success == 0)
 				{
-					Stats.DonorHandle = SavedDonorHandle;
+					stats.DonorHandle = saved_donor_handle;
 				}
-				if (HijackRet == INJ_ERR_SUCCESS && Hijacked)
+				if (hijack_ret == INJ_ERR_SUCCESS && hijacked)
 				{
-					Out.reset(Hijacked);
-					RecordHijackOutcome(Stats, false);
+					out.reset(hijacked);
+					RecordHijackOutcome(stats, false);
 					LOG(0, "Acquired target process handle via acquisition\n");
 
 					return INJ_ERR_SUCCESS;
 				}
 
-				LOG(0, "Handle acquisition found no donor (%08X)\n", HijackRet);
-				Stats.FailCode = HijackRet;
+				LOG(0, "Handle acquisition found no donor (%08X)\n", hijack_ret);
+				stats.FailCode = hijack_ret;
 			}
-			else if (Stats.FailCode == INJ_ERR_SUCCESS)
+			else if (stats.FailCode == INJ_ERR_SUCCESS)
 			{
-				Stats.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
+				stats.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 
-			Stats.Source = static_cast<DWORD>(HijackSource::Scan);
-			RecordHijackOutcome(Stats, false);
+			stats.Source = static_cast<DWORD>(HijackSource::Scan);
+			RecordHijackOutcome(stats, false);
 
 			if (!AllowDirectHandleFallback())
 			{
 				LOG(0, "Handle acquisition found no donor; refusing (no direct fallback)\n");
-				INIT_ERROR_DATA(ErrorData, Stats.FailCode ? Stats.FailCode : static_cast<DWORD>(INJ_ERR_HANDLE_HIJACK_FAILED));
+				INIT_ERROR_DATA(error_data, stats.FailCode ? stats.FailCode : static_cast<DWORD>(INJ_ERR_HANDLE_HIJACK_FAILED));
 				return INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 
 			LOG(0, "Handle acquisition found no donor; direct fallback enabled by INJ_ALLOW_DIRECT_FALLBACK\n");
 		}
 
-		Out.reset(ScOpenProcess(Pid, AccessMask));
-		if (!Out)
+		out.reset(ScOpenProcess(pid, access_mask));
+		if (!out)
 		{
-			INIT_ERROR_DATA(ErrorData, INJ_ERR_ADVANCED_NOT_DEFINED);
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 			return INJ_ERR_CANT_OPEN_PROCESS;
 		}
 
@@ -162,9 +162,7 @@ DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD Err
 		info.RawSize					= Data.RawSize;
 
 		info.ErrorCode		= ErrorCode;
-		info.AdvErrorCode	= error_data.AdvErrorCode;
-		info.SourceFile		= error_data.szFileName;
-		info.FunctionName	= error_data.szFunctionName;
+		info.AdvErrorCode	= NormalizeAdvError(error_data.AdvErrorCode);
 		info.Line			= error_data.Line;
 
 		ErrorLog(info);
@@ -184,7 +182,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		return INJ_ERR_NO_DATA;
 	}
 
-	ERROR_DATA error_data{ 0 };
+	ERROR_DATA error_data{ };
 
 	try
 	{
@@ -221,6 +219,8 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	ResetMapStats();
 	ResetThreadExecStats();
 
+	// Single source of truth for INJ_MM_MAP_FROM_MEMORY: the runtime always transfers the payload
+	// in-memory, so the flag is forced here and never re-derived by the caller or the mapper.
 	pData->Flags |= INJ_MM_MAP_FROM_MEMORY;
 
 	DWORD RetVal = INJ_ERR_SUCCESS;
@@ -366,7 +366,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		info.RawSize					= pData->RawSize;
 
 		info.ErrorCode		= INJ_ERR_UNHANDLED_EXCEPTION;
-		info.AdvErrorCode	= error_data.AdvErrorCode;
+		info.AdvErrorCode	= NormalizeAdvError(error_data.AdvErrorCode);
 		info.Line			= error_data.Line;
 
 		ErrorLog(info);
@@ -469,4 +469,5 @@ INJECTIONDATA_INTERNAL::INJECTIONDATA_INTERNAL(const MEMORY_INJECTIONDATA * pDat
 	hThreadHandleValue	= pData->hThreadHandleValue;
 	GenerateErrorLog	= pData->GenerateErrorLog;
 	hDllOut				= NULL;
+	DllPath				= pData->DllPath ? pData->DllPath : L"";
 }

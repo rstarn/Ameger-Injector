@@ -6,7 +6,11 @@
 #endif
 
 #define INJ_ERR_SUCCESS					0x00000000
-#define INJ_ERR_ADVANCED_NOT_DEFINED	0x00000000
+
+// Distinct "no advanced error was recorded" sentinel. It is deliberately NOT INJ_ERR_SUCCESS so an
+// unset AdvErrorCode can be told apart from a recorded success; it is normalised back to
+// INJ_ERR_SUCCESS at the diagnostic boundary (InitErrorStruct) so the reported value is unchanged.
+#define INJ_ERR_ADVANCED_NOT_DEFINED	0xFFFFFFFF
 
 #define INJ_ERR_NO_DATA						0x00000001
 #define INJ_ERR_INVALID_FILEPATH			0x00000002
@@ -121,16 +125,19 @@
 
 struct ERROR_DATA
 {
-	DWORD		AdvErrorCode;
-	wchar_t		szFileName[MAX_PATH];
-	wchar_t		szFunctionName[MAX_PATH];
-	int			Line;
+	DWORD		AdvErrorCode = INJ_ERR_ADVANCED_NOT_DEFINED;
+	int			Line = 0;
 };
+
+// Maps the internal "not defined" sentinel onto the success value so the diagnostic payload never
+// exposes the sentinel (in particular it cannot be mistaken for an NTSTATUS by the launcher).
+inline DWORD NormalizeAdvError(DWORD AdvErrorCode)
+{
+	return AdvErrorCode == INJ_ERR_ADVANCED_NOT_DEFINED ? INJ_ERR_SUCCESS : AdvErrorCode;
+}
 
 #define INIT_ERROR_DATA(data, error) \
 do { \
 	(data).AdvErrorCode = (error); \
 	(data).Line = __LINE__; \
-	(data).szFileName[0] = L'\0'; \
-	(data).szFunctionName[0] = L'\0'; \
 } while (0)
