@@ -1018,11 +1018,6 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             out += L" ";
             out += kChildMarker;
         }
-        else
-        {
-            out += L" ";
-            out += kChildMarker;
-        }
         out += L" --ameger-retry=" + std::to_wstring(nextRetry);
         if (!parentPath.empty())
         {
@@ -1247,6 +1242,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
+                (void)DeleteFileW(own.c_str());
                 return false;
             }
             // Spoofed spawn failed: remove the copy and fall through to run
@@ -1320,6 +1316,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
+                (void)DeleteFileW(own.c_str());
                 return true;
             }
             (void)DeleteFileW(next.c_str());
