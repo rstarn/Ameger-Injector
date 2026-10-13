@@ -11,6 +11,7 @@
 #include <conio.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>

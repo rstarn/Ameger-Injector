@@ -189,7 +189,7 @@ if not defined H4 goto :hash_error
 if not defined H5 goto :hash_error
 if not defined H6 goto :hash_error
 if not defined H7 goto :hash_error
-set "RUNTIME_HASH_ARGS=/p:AmegerRuntimeHash0=%H0% /p:AmegerRuntimeHash1=%H1% /p:AmegerRuntimeHash2=%H2% /p:AmegerRuntimeHash3=%H3% /p:AmegerRuntimeHash4=%H4% /p:AmegerRuntimeHash5=%H5% /p:AmegerRuntimeHash6=%H6% /p:AmegerRuntimeHash7=%H7% /p:AmegerStringSeed=%AmegerStringSeed% /p:AmegerExeName=%EXE_NAME% /p:AmegerConfigMagic=%CONFIG_MAGIC%"
+set "RUNTIME_HASH_ARGS=/p:AmegerRuntimeHash0=%H0% /p:AmegerRuntimeHash1=%H1% /p:AmegerRuntimeHash2=%H2% /p:AmegerRuntimeHash3=%H3% /p:AmegerRuntimeHash4=%H4% /p:AmegerRuntimeHash5=%H5% /p:AmegerRuntimeHash6=%H6% /p:AmegerRuntimeHash7=%H7% /p:AmegerStringSeed=%AmegerStringSeed% /p:AmegerExeName=%EXE_NAME% /p:AmegerConfigMagic=%CONFIG_MAGIC% /p:AmegerWindowClass=%WINDOW_CLASS%"
 set "RUNTIME_DLL_NAME=%RUNTIME_NAME%"
 set "RUNTIME_DLL=%DLL_DIR%\%RUNTIME_DLL_NAME%"
 if not exist "%DLL_DIR%" mkdir "%DLL_DIR%"
@@ -344,6 +344,7 @@ set "EXE_NAME="
 set "DLLDIR_NAME="
 set "CONFIG_NAME="
 set "CONFIG_MAGIC="
+set "WINDOW_CLASS="
 for /f "usebackq tokens=1,2 delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%NAMES_SCRIPT%"`) do set "%%A=%%B"
 if not defined PAYLOAD_NAME exit /b 1
 if not defined RUNTIME_NAME exit /b 1
@@ -351,6 +352,7 @@ if not defined EXE_NAME exit /b 1
 if not defined DLLDIR_NAME exit /b 1
 if not defined CONFIG_NAME exit /b 1
 if not defined CONFIG_MAGIC exit /b 1
+if not defined WINDOW_CLASS exit /b 1
 if /i "%PAYLOAD_NAME%"=="%RUNTIME_NAME%" exit /b 1
 if /i "%PAYLOAD_NAME%"=="%EXE_NAME%" exit /b 1
 if /i "%PAYLOAD_NAME%"=="%DLLDIR_NAME%" exit /b 1
@@ -361,12 +363,19 @@ if /i "%RUNTIME_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%EXE_NAME%"=="%DLLDIR_NAME%" exit /b 1
 if /i "%EXE_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%DLLDIR_NAME%"=="%CONFIG_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%PAYLOAD_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%RUNTIME_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%EXE_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%DLLDIR_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%CONFIG_NAME%" exit /b 1
+if /i "%WINDOW_CLASS%"=="%CONFIG_MAGIC%" exit /b 1
 echo   %C_GREEN%[+]%C_RESET% PayloadName = %C_GREEN%%PAYLOAD_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% RuntimeName = %C_GREEN%%RUNTIME_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigMagic = %C_GREEN%%CONFIG_MAGIC%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% WindowClass = %C_GREEN%%WINDOW_CLASS%%C_RESET%
 echo.
 exit /b 0
 
@@ -403,6 +412,7 @@ if not exist "%RELEASE_CACHE%" exit /b 1
 >>"%NAMES_STATE%" echo DLLDIR_NAME=%DLLDIR_NAME%
 >>"%NAMES_STATE%" echo CONFIG_NAME=%CONFIG_NAME%
 >>"%NAMES_STATE%" echo CONFIG_MAGIC=%CONFIG_MAGIC%
+>>"%NAMES_STATE%" echo WINDOW_CLASS=%WINDOW_CLASS%
 >>"%NAMES_STATE%" echo EXPORT_MAP=%EXPORT_MAP%
 if not exist "%NAMES_STATE%" exit /b 1
 exit /b 0

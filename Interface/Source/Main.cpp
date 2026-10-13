@@ -1,5 +1,8 @@
 #include "PCH.h"
 
+#include <cstdarg>
+#include <cstdio>
+
 #include "../../Ameger/Injection.h"
 #include "../../Ameger/Core/Foundation/Error.h"
 #include "../../Ameger/Core/Foundation/Primitives/KcStrings/Core/XorString.h"
@@ -54,6 +57,230 @@ namespace
 #ifndef AMEGER_CONFIG_MAGIC_STR
 #define AMEGER_CONFIG_MAGIC_STR "SYSCFG01"
 #endif
+
+#ifndef AMEGER_WINDOW_CLASS_STR
+#define AMEGER_WINDOW_CLASS_STR "AmgWLayered"
+#endif
+
+#define AMEGER_WIDEN2(x) L##x
+#define AMEGER_WIDEN(x) AMEGER_WIDEN2(x)
+
+// ------------------------------------------------------------------
+// Headless UI log: every console print is captured into an in-memory
+// buffer (ANSI sequences stripped) and, on completion, copied to the
+// clipboard in one brief OpenClipboard(NULL) ownership with no window.
+// ------------------------------------------------------------------
+namespace ameger_ui_log
+{
+    constexpr size_t kMaxChars = 65536;
+
+    inline SRWLOCK & Lock()
+    {
+        static SRWLOCK lock = SRWLOCK_INIT;
+        return lock;
+    }
+
+    inline std::wstring & Buffer()
+    {
+        static std::wstring buffer;
+        return buffer;
+    }
+
+    inline void AppendStripped(const wchar_t * text)
+    {
+        if (!text || !*text)
+        {
+            return;
+        }
+        std::wstring clean;
+        size_t len = 0;
+        while (text[len])
+        {
+            ++len;
+        }
+        clean.reserve(len);
+        for (size_t i = 0; text[i]; ++i)
+        {
+            // Strip ANSI SGR sequences: ESC [ <digits/;> m
+            if (text[i] == L'\x1b' && text[i + 1] == L'[')
+            {
+                size_t j = i + 2;
+                while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';'))
+                {
+                    ++j;
+                }
+                if (text[j] == L'm')
+                {
+                    i = j;
+                    continue;
+                }
+            }
+            clean += text[i];
+        }
+        if (clean.empty())
+        {
+            return;
+        }
+        AcquireSRWLockExclusive(&Lock());
+        std::wstring & buf = Buffer();
+        if (buf.size() < kMaxChars)
+        {
+            if (buf.size() + clean.size() > kMaxChars)
+            {
+                clean.resize(kMaxChars - buf.size());
+            }
+            buf += clean;
+        }
+        ReleaseSRWLockExclusive(&Lock());
+    }
+
+    inline std::wstring Snapshot()
+    {
+        AcquireSRWLockShared(&Lock());
+        std::wstring copy = Buffer();
+        ReleaseSRWLockShared(&Lock());
+        return copy;
+    }
+
+    // Single brief clipboard ownership, no window, no notification UI.
+    // Retries only if another app holds the clipboard open.
+    inline void CopyToClipboardStealthily()
+    {
+        std::wstring snapshot = Snapshot();
+        if (snapshot.empty())
+        {
+            snapshot = L"(no output)";
+        }
+        if (snapshot.size() > kMaxChars)
+        {
+            snapshot.resize(kMaxChars);
+        }
+        for (int attempt = 0; attempt < 8; ++attempt)
+        {
+            if (!OpenClipboard(nullptr))
+            {
+                Sleep(30);
+                continue;
+            }
+            (void)EmptyClipboard();
+            const SIZE_T bytes = (snapshot.size() + 1) * sizeof(wchar_t);
+            HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if (!mem)
+            {
+                CloseClipboard();
+                return;
+            }
+            void * locked = GlobalLock(mem);
+            if (!locked)
+            {
+                GlobalFree(mem);
+                CloseClipboard();
+                return;
+            }
+            memcpy(locked, snapshot.c_str(), bytes);
+            GlobalUnlock(mem);
+            if (!SetClipboardData(CF_UNICODETEXT, mem))
+            {
+                GlobalFree(mem);
+                CloseClipboard();
+                return;
+            }
+            // System owns mem after a successful SetClipboardData.
+            CloseClipboard();
+            return;
+        }
+    }
+} // namespace ameger_ui_log
+
+int UiWprintf(const wchar_t * format, ...);
+int UiFwprintf(FILE * stream, const wchar_t * format, ...);
+
+#define wprintf UiWprintf
+#define fwprintf UiFwprintf
+
+int UiWprintf(const wchar_t * format, ...)
+{
+    if (!format)
+    {
+        return -1;
+    }
+    va_list args;
+    va_start(args, format);
+    int needed = _vscwprintf(format, args);
+    va_end(args);
+    if (needed <= 0)
+    {
+        return needed;
+    }
+    std::vector<wchar_t> buffer(static_cast<size_t>(needed) + 1);
+    va_start(args, format);
+    const int written = vswprintf_s(buffer.data(), buffer.size(), format, args);
+    va_end(args);
+    if (written > 0)
+    {
+        ameger_ui_log::AppendStripped(buffer.data());
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+        {
+            va_start(args, format);
+            const int forwarded = vwprintf_s(format, args);
+            va_end(args);
+            return forwarded;
+        }
+        OutputDebugStringW(buffer.data());
+    }
+    return written;
+}
+
+int UiFwprintf(FILE * stream, const wchar_t * format, ...)
+{
+    if (!format)
+    {
+        return -1;
+    }
+    va_list args;
+    va_start(args, format);
+    int needed = _vscwprintf(format, args);
+    va_end(args);
+    if (needed <= 0)
+    {
+        return needed;
+    }
+    std::vector<wchar_t> buffer(static_cast<size_t>(needed) + 1);
+    va_start(args, format);
+    const int written = vswprintf_s(buffer.data(), buffer.size(), format, args);
+    va_end(args);
+    if (written > 0)
+    {
+        ameger_ui_log::AppendStripped(buffer.data());
+        const HANDLE handle = (stream == stderr)
+            ? GetStdHandle(STD_ERROR_HANDLE)
+            : GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (handle && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode))
+        {
+            va_start(args, format);
+            const int forwarded = vfwprintf_s(stream, format, args);
+            va_end(args);
+            return forwarded;
+        }
+        OutputDebugStringW(buffer.data());
+    }
+    return written;
+}
+
+    // Stealth launcher policy (WINDOWS subsystem, no console).
+    // The launcher never allocates a console. Operator prompts are served
+    // through a layered window. Each attempt runs exactly once per process;
+    // retries always spawn a fresh renamed process with a fresh parent.
+    constexpr int kMaxLaunchAttempts = 3;
+    // Transient failures (network/symbol timeout, target raced, inject miss)
+    // respawn fresh; deterministic failures (config/pin/arch/gate) do not.
+    constexpr int kResultRetryable = 3;
+    constexpr wchar_t kChildMarker[] = L"--ameger-child";
+    constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
+    constexpr wchar_t kParentPathMarker[] = L"--ameger-parent-path=";
 
     class StdoutParkGuard
     {
@@ -201,7 +428,903 @@ namespace
             }
             handle_ = handle;
         }
+
+        HANDLE get() const noexcept
+        {
+            return handle_;
+        }
+
+        HANDLE release() noexcept
+        {
+            HANDLE h = handle_;
+            handle_ = INVALID_HANDLE_VALUE;
+            return h;
+        }
     };
+
+    // ------------------------------------------------------------------
+    // Stealth launch helpers: WINDOWS subsystem, no console, layered UI,
+    // spoofed parent, polymorphic self-rename, bounded fresh-process retry.
+    // ------------------------------------------------------------------
+
+    bool FileExists(const std::wstring & path);
+
+    std::wstring GetAmegerWindowClass()
+    {
+        // Per-build random class name baked by ShuffleNaming.ps1/Create.bat
+        // into AMEGER_WINDOW_CLASS_STR. Emitted as a contiguous UTF-16 literal
+        // so the deployed value is auditable in the binary; validated at
+        // runtime with fallback to a stable name only if malformed.
+        static const wchar_t kBakedWide[] = AMEGER_WIDEN(AMEGER_WINDOW_CLASS_STR);
+        size_t converted = 0;
+        for (size_t i = 0; kBakedWide[i] != L'\0' && i + 1 < 64; ++i)
+        {
+            const wchar_t c = kBakedWide[i];
+            const bool ok = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
+                (i > 0 && c >= L'0' && c <= L'9') || c == L'_';
+            if (!ok)
+            {
+                break;
+            }
+            converted = i + 1;
+        }
+        if (converted < 4)
+        {
+            return std::wstring(L"AmgWLayered");
+        }
+        return std::wstring(kBakedWide, converted);
+    }
+
+    bool GetOwnExePath(std::wstring & out)
+    {
+        std::vector<wchar_t> buffer(static_cast<size_t>(MAX_PATH) * 2);
+        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
+            static_cast<DWORD>(buffer.size()));
+        if (!length || length >= buffer.size())
+        {
+            return false;
+        }
+        out.assign(buffer.data(), length);
+        return true;
+    }
+
+    bool MakeRandomExeFileName(std::wstring & out)
+    {
+        static const wchar_t kLetters[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        static const wchar_t kAlnum[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        unsigned char entropy[12] = {};
+        bool haveCrypto = false;
+        {
+            auto bcryptName = XOR_STR_W(L"bcrypt.dll");
+            HMODULE bcrypt = GetModuleHandleW(bcryptName.get());
+            using BcryptGenFn = LONG(__stdcall *)(void *, unsigned char *, ULONG, ULONG);
+            if (bcrypt)
+            {
+                auto procName = XOR_STR_A("BCryptGenRandom");
+                auto gen = reinterpret_cast<BcryptGenFn>(GetProcAddress(bcrypt, procName.get()));
+                if (gen && gen(nullptr, entropy, sizeof(entropy), 0x00000002) >= 0)
+                {
+                    haveCrypto = true;
+                }
+            }
+        }
+        if (!haveCrypto)
+        {
+            ULONGLONG tick = GetTickCount64() ^ (static_cast<ULONGLONG>(GetCurrentProcessId()) << 32);
+            tick ^= reinterpret_cast<ULONG_PTR>(&entropy);
+            for (size_t i = 0; i < sizeof(entropy); ++i)
+            {
+                tick ^= tick >> 29;
+                tick *= 0xBF58476D1CE4E5B9ull;
+                tick ^= tick >> 32;
+                entropy[i] = static_cast<unsigned char>((tick >> ((i % 8) * 8)) & 0xFFu);
+            }
+        }
+        const size_t length = 8 + (entropy[0] % 5);
+        out.clear();
+        out.reserve(length + 4);
+        out += kLetters[entropy[1] % (_countof(kLetters) - 1)];
+        for (size_t i = 1; i < length; ++i)
+        {
+            out += kAlnum[entropy[i + 1] % (_countof(kAlnum) - 1)];
+        }
+        out += L".exe";
+        return out.size() > 4;
+    }
+
+    struct LayeredDialogState
+    {
+        std::wstring title;
+        std::wstring message;
+        int mode = 0; // 0=Ok, 1=OkCancel, 2=YesNo
+        int result = 0; // Win32 IDOK/IDYES/IDNO/IDCANCEL, 0 = pending
+        int defaultResult = IDCANCEL;
+        HWND hwnd = nullptr;
+        HDC memDc = nullptr;
+        HBITMAP bitmap = nullptr;
+        void * bits = nullptr;
+        int width = 480;
+        int height = 210;
+        RECT primary = {};
+        RECT secondary = {};
+        bool hasSecondary = false;
+        UINT timeoutMs = 60000;
+    };
+
+    LRESULT CALLBACK LayeredDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        auto * state = reinterpret_cast<LayeredDialogState *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        switch (msg)
+        {
+        case WM_NCCREATE:
+        {
+            auto * create = reinterpret_cast<CREATESTRUCTW *>(lParam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+            return TRUE;
+        }
+        case WM_LBUTTONDOWN:
+        {
+            if (!state || state->result != 0)
+            {
+                break;
+            }
+            const int x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
+            const int y = static_cast<int>(static_cast<short>(HIWORD(lParam)));
+            const POINT pt{ x, y };
+            if (PtInRect(&state->primary, pt))
+            {
+                state->result = (state->mode == 2) ? IDYES : IDOK;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (state->hasSecondary && PtInRect(&state->secondary, pt))
+            {
+                state->result = (state->mode == 2) ? IDNO : IDCANCEL;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        }
+        case WM_TIMER:
+        {
+            if (!state || state->result != 0)
+            {
+                break;
+            }
+            if (wParam == 1)
+            {
+                state->result = state->defaultResult;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        }
+        case WM_CLOSE:
+        {
+            if (state && state->result == 0)
+            {
+                state->result = state->defaultResult;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_DESTROY:
+        {
+            if (state)
+            {
+                KillTimer(hwnd, 1);
+                state->hwnd = nullptr;
+            }
+            PostQuitMessage(0);
+            return 0;
+        }
+        default:
+            break;
+        }
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    bool EnsureLayeredClass(ATOM & atomOut)
+    {
+        static ATOM cached = 0;
+        if (cached)
+        {
+            atomOut = cached;
+            return true;
+        }
+        const std::wstring className = GetAmegerWindowClass();
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = LayeredDialogProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = className.c_str();
+        const ATOM atom = RegisterClassExW(&wc);
+        if (atom)
+        {
+            cached = atom;
+            atomOut = cached;
+            return true;
+        }
+        if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
+        {
+            // Another dialog in this process already registered the per-build
+            // class; reuse it without an atom handle.
+            cached = 1;
+            atomOut = cached;
+            return true;
+        }
+        return false;
+    }
+
+    void PaintLayeredDialog(LayeredDialogState & state)
+    {
+        const HDC screen = GetDC(nullptr);
+        state.memDc = CreateCompatibleDC(screen);
+        ReleaseDC(nullptr, screen);
+        if (!state.memDc)
+        {
+            return;
+        }
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = state.width;
+        bi.bmiHeader.biHeight = -state.height;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        state.bitmap = CreateDIBSection(state.memDc, &bi, DIB_RGB_COLORS, &state.bits, nullptr, 0);
+        if (!state.bitmap || !state.bits)
+        {
+            if (state.bitmap)
+            {
+                DeleteObject(state.bitmap);
+                state.bitmap = nullptr;
+            }
+            DeleteDC(state.memDc);
+            state.memDc = nullptr;
+            return;
+        }
+        SelectObject(state.memDc, state.bitmap);
+
+        // Opaque dark background (uniform alpha via SourceConstantAlpha).
+        HBRUSH back = CreateSolidBrush(RGB(16, 19, 28));
+        RECT full{ 0, 0, state.width, state.height };
+        FillRect(state.memDc, &full, back);
+        DeleteObject(back);
+
+        HPEN border = CreatePen(PS_SOLID, 1, RGB(62, 68, 90));
+        HGDIOBJ oldPen = SelectObject(state.memDc, border);
+        HGDIOBJ oldBrush = SelectObject(state.memDc, GetStockObject(NULL_BRUSH));
+        Rectangle(state.memDc, 0, 0, state.width, state.height);
+        SelectObject(state.memDc, oldBrush);
+        SelectObject(state.memDc, oldPen);
+        DeleteObject(border);
+
+        SetBkMode(state.memDc, TRANSPARENT);
+        SetTextColor(state.memDc, RGB(235, 238, 245));
+        HFONT titleFont = CreateFontW(17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ oldFont = nullptr;
+        if (titleFont)
+        {
+            oldFont = SelectObject(state.memDc, titleFont);
+        }
+        RECT titleRc{ 18, 14, state.width - 18, 42 };
+        DrawTextW(state.memDc, state.title.c_str(), -1, &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (titleFont)
+        {
+            SelectObject(state.memDc, oldFont);
+            DeleteObject(titleFont);
+        }
+
+        HFONT bodyFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        if (bodyFont)
+        {
+            SelectObject(state.memDc, bodyFont);
+        }
+        SetTextColor(state.memDc, RGB(200, 206, 220));
+        RECT bodyRc{ 18, 44, state.width - 18, state.height - 70 };
+        DrawTextW(state.memDc, state.message.c_str(), -1, &bodyRc, DT_LEFT | DT_WORDBREAK);
+        if (bodyFont)
+        {
+            DeleteObject(bodyFont);
+        }
+
+        const int btnW = 110;
+        const int btnH = 30;
+        const int margin = 18;
+        const int bottom = state.height - btnH - 14;
+        if (state.mode == 0)
+        {
+            state.primary = RECT{ state.width - btnW - margin, bottom, state.width - margin, bottom + btnH };
+            state.hasSecondary = false;
+        }
+        else
+        {
+            state.secondary = RECT{ state.width - btnW - margin, bottom, state.width - margin, bottom + btnH };
+            state.primary = RECT{ state.secondary.left - btnW - 10, bottom, state.secondary.left - 10, bottom + btnH };
+            state.hasSecondary = true;
+        }
+
+        auto paintButton = [&](const RECT & rc, const wchar_t * text) {
+            HBRUSH fill = CreateSolidBrush(RGB(48, 54, 76));
+            FillRect(state.memDc, &rc, fill);
+            DeleteObject(fill);
+            HPEN edge = CreatePen(PS_SOLID, 1, RGB(92, 100, 130));
+            HGDIOBJ p0 = SelectObject(state.memDc, edge);
+            HGDIOBJ b0 = SelectObject(state.memDc, GetStockObject(NULL_BRUSH));
+            Rectangle(state.memDc, rc.left, rc.top, rc.right, rc.bottom);
+            SelectObject(state.memDc, b0);
+            SelectObject(state.memDc, p0);
+            DeleteObject(edge);
+            SetTextColor(state.memDc, RGB(240, 243, 250));
+            RECT textRc = rc;
+            DrawTextW(state.memDc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        };
+
+        if (state.mode == 2)
+        {
+            paintButton(state.primary, L"Yes");
+            paintButton(state.secondary, L"No");
+        }
+        else if (state.mode == 1)
+        {
+            paintButton(state.primary, L"OK");
+            paintButton(state.secondary, L"Cancel");
+        }
+        else
+        {
+            paintButton(state.primary, L"OK");
+        }
+
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int x = screenW > state.width ? (screenW - state.width) / 2 : 0;
+        const int y = screenH > state.height ? (screenH - state.height) / 2 : 0;
+
+        POINT dst{ x, y };
+        SIZE size{ state.width, state.height };
+        POINT src{ 0, 0 };
+        BLENDFUNCTION blend{};
+        blend.BlendOp = AC_SRC_OVER;
+        blend.SourceConstantAlpha = 238;
+        blend.AlphaFormat = 0;
+        UpdateLayeredWindow(state.hwnd, nullptr, &dst, &size, state.memDc, &src,
+            RGB(0, 0, 0), &blend, ULW_ALPHA);
+    }
+
+    int ShowLayeredModal(const std::wstring & title, const std::wstring & message,
+        int mode, int defaultResult, UINT timeoutMs)
+    {
+        ATOM atom = 0;
+        if (!EnsureLayeredClass(atom))
+        {
+            return defaultResult;
+        }
+        const std::wstring className = GetAmegerWindowClass();
+        LayeredDialogState state;
+        state.title = title;
+        state.message = message;
+        state.mode = mode;
+        state.defaultResult = defaultResult;
+        state.timeoutMs = timeoutMs ? timeoutMs : 60000;
+
+        const HINSTANCE inst = GetModuleHandleW(nullptr);
+        HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            className.c_str(), title.c_str(), WS_POPUP, 0, 0,
+            state.width, state.height, nullptr, nullptr, inst, &state);
+        if (!hwnd)
+        {
+            return defaultResult;
+        }
+        state.hwnd = hwnd;
+        PaintLayeredDialog(state);
+        if (!state.memDc)
+        {
+            DestroyWindow(hwnd);
+            return defaultResult;
+        }
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetForegroundWindow(hwnd);
+        if (state.timeoutMs)
+        {
+            SetTimer(hwnd, 1, state.timeoutMs, nullptr);
+        }
+
+        MSG msg{};
+        while (state.result == 0)
+        {
+            const BOOL got = GetMessageW(&msg, nullptr, 0, 0);
+            if (got <= 0)
+            {
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        if (state.memDc)
+        {
+            DeleteDC(state.memDc);
+            state.memDc = nullptr;
+        }
+        if (state.bitmap)
+        {
+            DeleteObject(state.bitmap);
+            state.bitmap = nullptr;
+        }
+        if (state.hwnd)
+        {
+            DestroyWindow(state.hwnd);
+            state.hwnd = nullptr;
+        }
+        // Drain the quit message posted by the dialog proc.
+        MSG drain{};
+        while (PeekMessageW(&drain, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE))
+        {
+        }
+        return state.result != 0 ? state.result : defaultResult;
+    }
+
+    bool LayeredConfirm(const std::wstring & message)
+    {
+        const int rc = ShowLayeredModal(L"Confirm", message, 1, IDCANCEL, 60000);
+        return rc == IDOK;
+    }
+
+    bool LayeredYesNo(const std::wstring & message, bool defaultValue)
+    {
+        const int rc = ShowLayeredModal(L"Confirm", message, 2,
+            defaultValue ? IDYES : IDNO, 60000);
+        return rc == IDYES;
+    }
+
+    void LayeredNotify(const std::wstring & title, const std::wstring & message, UINT timeoutMs)
+    {
+        (void)ShowLayeredModal(title, message, 0, IDOK, timeoutMs ? timeoutMs : 4000);
+    }
+
+    bool HasMarker(const std::wstring & commandLine, const wchar_t * marker)
+    {
+        return commandLine.find(marker) != std::wstring::npos;
+    }
+
+    int GetRetryIndex()
+    {
+        const std::wstring cmd = GetCommandLineW();
+        const size_t pos = cmd.find(kRetryMarker);
+        if (pos == std::wstring::npos)
+        {
+            return 0;
+        }
+        const wchar_t * tail = cmd.c_str() + pos + wcslen(kRetryMarker);
+        wchar_t * end = nullptr;
+        const unsigned long value = std::wcstoul(tail, &end, 10);
+        if (tail == end || value > 16)
+        {
+            return 0;
+        }
+        return static_cast<int>(value);
+    }
+
+    std::wstring BuildForwardedArgs(int nextRetry, const std::wstring & parentPath, bool keepChild)
+    {
+        // Forward the original command line, replacing retry/parent markers.
+        std::wstring cmd = GetCommandLineW();
+        // Strip the executable token.
+        std::wstring rest;
+        if (!cmd.empty())
+        {
+            size_t i = 0;
+            while (i < cmd.size() && (cmd[i] == L' ' || cmd[i] == L'\t'))
+            {
+                ++i;
+            }
+            if (i < cmd.size() && cmd[i] == L'"')
+            {
+                ++i;
+                while (i < cmd.size() && cmd[i] != L'"')
+                {
+                    ++i;
+                }
+                if (i < cmd.size())
+                {
+                    ++i;
+                }
+            }
+            else
+            {
+                while (i < cmd.size() && cmd[i] != L' ' && cmd[i] != L'\t')
+                {
+                    ++i;
+                }
+            }
+            rest = (i < cmd.size()) ? cmd.substr(i) : std::wstring();
+        }
+        // Remove stale markers.
+        for (;;)
+        {
+            bool erased = false;
+            size_t pos = rest.find(kRetryMarker);
+            if (pos != std::wstring::npos)
+            {
+                size_t end = pos;
+                while (end < rest.size() && rest[end] != L' ' && rest[end] != L'\t' && rest[end] != L'"')
+                {
+                    ++end;
+                }
+                rest.erase(pos, end - pos);
+                erased = true;
+            }
+            pos = rest.find(kParentPathMarker);
+            if (pos != std::wstring::npos)
+            {
+                size_t start = pos;
+                if (start > 0 && rest[start - 1] == L'"')
+                {
+                    --start;
+                }
+                size_t end = pos + wcslen(kParentPathMarker);
+                if (end < rest.size() && rest[end] == L'"')
+                {
+                    ++end;
+                    while (end < rest.size() && rest[end] != L'"')
+                    {
+                        ++end;
+                    }
+                    if (end < rest.size())
+                    {
+                        ++end;
+                    }
+                }
+                else
+                {
+                    while (end < rest.size() && rest[end] != L' ' && rest[end] != L'\t')
+                    {
+                        ++end;
+                    }
+                }
+                rest.erase(start, end - start);
+                erased = true;
+            }
+            if (!erased)
+            {
+                const size_t childPos = rest.find(kChildMarker);
+                if (childPos != std::wstring::npos && !keepChild)
+                {
+                    rest.erase(childPos, wcslen(kChildMarker));
+                    erased = true;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            if (!erased)
+            {
+                break;
+            }
+        }
+        std::wstring out;
+        if (keepChild)
+        {
+            out += L" ";
+            out += kChildMarker;
+        }
+        else
+        {
+            out += L" ";
+            out += kChildMarker;
+        }
+        out += L" --ameger-retry=" + std::to_wstring(nextRetry);
+        if (!parentPath.empty())
+        {
+            out += L" --ameger-parent-path=\"" + parentPath + L"\"";
+        }
+        out += rest;
+        return out;
+    }
+
+    DWORD FindTrustedBroker(DWORD excludePid, const std::wstring & excludeImage)
+    {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE)
+        {
+            return 0;
+        }
+        FileHandleGuard snapGuard(snap);
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (!Process32FirstW(snap, &entry))
+        {
+            return 0;
+        }
+        const DWORD session = []() -> DWORD {
+            DWORD id = 0;
+            ProcessIdToSessionId(GetCurrentProcessId(), &id);
+            return id;
+        }();
+        DWORD explorerSame = 0;
+        DWORD explorerAny = 0;
+        DWORD svchostSame = 0;
+        DWORD svchostAny = 0;
+        auto expectedExplorer = XOR_STR_W(L"explorer.exe");
+        auto expectedSvchost = XOR_STR_W(L"svchost.exe");
+        do
+        {
+            std::wstring name = entry.szExeFile;
+            for (auto & c : name)
+            {
+                if (c >= L'A' && c <= L'Z')
+                {
+                    c = static_cast<wchar_t>(c - L'A' + L'a');
+                }
+            }
+            const bool isExplorer = (name == expectedExplorer.get());
+            const bool isSvchost = (name == expectedSvchost.get());
+            if (!isExplorer && !isSvchost)
+            {
+                continue;
+            }
+            if (entry.th32ProcessID == GetCurrentProcessId() || entry.th32ProcessID == excludePid)
+            {
+                continue;
+            }
+            if (!excludeImage.empty() && _wcsicmp(entry.szExeFile, excludeImage.c_str()) == 0 && isSvchost)
+            {
+                // Still usable; the exclusion is only a preference for a *new*
+                // broker instance, not a hard filter. Keep scanning.
+            }
+            DWORD procSession = 0;
+            ProcessIdToSessionId(entry.th32ProcessID, &procSession);
+            if (isExplorer)
+            {
+                if (procSession == session && !explorerSame)
+                {
+                    explorerSame = entry.th32ProcessID;
+                }
+                if (!explorerAny)
+                {
+                    explorerAny = entry.th32ProcessID;
+                }
+            }
+            else
+            {
+                if (procSession == session && !svchostSame)
+                {
+                    svchostSame = entry.th32ProcessID;
+                }
+                if (!svchostAny)
+                {
+                    svchostAny = entry.th32ProcessID;
+                }
+            }
+        } while (Process32NextW(snap, &entry));
+        if (explorerSame)
+        {
+            return explorerSame;
+        }
+        if (svchostSame)
+        {
+            return svchostSame;
+        }
+        if (explorerAny)
+        {
+            return explorerAny;
+        }
+        return svchostAny;
+    }
+
+    bool SpawnWithSpoofedParent(const std::wstring & exePath, const std::wstring & args, DWORD brokerPid)
+    {
+        if (exePath.empty() || !brokerPid)
+        {
+            return false;
+        }
+        HANDLE broker = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, brokerPid);
+        if (!broker)
+        {
+            // Best effort: enable SeDebug and retry once for SYSTEM brokers.
+            HANDLE token = nullptr;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+            {
+                FileHandleGuard tokenGuard(token);
+                LUID luid{};
+                if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &luid))
+                {
+                    TOKEN_PRIVILEGES tp{};
+                    tp.PrivilegeCount = 1;
+                    tp.Privileges[0].Luid = luid;
+                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                    AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+                }
+            }
+            broker = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, brokerPid);
+            if (!broker)
+            {
+                return false;
+            }
+        }
+        FileHandleGuard brokerGuard(broker);
+
+        SIZE_T attrSize = 0;
+        (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+        if (!attrSize)
+        {
+            return false;
+        }
+        std::vector<BYTE> attrBuffer(attrSize);
+        auto * attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuffer.data());
+        if (!InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize))
+        {
+            return false;
+        }
+        HANDLE parentHandle = brokerGuard.get();
+        const BOOL attrOk = UpdateProcThreadAttribute(attrs, 0,
+            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+            &parentHandle, sizeof(parentHandle), nullptr, nullptr);
+        if (!attrOk)
+        {
+            DeleteProcThreadAttributeList(attrs);
+            return false;
+        }
+
+        std::wstring cmdline = L"\"" + exePath + L"\"" + args;
+        STARTUPINFOEXW si{};
+        si.StartupInfo.cb = sizeof(si);
+        si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+        si.StartupInfo.wShowWindow = SW_HIDE;
+        si.lpAttributeList = attrs;
+        PROCESS_INFORMATION pi{};
+        const BOOL created = CreateProcessW(exePath.c_str(), cmdline.data(), nullptr, nullptr,
+            FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            nullptr, nullptr, &si.StartupInfo, &pi);
+        DeleteProcThreadAttributeList(attrs);
+        if (!created)
+        {
+            return false;
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+
+    // Polymorphic stub: copy self to a random name in the same directory and
+    // continue there. Returns false when the current image must exit because
+    // the renamed child was launched. Returns true when this image should
+    // execute main logic (already the renamed child).
+    bool PolymorphicSelfRename(const std::wstring & parentHint)
+    {
+        const std::wstring cmd = GetCommandLineW();
+        if (HasMarker(cmd, kChildMarker))
+        {
+            // Best-effort cleanup of the unrenamed parent image left on disk.
+            if (!parentHint.empty() && FileExists(parentHint))
+            {
+                std::wstring own;
+                if (GetOwnExePath(own) && _wcsicmp(own.c_str(), parentHint.c_str()) != 0)
+                {
+                    (void)DeleteFileW(parentHint.c_str());
+                }
+            }
+            return true;
+        }
+        std::wstring own;
+        if (!GetOwnExePath(own))
+        {
+            return true;
+        }
+        const size_t slash = own.find_last_of(L"\\/");
+        const std::wstring dir = (slash == std::wstring::npos) ? std::wstring() : own.substr(0, slash + 1);
+        if (dir.empty())
+        {
+            return true;
+        }
+        for (int i = 0; i < 8; ++i)
+        {
+            std::wstring randomName;
+            if (!MakeRandomExeFileName(randomName))
+            {
+                return true;
+            }
+            const std::wstring next = dir + randomName;
+            if (FileExists(next))
+            {
+                continue;
+            }
+            if (!CopyFileW(own.c_str(), next.c_str(), TRUE))
+            {
+                continue;
+            }
+            const DWORD broker = FindTrustedBroker(0, std::wstring());
+            const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
+            if (broker && SpawnWithSpoofedParent(next, args, broker))
+            {
+                return false;
+            }
+            // Spoofed spawn failed: remove the copy and fall through to run
+            // in place rather than failing the launch outright.
+            (void)DeleteFileW(next.c_str());
+            return true;
+        }
+        return true;
+    }
+
+    bool SpawnFreshRetryProcess(int nextRetry)
+    {
+        std::wstring own;
+        if (!GetOwnExePath(own))
+        {
+            return false;
+        }
+        const size_t slash = own.find_last_of(L"\\/");
+        const std::wstring dir = (slash == std::wstring::npos) ? std::wstring() : own.substr(0, slash + 1);
+        if (dir.empty())
+        {
+            return false;
+        }
+        const DWORD currentParent = []() -> DWORD {
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == INVALID_HANDLE_VALUE)
+            {
+                return 0;
+            }
+            FileHandleGuard guard(snap);
+            PROCESSENTRY32W entry{};
+            entry.dwSize = sizeof(entry);
+            if (!Process32FirstW(snap, &entry))
+            {
+                return 0;
+            }
+            const DWORD self = GetCurrentProcessId();
+            do
+            {
+                if (entry.th32ProcessID == self)
+                {
+                    return entry.th32ParentProcessID;
+                }
+            } while (Process32NextW(snap, &entry));
+            return 0;
+        }();
+        for (int i = 0; i < 8; ++i)
+        {
+            std::wstring randomName;
+            if (!MakeRandomExeFileName(randomName))
+            {
+                return false;
+            }
+            const std::wstring next = dir + randomName;
+            if (FileExists(next))
+            {
+                continue;
+            }
+            if (!CopyFileW(own.c_str(), next.c_str(), TRUE))
+            {
+                continue;
+            }
+            // New spoofed parent per retry: exclude the current parent so the
+            // next attempt does not trivially reuse the same broker instance
+            // when another trusted broker exists.
+            DWORD broker = FindTrustedBroker(currentParent, std::wstring());
+            if (!broker || broker == currentParent)
+            {
+                broker = FindTrustedBroker(0, std::wstring());
+            }
+            const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
+            if (broker && SpawnWithSpoofedParent(next, args, broker))
+            {
+                return true;
+            }
+            (void)DeleteFileW(next.c_str());
+            return false;
+        }
+        return false;
+    }
 
     enum class Architecture
     {
@@ -338,12 +1461,37 @@ namespace
 
     void PrintError(const wchar_t * message)
     {
-        fwprintf(stderr, L"%ls%ls%ls\n", kRed, message, kReset);
+        // WINDOWS subsystem: no console is ever allocated. Console output is
+        // emitted only when a console is present; otherwise the message goes
+        // to the debugger so headless runs stay silent.
+        HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+        DWORD mode = 0;
+        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+        {
+            fwprintf(stderr, L"%ls%ls%ls\n", kRed, message, kReset);
+            return;
+        }
+        if (message)
+        {
+            OutputDebugStringW(message);
+            OutputDebugStringW(L"\n");
+        }
     }
 
     void PrintWarning(const wchar_t * message)
     {
-        wprintf(L"%ls[!]%ls %ls\n", kYellow, kReset, message);
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+        {
+            wprintf(L"%ls[!]%ls %ls\n", kYellow, kReset, message);
+            return;
+        }
+        if (message)
+        {
+            OutputDebugStringW(message);
+            OutputDebugStringW(L"\n");
+        }
     }
 
     [[noreturn]] void TerminateInterface(int code)
@@ -363,21 +1511,19 @@ namespace
 
     void DetachInterfaceConsole()
     {
+        // WINDOWS subsystem never allocates a console, so there is nothing to
+        // detach. Only release a console when one is actually present (for
+        // example a developer build run from a terminal).
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
-        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+        const bool hasConsole = output && output != INVALID_HANDLE_VALUE &&
+            GetConsoleMode(output, &mode) != FALSE;
+        fflush(stdout);
+        fflush(stderr);
+        if (!hasConsole)
         {
-
-            fputs("\x1b[2J\x1b[3J\x1b[H", stdout);
-            fflush(stdout);
-            fflush(stderr);
+            return;
         }
-        else
-        {
-            fflush(stdout);
-            fflush(stderr);
-        }
-
         FreeConsole();
     }
 
@@ -452,6 +1598,31 @@ namespace
 
     bool ReadYesNo(const wchar_t * prompt, bool default_value, bool & value)
     {
+        // Headless path: no console exists, so serve the prompt through the
+        // layered window instead of stdin.
+        HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD console_mode = 0;
+        const bool hasConsole = input && input != INVALID_HANDLE_VALUE &&
+            GetConsoleMode(input, &console_mode) != FALSE;
+        if (!hasConsole)
+        {
+            // Retries never re-prompt either: use the safe default so a
+            // transient retry cannot stack a second dialog behind the first.
+            if (GetRetryIndex() > 0)
+            {
+                value = default_value;
+                return true;
+            }
+            std::wstring message = prompt ? std::wstring(prompt) : std::wstring(L"Continue?");
+            value = LayeredYesNo(message, default_value);
+            // LayeredYesNo always produces an explicit choice (timeout falls
+            // back to the safe default), so report success.
+            if (!default_value && !value)
+            {
+                // Explicit "No" with a false default is still a valid answer.
+            }
+            return true;
+        }
         for (;;)
         {
             wprintf(L"%ls [%ls]: ", prompt, default_value ? L"Y" : L"N");
@@ -493,12 +1664,23 @@ namespace
         {
             return ConfirmationResult::Proceed;
         }
+        // Retries never re-prompt: the operator already confirmed attempt 1,
+        // so a second "begin load" popup is a bug, not a gate.
+        if (GetRetryIndex() > 0)
+        {
+            return ConfirmationResult::Proceed;
+        }
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
         DWORD console_mode = 0;
-        if (!input || input == INVALID_HANDLE_VALUE || !GetConsoleMode(input, &console_mode))
+        const bool hasConsole = input && input != INVALID_HANDLE_VALUE &&
+            GetConsoleMode(input, &console_mode) != FALSE;
+        if (!hasConsole)
         {
-            PrintError(L"Console input is unavailable; refusing to load without an explicit confirmation.");
-            return ConfirmationResult::Unavailable;
+            // WINDOWS subsystem: no console exists. Serve the gate through a
+            // layered window with the per-build random class name.
+            const bool proceed = LayeredConfirm(
+                L"Begin load? Select OK to proceed or Cancel to quit.");
+            return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
         }
 
         wprintf(L"%ls[+]%ls Press Enter to begin, or Q to quit: \n", kGreen, kReset);
@@ -2070,17 +3252,35 @@ LUID luid{};
         }
         target.requested_name = NormalizeProcessName(configured_name);
         target.by_name = true;
-        wprintf(L"%ls[+]%ls Waiting for %ls... (Press Q to quit)\n", kGreen, kReset, target.requested_name.c_str());
+        HANDLE probeInput = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD probeMode = 0;
+        const bool hasConsoleForWait = probeInput && probeInput != INVALID_HANDLE_VALUE &&
+            GetConsoleMode(probeInput, &probeMode) != FALSE;
+        if (hasConsoleForWait)
+        {
+            wprintf(L"%ls[+]%ls Waiting for %ls... (Press Q to quit)\n", kGreen, kReset, target.requested_name.c_str());
+        }
         for (;;)
         {
             const DWORD found = FindProcess(target.requested_name);
             if (found && QueryProcess(found, target.name, target.architecture))
             {
                 target.pid = found;
-                wprintf(L"%ls[+]%ls %ls detected | PID: %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                if (hasConsoleForWait)
+                {
+                    wprintf(L"%ls[+]%ls %ls detected | PID: %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                }
                 return true;
             }
 
+            if (!hasConsoleForWait)
+            {
+                // Headless WINDOWS build: no console input exists, so wait
+                // without a cancel key. Cancellation is served by the
+                // layered confirmation gates before and after this wait.
+                Sleep(100);
+                continue;
+            }
             HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
             const DWORD input_wait = (input && input != INVALID_HANDLE_VALUE) ? WaitForSingleObject(input, 50) : WAIT_TIMEOUT;
             if (input_wait == WAIT_OBJECT_0)
@@ -5299,16 +6499,10 @@ LUID luid{};
 
     int RunInteractiveWizard(Runtime & runtime)
     {
-
-        {
-            ULONGLONG tick = GetTickCount64();
-            tick ^= tick >> 29;
-            tick *= 0xBF58476D1CE4E5B9ull;
-            tick ^= tick >> 32;
-            wchar_t title[16] = { 0 };
-            swprintf_s(title, L"%08X", static_cast<unsigned int>(tick & 0xFFFFFFFFu));
-            SetConsoleTitleW(title);
-        }
+        // WINDOWS subsystem: never allocate or title a console. The previous
+        // random console title is dropped; headless runs have no console.
+        (void)runtime;
+        wprintf(L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
 
         WizardConfig config;
         std::wstring config_path;
@@ -5372,7 +6566,8 @@ LUID luid{};
         {
             PrintRuntimeFailure(symbol_state, import_state, init_state);
             PauseBeforeExit();
-            return 1;
+            // Transient (network/symbol timeout): fresh-process retryable.
+            return kResultRetryable;
         }
         wprintf(L"%ls[+]%ls Download completed.\n\n", kGreen, kReset);
 
@@ -5436,7 +6631,8 @@ LUID luid{};
         {
             PrintError(L"Target exited before loading. Re-run and choose faster.");
             PauseBeforeExit();
-            return 1;
+            // Transient race (target restarted between select and load).
+            return kResultRetryable;
         }
 
         if (target.architecture == Architecture::X86)
@@ -5649,7 +6845,9 @@ LUID luid{};
             threadSponsorGuard.reset();
             sponsorGuard.reset();
             PauseBeforeExit();
-            return 1;
+            // Injection miss (busy donor, contested thread): retryable once
+            // as a fresh renamed process with a fresh spoofed parent.
+            return kResultRetryable;
         }
 
         threadSponsorGuard.reset();
@@ -5796,13 +6994,63 @@ LUID luid{};
     }
 }
 
-int wmain()
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, int showCmd)
 {
+    (void)instance;
+    (void)prevInstance;
+    (void)cmdShow;
+    (void)showCmd;
+    // WINDOWS subsystem: no console is ever allocated. All operator prompts
+    // are served through a layered window; stdout/stderr handles are null.
     EnableAnsi();
+
+    // Extract the unrenamed parent image path for best-effort cleanup after
+    // the polymorphic rename. Quoted form: --ameger-parent-path="C:\...".
+    std::wstring parentHint;
+    {
+        const std::wstring cmd = GetCommandLineW();
+        const size_t pos = cmd.find(kParentPathMarker);
+        if (pos != std::wstring::npos)
+        {
+            size_t start = pos + wcslen(kParentPathMarker);
+            if (start < cmd.size() && cmd[start] == L'"')
+            {
+                ++start;
+                const size_t end = cmd.find(L'"', start);
+                if (end != std::wstring::npos && end > start)
+                {
+                    parentHint = cmd.substr(start, end - start);
+                }
+            }
+            else
+            {
+                size_t end = start;
+                while (end < cmd.size() && cmd[end] != L' ' && cmd[end] != L'\t')
+                {
+                    ++end;
+                }
+                if (end > start)
+                {
+                    parentHint = cmd.substr(start, end - start);
+                }
+            }
+        }
+    }
+
+    // Polymorphic stub: randomize the on-disk filename before main logic.
+    // The unrenamed parent exits here; only the renamed child continues.
+    if (!PolymorphicSelfRename(parentHint))
+    {
+        return 0;
+    }
+
+    const int retryIndex = GetRetryIndex();
     Runtime runtime;
     int result = 1;
     try
     {
+        // Single attempt per process. A second attempt never reuses this
+        // process; it is spawned fresh below with a new name and parent.
         result = RunInteractiveWizard(runtime);
     }
     catch (const std::bad_alloc &)
@@ -5813,11 +7061,40 @@ int wmain()
     }
     if (runtime.module)
     {
-
         if (runtime.shutdown_runtime)
         {
             runtime.shutdown_runtime();
         }
+        runtime.module = nullptr;
+    }
+
+    // Transient-only bounded retry. Cancellation (0) and deterministic
+    // failures (1/2) exit here with the full log on the clipboard; only a
+    // transient miss (3) spawns a fresh renamed process with a fresh parent.
+    if (result == kResultRetryable && retryIndex + 1 < kMaxLaunchAttempts)
+    {
+        const int nextRetry = retryIndex + 1;
+        if (SpawnFreshRetryProcess(nextRetry))
+        {
+            // Handed off to the fresh child; this process must not run again
+            // and must not touch the clipboard (the child owns the final log).
+            TerminateInterface(result);
+        }
+        // Spawn failed: fall through and report this attempt's result.
+    }
+
+    // Single brief clipboard ownership, no window: the entire captured CLI
+    // log (ANSI stripped) is left on the clipboard for paste-out.
+    ameger_ui_log::CopyToClipboardStealthily();
+
+    if (result == kResultRetryable && retryIndex + 1 >= kMaxLaunchAttempts)
+    {
+        LayeredNotify(L"Launcher", L"Operation failed after 3 attempts. The full log is on your clipboard.", 5000);
+        result = 1;
+    }
+
+    if (runtime.module)
+    {
         TerminateInterface(result);
     }
     return result;
