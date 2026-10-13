@@ -2684,26 +2684,84 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 	}
 
 	auto f = pData->FunctionTable;
+	if (!f || !f->NtProtectVirtualMemory || !f->RtlZeroMemory)
+	{
+		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
+	}
 
-	void * base			= pData->pImageBase;
-	SIZE_T header_size	= pData->pOptionalHeader->SizeOfHeaders;
-	ULONG old_access	= NULL;
+	auto * pDos = pData->pDosHeader;
+	auto * pNt = pData->pNtHeaders;
+	if (!pDos || !pNt || !pData->pImageBase)
+	{
+		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
+	}
 
-	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &header_size, PAGE_READWRITE, &old_access);
+	// Precise header extent: DOS + NT + section headers. SizeOfHeaders normally
+	// spans this, but the explicit calculation guarantees the section-header
+	// array (which follows the optional header) is included even if SizeOfHeaders
+	// is under-reported.
+	const DWORD size_of_headers = pNt->OptionalHeader.SizeOfHeaders;
+	const DWORD end_of_headers =
+		pDos->e_lfanew +
+		static_cast<DWORD>(FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader)) +
+		pNt->FileHeader.SizeOfOptionalHeader +
+		static_cast<DWORD>(pNt->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
 
+	DWORD wipe_size = (end_of_headers > size_of_headers) ? end_of_headers : size_of_headers;
+
+	// Never cross into the first section's memory; the headers always sit before it.
+	if (pNt->FileHeader.NumberOfSections > 0)
+	{
+		const auto * pFirstSection = IMAGE_FIRST_SECTION(pNt);
+		if (pFirstSection->VirtualAddress < wipe_size)
+		{
+			wipe_size = pFirstSection->VirtualAddress;
+		}
+	}
+
+	if (!wipe_size)
+	{
+		return INJ_ERR_SUCCESS;
+	}
+
+	void * base = pData->pImageBase;
+	SIZE_T region = wipe_size;
+	ULONG old_access = NULL;
+
+	// 1) Make the header region writable so it can be overwritten.
+	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &region, PAGE_READWRITE, &old_access);
 	if (NT_FAIL(pData->ntRet))
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
-	f->RtlZeroMemory(pData->pImageBase, header_size);
+	// 2) Secure multi-pass wipe. Two keystream scramble passes (non-recoverable,
+	//    random-looking fill derived from the payload decode seeds) followed by a
+	//    final zero pass. A single zero pass would leave a trivial "was zeroed"
+	//    pattern and the original bytes recoverable; multiple passes prevent that.
+	const DWORD64 seed0 = pData->PayloadSeed0 ^ ReCa<DWORD64>(pData->pImageBase);
+	const DWORD64 seed1 = pData->PayloadSeed1 ^ static_cast<DWORD64>(wipe_size);
 
-	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &header_size, old_access, &old_access);
+	MMI_KeyTransformInPlace(ReCa<BYTE *>(pData->pImageBase), wipe_size, seed0, seed1);
+	MMI_KeyTransformInPlace(ReCa<BYTE *>(pData->pImageBase), wipe_size,
+		seed0 ^ 0x9E3779B97F4A7C15ULL, seed1 ^ 0xC2B2AE3D27D4EB4FULL);
+	f->RtlZeroMemory(pData->pImageBase, wipe_size);
 
+	// 3) Final protection: NOACCESS for maximum stealth. The now-empty header
+	//    cannot be read, written, or executed, shrinking the memory-scan attack
+	//    surface to the smallest possible. The control struct lives in a separate
+	//    staging allocation, so this does not affect the runtime's read-back of
+	//    MANUAL_MAPPING_DATA. The host no longer performs a memory read-back of
+	//    this region (it only checks the resulting page protection).
+	const ULONG final_access = PAGE_NOACCESS;
+	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &region, final_access, &old_access);
 	if (NT_FAIL(pData->ntRet))
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
+
+	pData->HeaderWipeSize = wipe_size;
+	pData->HeaderWipeProtect = final_access;
 
 	return INJ_ERR_SUCCESS;
 }

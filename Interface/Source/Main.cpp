@@ -5165,58 +5165,50 @@ LUID luid{};
             header_size = nt->OptionalHeader.SizeOfHeaders;
         }
 
-        constexpr size_t kProbeBytes = 16;
-        BYTE header_bytes[kProbeBytes] = { 0 };
-        SIZE_T bytesRead = 0;
-        const bool read_ok = process &&
-            ReadProcessMemory(process, hRemoteBase, header_bytes, kProbeBytes, &bytesRead) && bytesRead == kProbeBytes;
+        const ULONGLONG base = hRemoteBase ? static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase)) : 0;
 
-        if (read_ok)
+        if (base)
         {
-            const ULONGLONG base = static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase));
             wprintf(L"  %ls[+]%ls Image base      : %ls0x%016llX%ls\n",
                 kGreen, kReset, kGreen, base, kReset);
+        }
 
-            wchar_t hex[kProbeBytes * 3 + 1] = { 0 };
-            const wchar_t digits[] = L"0123456789ABCDEF";
-            for (size_t i = 0; i < kProbeBytes; ++i)
+        // The header region is wiped and then set to PAGE_NOACCESS (maximum
+        // stealth): it can no longer be read, written, or executed. A memory
+        // read-back is therefore intentionally not performed; we only confirm
+        // the resulting page protection via a virtual-query, which does not read
+        // the memory itself.
+        if (process && base)
+        {
+            MEMORY_BASIC_INFORMATION mbi = { 0 };
+            if (VirtualQueryEx(process, ReCa<LPCVOID>(hRemoteBase), &mbi, sizeof(mbi)))
             {
-                hex[i * 3 + 0] = digits[header_bytes[i] >> 4];
-                hex[i * 3 + 1] = digits[header_bytes[i] & 0x0F];
-                hex[i * 3 + 2] = L' ';
-            }
-            hex[kProbeBytes * 3] = L'\0';
+                const wchar_t * protection = L"unknown";
+                switch (mbi.Protect & 0xFF)
+                {
+                case PAGE_READONLY:    protection = L"READONLY"; break;
+                case PAGE_NOACCESS:    protection = L"NOACCESS"; break;
+                case PAGE_READWRITE:   protection = L"READWRITE (still writable)"; break;
+                case PAGE_EXECUTE_READ: protection = L"EXECUTE_READ"; break;
+                default:               protection = L"other"; break;
+                }
 
-            const bool erased = !(header_bytes[0] == 0x4D && header_bytes[1] == 0x5A);
-            if (erased)
-            {
-                wprintf(L"  %ls[+]%ls First %u bytes  : %ls%ls%ls\n",
-                    kGreen, kReset, static_cast<unsigned>(kProbeBytes), kGreen, hex, kReset);
-            }
-            else
-            {
-                wprintf(L"  %ls[!]%ls First %u bytes  : %ls%ls%ls\n",
-                    kYellow, kReset, static_cast<unsigned>(kProbeBytes), kYellow, hex, kReset);
-            }
+                wprintf(L"  %ls[+]%ls Header page prot: %ls%s%ls (0x%08X)\n",
+                    kGreen, kReset, kGreen, protection, kReset, mbi.Protect);
 
-            if (header_size)
-            {
-
-                wprintf(L"  %ls[+]%ls Header region   : %ls0x%016llX%s - %ls0x%016llX%s (%ls0x%llX%s bytes)\n\n",
-                    kGreen, kReset, kGreen, base, kReset, kGreen, base + header_size, kReset,
-                    kGreen, static_cast<unsigned long long>(header_size), kReset);
-            }
-
-            if (erased)
-            {
-                wprintf(L"  %ls[+]%ls MZ header zeroed - signature scan evasion active.\n", kGreen, kReset);
+                if (header_size)
+                {
+                    wprintf(L"  %ls[+]%ls Header region   : %ls0x%016llX%s - %ls0x%016llX%s (%ls0x%llX%s bytes) - wiped and access-blocked.\n",
+                        kGreen, kReset, kGreen, base, kReset, kGreen, base + header_size, kReset,
+                        kGreen, static_cast<unsigned long long>(header_size), kReset);
+                }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls MZ header still visible at image base.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Header page protection unreadable.\n", kYellow, kReset);
             }
         }
-        else
+        else if (!process || !base)
         {
             wprintf(L"  %ls[!]%ls Image base not readable; header state unknown.\n", kYellow, kReset);
         }

@@ -186,6 +186,10 @@ namespace MMAP_NATIVE
 		// reporting the aggregate range error.
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
+		// PE-header erasure telemetry, written by MMI_CloakHeader for the host
+		// verification step.
+		ALIGN DWORD	HeaderWipeSize	= 0;
+		ALIGN ULONG	HeaderWipeProtect	= 0;
  	};
 }
 
