@@ -92,7 +92,21 @@ bool GetOwnModulePathW(std::wstring & out);
 
 bool GetSymbolCacheRoot(std::wstring & out);
 
-void DeleteSymbolCacheRoot(const std::wstring & root);
+// Deletes a symbol cache root previously handed back by GetSymbolCacheRoot. This is a recursive
+// delete, so the root is validated against an ownership allowlist first and the call fails closed
+// rather than removing anything outside scratch storage. Never pass the injector's own install
+// directory here.
+bool DeleteSymbolCacheRoot(const std::wstring & root);
+
+// True when "root" is a directory this library created for scratch use and therefore owns. Used by
+// the cache teardown paths to make a destructive delete impossible to point at the install folder,
+// the Windows directory, or a drive root.
+bool IsOwnedScratchRoot(const std::wstring & root);
+
+// Scratch directory name used when the per user cache location is unavailable. It is deliberately a
+// subdirectory of the install folder, never the install folder itself, so that cleaning it up can
+// never delete the runtime.
+#define AMEGER_SCRATCH_LEAF_DIR L".symbols"
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code = nullptr);
 
@@ -100,6 +114,13 @@ bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code = nullptr);
 // acquisition finds no donor. It is off by default so the fail-closed path is the shipped behaviour;
 // set INJ_ALLOW_DIRECT_FALLBACK=1 to restore the legacy direct open.
 bool AllowDirectHandleFallback();
+
+// Opt-out of the only network operation the runtime performs. By default the symbol resolver is
+// allowed to fetch the ntdll PDB from the symbol server and caches it, so the second and later runs
+// work with no connectivity at all. Set AMEGER_SYMBOL_DOWNLOAD=0 to make an uncached PDB a hard
+// error instead, which keeps the runtime from ever opening a socket on a machine that must not make
+// outbound connections.
+bool SymbolDownloadDisabled();
 
 void ErrorLog(const ERROR_INFO & info);
 

@@ -17,16 +17,8 @@ inline ASYNC_WORKER_SLOT			import_handler_ret;
 #define NT_FUNC_LOCAL(func) f_##func func
 #define NT_FUNC_CONSTRUCTOR_INIT(func) this->func = NATIVE::func
 
-#define WIN32_FUNC(func) inline decltype(func) * p##func = nullptr
-
-#define WIN32_FUNC_INIT(func, lib) NATIVE::p##func = ReCa<decltype(func) *>(GetProcAddress(lib, XOR_STR_A(#func).get()));
-
 namespace NATIVE
 {
-	WIN32_FUNC(GetModuleHandleW);
-
-	WIN32_FUNC(GetProcAddress);
-
 	NT_FUNC(LdrUnloadDll);
 
 	NT_FUNC(LdrpLoadDllInternal);

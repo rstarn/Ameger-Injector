@@ -1,5 +1,15 @@
 Build/Release/
 Build/obj/
+
+# The runtime's scratch storage. It lives under LOCALAPPDATA and is deleted on shutdown; this entry is
+# only here so a manual "install beside the source tree" layout cannot be committed by accident.
+.symbols/
+
+# Windows reserved device names are not valid on disk, but a shell redirection written as "> nul" from
+# PowerShell creates a file with that literal name that git can still see. Keep it out of the tree.
+nul
+NUL
+
 .opencode/api-keys.json
 .opencode/oc-workspace/
 .oc-workspace/

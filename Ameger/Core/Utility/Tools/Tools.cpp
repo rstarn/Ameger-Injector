@@ -317,11 +317,22 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	return true;
 }
 
-void DeleteSymbolCacheRoot(const std::wstring & root)
+bool DeleteSymbolCacheRoot(const std::wstring & root)
 {
 	if (root.empty())
 	{
-		return;
+		return false;
+	}
+
+	// A recursive delete is only ever performed on storage this library knows it created. Anything
+	// else - most importantly the injector's own install directory, which an earlier fallback used to
+	// hand over - fails closed so a teardown bug can never escalate into deleting the runtime, the
+	// payload or the launcher.
+	if (!IsOwnedScratchRoot(root))
+	{
+		LOG(1, "Refusing to delete a path that is not owned scratch storage: %ls\n", root.c_str());
+
+		return false;
 	}
 
 	std::wstring pattern = root;
@@ -389,7 +400,16 @@ void DeleteSymbolCacheRoot(const std::wstring & root)
 		FindClose(find);
 	}
 
-	RemoveDirectoryW(root.c_str());
+	// A root that is already gone is a success (the goal was that it not exist); anything still there
+	// afterwards is reported as a failure so the caller can log it.
+	if (RemoveDirectoryW(root.c_str()))
+	{
+		return true;
+	}
+
+	const DWORD remove_error = GetLastError();
+
+	return remove_error == ERROR_FILE_NOT_FOUND || remove_error == ERROR_PATH_NOT_FOUND;
 }
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
@@ -482,6 +502,201 @@ bool AllowDirectHandleFallback()
 	return allowed;
 }
 
+bool SymbolDownloadDisabled()
+{
+	static const bool disabled = []() -> bool
+	{
+		wchar_t buffer[8] = {};
+		auto env_name = XOR_STR_W(L"AMEGER_SYMBOL_DOWNLOAD");
+		const DWORD got = GetEnvironmentVariableW(env_name.get(), buffer, 4);
+		return (got == 1 && buffer[0] == L'0');
+	}();
+
+	return disabled;
+}
+
+namespace
+{
+	// A leaf name qualifies as owned scratch storage when it is either one of the random 10 character
+	// names GetSymbolCacheRoot mints, or the dedicated fallback directory. Anything else - including
+	// the install folder itself, which has a real product name - is rejected.
+	bool IsScratchLeafName(const std::wstring & leaf)
+	{
+		if (leaf.empty() || leaf.size() > 32)
+		{
+			return false;
+		}
+
+		if (leaf == AMEGER_SCRATCH_LEAF_DIR)
+		{
+			return true;
+		}
+
+		for (size_t i = 0; i < leaf.size(); ++i)
+		{
+			const wchar_t c = leaf[i];
+
+			const bool alnum =
+				(c >= L'a' && c <= L'z') ||
+				(c >= L'A' && c <= L'Z') ||
+				(c >= L'0' && c <= L'9');
+
+			if (!alnum)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	std::wstring NormalizeTrailingSeparator(std::wstring path)
+	{
+		if (path.size() >= 2 && path.back() != L'\\' && path.back() != L'/')
+		{
+			path += L'\\';
+		}
+
+		return path;
+	}
+
+	std::wstring Lowercase(const std::wstring & text)
+	{
+		std::wstring out = text;
+
+		for (size_t i = 0; i < out.size(); ++i)
+		{
+			wchar_t & c = out[i];
+			if (c >= L'A' && c <= L'Z')
+			{
+				c = static_cast<wchar_t>(c - L'A' + L'a');
+			}
+		}
+
+		return out;
+	}
+}
+
+bool IsOwnedScratchRoot(const std::wstring & root)
+{
+	if (root.empty() || root.size() < 4)
+	{
+		return false;
+	}
+
+	// Only absolute, drive rooted paths are ever deletable. A UNC path or a relative one is refused.
+	if (root[1] != L':' || (root[2] != L'\\' && root[2] != L'/'))
+	{
+		return false;
+	}
+
+	const std::wstring normalized = NormalizeTrailingSeparator(root);
+
+	const size_t drive_end = normalized.find_first_of(L"\\/", 3);
+	if (drive_end == std::wstring::npos)
+	{
+		// "<x>:\" - a drive root.
+		return false;
+	}
+
+	// Find the leaf directory name (the last non empty component).
+	std::wstring leaf;
+	for (size_t i = normalized.size() - 2; i > 0; --i)
+	{
+		const wchar_t c = normalized[i];
+		if (c == L'\\' || c == L'/')
+		{
+			break;
+		}
+
+		leaf.insert(leaf.begin(), c);
+	}
+
+	if (!IsScratchLeafName(leaf))
+	{
+		return false;
+	}
+
+	// Refuse the Windows directory and everything under it: a user profile style directory name would
+	// otherwise be indistinguishable from scratch storage.
+	std::wstring own_path;
+	{
+		wchar_t buffer[MAX_PATH * 2]{ 0 };
+		const DWORD written = GetModuleFileNameW(g_hInjMod, buffer, static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])));
+		if (written && written < sizeof(buffer) / sizeof(buffer[0]))
+		{
+			const std::wstring full = buffer;
+			const size_t slash = full.find_last_of(L"\\/");
+			own_path = slash == std::wstring::npos ? std::wstring() : NormalizeTrailingSeparator(full.substr(0, slash));
+		}
+	}
+
+	const std::wstring lower_root = Lowercase(normalized);
+
+	const std::wstring windows_dir = []() -> std::wstring
+	{
+		wchar_t buffer[MAX_PATH]{ 0 };
+		const DWORD length = GetWindowsDirectoryW(buffer, static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])));
+		if (!length || length >= sizeof(buffer) / sizeof(buffer[0]))
+		{
+			return std::wstring();
+		}
+
+		return Lowercase(NormalizeTrailingSeparator(std::wstring(buffer, length)));
+	}();
+
+	if (!windows_dir.empty())
+	{
+		if (lower_root == windows_dir || lower_root.compare(0, windows_dir.size(), windows_dir) == 0)
+		{
+			return false;
+		}
+	}
+
+	// The scratch directory may live inside the install folder, but it must never BE the install
+	// folder: deleting that would remove the runtime, the payload and the launcher.
+	if (!own_path.empty())
+	{
+		const std::wstring lower_own = Lowercase(own_path);
+
+		if (lower_root == lower_own)
+		{
+			return false;
+		}
+
+		const bool nested = lower_root.compare(0, lower_own.size(), lower_own) == 0;
+		if (nested)
+		{
+			// Every path segment between the install folder and the leaf must itself be an owned
+			// scratch name, so a deep path such as "<install>\Anything\.symbols" is still rejected.
+			std::wstring remainder = lower_root.substr(lower_own.size());
+			if (!remainder.empty() && (remainder.front() == L'\\' || remainder.front() == L'/'))
+			{
+				remainder.erase(remainder.begin());
+			}
+
+			size_t first = 0;
+			for (;;)
+			{
+				const size_t next = remainder.find_first_of(L"\\/", first);
+				if (next == std::wstring::npos)
+				{
+					break;
+				}
+
+				if (!IsScratchLeafName(remainder.substr(first, next - first)))
+				{
+					return false;
+				}
+
+				first = next + 1;
+			}
+		}
+	}
+
+	return true;
+}
+
 namespace
 {
 	constexpr size_t kErrorRingCapacity = 16;
@@ -544,6 +759,8 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 		return INJ_ERR_NO_DATA;
 	}
 
+	*Out = LAST_ERROR_INFO{};
+
 	ERROR_RING_RECORD snapshot{};
 	bool have_record = false;
 
@@ -559,7 +776,10 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 
 	if (!have_record)
 	{
-		return INJ_ERR_NOT_IMPLEMENTED;
+		// An empty ring is not a successful error report, so it returns its own code rather than
+		// succeeding. The caller distinguishes "nothing went wrong" from "here is what went wrong"
+		// without having to read the output struct to find out.
+		return INJ_ERR_NO_LAST_ERROR;
 	}
 
 	*Out = LAST_ERROR_INFO{};
@@ -572,6 +792,23 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 
 	wcsncpy_s(Out->DllFileName, _countof(Out->DllFileName), snapshot.DllFileName, _TRUNCATE);
 	wcsncpy_s(Out->TargetProcessExeFileName, _countof(Out->TargetProcessExeFileName), snapshot.TargetProcessExeFileName, _TRUNCATE);
+
+	return INJ_ERR_SUCCESS;
+}
+
+DWORD __stdcall ClearLastErrorInfo()
+{
+#pragma EXPORT_FUNCTION("CoreClearLastError", __FUNCDNAME__)
+
+	AcquireSRWLockExclusive(&g_ErrorLogLock);
+	for (size_t i = 0; i < kErrorRingCapacity; ++i)
+	{
+		g_ErrorRing[i] = ERROR_RING_RECORD{};
+	}
+
+	g_ErrorRingHead = 0;
+	g_ErrorRingCount = 0;
+	ReleaseSRWLockExclusive(&g_ErrorLogLock);
 
 	return INJ_ERR_SUCCESS;
 }

@@ -634,16 +634,63 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
 
-	const size_t pre_shellcode_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
-	const size_t pre_state_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
-	const size_t pre_data_size = pre_shellcode_size > pre_state_offset ? pre_shellcode_size - pre_state_offset : 0;
-	std::vector<BYTE> shellcode(pre_shellcode_size);
+	// Every offset used below is derived once, from the exported assembler labels, and validated before
+	// a single byte is written. Deriving them in two places (once to size the buffers, once to place
+	// the fields) is how the two sets drift apart.
+	const ULONG_PTR shellcode_begin = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin);
+	const ULONG_PTR shellcode_end = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd);
+
+	const size_t shellcode_size = static_cast<size_t>(shellcode_end - shellcode_begin);
+	if (!shellcode_size || shellcode_size > kWxCodePage)
+	{
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+
+		return SR_HT_ERR_STUB_PATCH_FAIL;
+	}
+
+	const size_t state_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - shellcode_begin);
+	const size_t return_target_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadReturnTarget) - shellcode_begin);
+	const size_t state_area_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadState));
+
+	// The return target has to live inside the state area, behind the FP save area, and the state area
+	// has to carry the routine descriptor. Both bounds are checked on both sides: the upper bound is
+	// what the size assert already covers, but a return target that appears *before* RemoteThreadState
+	// would make the state offset below wrap around into the code page and overwrite live shellcode
+	// bytes with the restored RIP. A changed assembler layout has to fail closed here.
+	if (return_target_offset < state_offset ||
+		return_target_offset + sizeof(ULONG_PTR) > shellcode_size ||
+		state_offset + sizeof(SR_REMOTE_DATA) > shellcode_size ||
+		state_area_size < SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR))
+	{
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+
+		LOG(2, "Shellcode state layout rejected (code=%llx state=%llx return=%llx area=%llx)\n",
+			static_cast<unsigned long long>(shellcode_size),
+			static_cast<unsigned long long>(state_offset),
+			static_cast<unsigned long long>(return_target_offset),
+			static_cast<unsigned long long>(state_area_size));
+
+		return SR_HT_ERR_STUB_PATCH_FAIL;
+	}
+
+	const size_t code_size = state_offset;
+	const size_t data_size = shellcode_size - state_offset;
+	const size_t pad = kWxCodePage - code_size;
+	if (code_size >= kWxCodePage || data_size > kWxCodePage)
+	{
+		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+
+		return SR_HT_ERR_STUB_PATCH_FAIL;
+	}
+
+	std::vector<BYTE> shellcode(shellcode_size);
+	memcpy(shellcode.data(), RemoteThreadHijackBegin, shellcode_size);
 
 	// The pad behind the stub is filled with zeroes rather than breakpoints. An executable page carrying
 	// a long unbroken run of 0xCC is the signature of a breakpoint trampoline, which is precisely the
 	// construct an anti-cheat that emulates INT3 inside its own vectored handler looks for. Zeroed tail
 	// is what a normally allocated and partially written page looks like.
-	std::vector<BYTE> staged(kWxCodePage + pre_data_size, 0x00);
+	std::vector<BYTE> staged(kWxCodePage + data_size, 0x00);
 
 	void * pMem = ScAllocateMemory(hTargetProc, kWxAllocSize, PAGE_READWRITE);
 	if (!pMem)
@@ -661,40 +708,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			ScrubRemoteRegion(hTargetProc, pMem, kWxAllocSize, kScrubChunk);
 		}
 	});
-
-	const ULONG_PTR shellcode_begin = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin);
-	const ULONG_PTR shellcode_end = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd);
-	const size_t shellcode_size = static_cast<size_t>(shellcode_end - shellcode_begin);
-	if (!shellcode_size || shellcode_size > 0x1000)
-	{
-		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-		return SR_HT_ERR_CANT_ALLOC_MEM;
-	}
-
-	memcpy(shellcode.data(), RemoteThreadHijackBegin, shellcode_size);
-
-	const size_t return_target_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadReturnTarget) - shellcode_begin);
-	const size_t state_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - shellcode_begin);
-
-	const size_t state_area_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadState));
-	if (return_target_offset + sizeof(ULONG_PTR) > shellcode_size || state_offset + sizeof(SR_REMOTE_DATA) > shellcode_size ||
-		state_area_size < SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR))
-	{
-		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-		return SR_HT_ERR_CANT_ALLOC_MEM;
-	}
-
-	const size_t code_size = state_offset;
-	const size_t data_size = shellcode_size - state_offset;
-	const size_t pad = kWxCodePage - code_size;
-	if (code_size >= kWxCodePage || data_size > kWxCodePage)
-	{
-		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-		return SR_HT_ERR_CANT_ALLOC_MEM;
-	}
 
 	memcpy(staged.data(), shellcode.data(), code_size);
 	memcpy(staged.data() + kWxCodePage, shellcode.data() + state_offset, data_size);

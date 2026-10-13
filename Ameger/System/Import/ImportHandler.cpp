@@ -61,6 +61,10 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 {
 	LOG(1, "ResolveImports called\n");
 
+	// Counters describe one resolution pass, so a retry starts from a clean slate instead of reporting
+	// the previous attempt's declarations alongside the current attempt's results.
+	g_string_stats = STRING_STATS{};
+
 	DWORD err = ERROR_SUCCESS;
 	if (!GetOSVersion(&err))
 	{
@@ -106,18 +110,11 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		return INJ_ERR_KERNEL32_MISSING;
 	}
 
-	WIN32_FUNC_INIT(GetModuleHandleW, hK32);
-
-	WIN32_FUNC_INIT(GetProcAddress, hK32);
-
-	if (!NATIVE::pGetModuleHandleW || !NATIVE::pGetProcAddress)
-	{
-		INIT_ERROR_DATA(error_data, GetLastError());
-
-		LOG(1, "GetProcAddress failed: %08X\n", error_data.AdvErrorCode);
-
-		return INJ_ERR_GET_PROC_ADDRESS_FAIL;
-	}
+	// kernel32 is pinned only so that its absence is reported as its own failure rather than surfacing
+	// later as a null GetProcAddress result. Every native routine the runtime needs is resolved below
+	// by RVA out of the ntdll symbols, never by name through a public export, so nothing here is looked
+	// up through kernel32 and no kernel32 pointer is cached.
+	(void)hK32;
 
 	LOG(1, "Waiting for native symbol parser to finish initialization\n");
 

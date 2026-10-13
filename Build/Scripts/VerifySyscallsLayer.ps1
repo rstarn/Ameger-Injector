@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Stub", "Payload", "Stealth")]
+    [ValidateSet("Stub", "Payload", "Stealth", "MmapSections")]
     [string]$Check,
 
     [Parameter(Mandatory = $true)]
@@ -137,6 +137,94 @@ if ($Check -eq "Stealth") {
     Write-Ok ("W^X protect sequences present (rx=" + $rx + " noaccess=" + $na + " rwx=" + $rwx + ")")
 
     Write-Host ("  " + (Get-Painted $script:C_Dim "static verification only; live properties are checked by the runtime verify tool"))
+}
+
+if ($Check -eq "MmapSections") {
+    # The remote mapping shell lives in code_seg(".mmap_sec$01" .. ".mmap_sec$14"). The C++ side
+    # computes ShellSize as (MMAP_SEC_END - ManualMapping_Shell) and copies that whole span into the
+    # target in one WriteProcessMemory, which is only correct when the linker has merged every "$"
+    # suffixed part of the section into ONE contiguous block. If it emitted them separately, the span
+    # would span padding (or an unrelated section) and the staged image would contain whatever the
+    # linker placed between the parts - which still passes every byte-pattern check below.
+    #
+    # So this check reads the section table directly: it requires exactly one section whose name is the
+    # ".mmap_sec" base, which is what a successful merge leaves behind. Any leftover per-part sections
+    # ("$01", "$02", ... appear verbatim in the name field) mean the merge did not happen.
+    if ($data.Length -lt 64 -or $data[0] -ne 0x4D -or $data[1] -ne 0x5A) {
+        Write-Fail "not an MZ image"
+        exit 1
+    }
+
+    $e = [BitConverter]::ToInt32($data, 0x3C)
+    if ($e -le 0 -or ($e + 24) -gt $data.Length) { Write-Fail "bad e_lfanew"; exit 1 }
+    if ([BitConverter]::ToUInt32($data, $e) -ne 0x00004550) { Write-Fail "not PE"; exit 1 }
+
+    $coff = $e + 4
+    $nsec = [BitConverter]::ToUInt16($data, $coff + 2)
+    $optSize = [BitConverter]::ToUInt16($data, $coff + 16)
+    $opt = $e + 24
+    if ($nsec -le 0 -or $nsec -gt 96) { Write-Fail "bad section count"; exit 1 }
+    if ([BitConverter]::ToUInt16($data, $opt) -ne 0x20B) { Write-Fail "not PE32+"; exit 1 }
+
+    $secBase = $opt + $optSize
+    $names = New-Object System.Collections.ArrayList
+    $chars = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $nsec; $i++) {
+        $o = $secBase + (40 * $i)
+        $name = ""
+        for ($k = 0; $k -lt 8; $k++) {
+            $c = $data[$o + $k]
+            if ($c -eq 0) { break }
+            $name += [char]$c
+        }
+        [void]$names.Add($name)
+        [void]$chars.Add([PSCustomObject]@{ Index = $i; Name = $name; Offset = $o })
+    }
+
+    # The PE name field is exactly 8 bytes with no terminator, so a merged ".mmap_sec$NN" family shows
+    # up as the truncated 8-char name ".mmap_se". A successful merge therefore leaves exactly one
+    # section whose name is a prefix of ".mmap_sec"; if the linker had emitted the "$NN" parts
+    # separately, their names would still carry the "$" and the "$NN" suffix and be caught here.
+    $mmapExact = @($chars | Where-Object { $_.Name -eq ".mmap_sec" })
+    $mmapTrunc = @($chars | Where-Object { $_.Name -eq ".mmap_se" })
+
+    # Per-part leftovers: any name that still contains the "$NN" discriminator means the merge did not
+    # fully collapse. In practice the linker truncates, so this is the belt-and-braces path.
+    $dollarParts = @($chars | Where-Object { $_.Name -match "\`$" })
+
+    if ($mmapExact.Count -eq 0 -and $mmapTrunc.Count -eq 0) {
+        Write-Fail "no .mmap_sec section present at all; the remote shell was not emitted"
+        Write-Host ("      sections: " + ($names -join ", "))
+        exit 1
+    }
+
+    $mergedCount = $mmapExact.Count + $mmapTrunc.Count
+    if ($mergedCount -ne 1) {
+        Write-Fail ("expected exactly one merged .mmap_sec section, found " + $mergedCount)
+        exit 1
+    }
+
+    if ($dollarParts.Count -ne 0) {
+        Write-Fail ("per-part code_seg sections with a `$ discriminator survived the link (" + $dollarParts.Count + ")")
+        Write-Host ("      found: " + (($dollarParts | ForEach-Object { $_.Name }) -join ", "))
+        exit 1
+    }
+
+    Write-Ok ("remote mapping shell is a single merged section (" + ($mmapExact + $mmapTrunc)[0].Name + ")")
+
+    # The merged block must be executable and non writable: the shell is staged RW, written, then
+    # promoted to RX, and the dispatch table that points into it is what the trampoline calls through.
+    $entry = ($mmapExact + $mmapTrunc)[0]
+    $characteristics = [BitConverter]::ToUInt32($data, $entry.Offset + 36)
+    if (($characteristics -band 0x20000000) -eq 0) {
+        Write-Fail "merged .mmap_sec section is not executable"
+        exit 1
+    }
+    if (($characteristics -band 0x80000000) -ne 0) {
+        Write-Fail "merged .mmap_sec section is writable; W^X regression in the staged image"
+        exit 1
+    }
+    Write-Ok ("merged shell section is execute+read (characteristics 0x" + $characteristics.ToString("X8") + ")")
 }
 
 exit 0

@@ -268,6 +268,7 @@ namespace
         f_GetLastStringStats get_last_string_stats = nullptr;
         f_GetLastThreadExecStats get_last_thread_exec_stats = nullptr;
         f_GetLastErrorInfo get_last_error_info = nullptr;
+        f_ClearLastErrorInfo clear_last_error_info = nullptr;
     };
 
     bool ReadFileBytes(const std::wstring & path, std::vector<BYTE> & bytes);
@@ -616,11 +617,16 @@ LUID luid{};
 
     // The thread picker walks the buffers NtQuerySystemInformation fills with the shared
     // SYSTEM_PROCESS_INFORMATION / SYSTEM_THREAD_INFORMATION definitions from NTDefinitions.h rather
-    // than a private mirror. The layout invariants the walk relies on are asserted once here.
+    // than a private mirror. The layout invariants the walk relies on are asserted once here. The
+    // element size matters: the Threads[] array inside SYSTEM_PROCESS_INFORMATION is indexed by it, so
+    // a wrong stride reads every thread after the first from a misaligned address, and WaitReason has
+    // to be read at +0x48 rather than at +0x45 (byte 1 of ThreadState) or it is never non zero.
     static_assert(sizeof(UNICODE_STRING) == 16);
     static_assert(sizeof(CLIENT_ID) == 16);
+    static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ClientId) == 40);
     static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ThreadState) == 68);
-    static_assert(sizeof(SYSTEM_THREAD_INFORMATION) == 72);
+    static_assert(offsetof(SYSTEM_THREAD_INFORMATION, WaitReason) == 72);
+    static_assert(sizeof(SYSTEM_THREAD_INFORMATION) == 80);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
@@ -1640,6 +1646,14 @@ LUID luid{};
                     return GetProcAddress(runtime.module, mapped->c_str());
                 };
 
+                // Optional export lookup: present when the runtime is new enough, absent otherwise. A
+                // missing entry never fails the load, it only drops the capability.
+                auto resolve_optional_export = [&](const char * old_name) -> FARPROC
+                {
+                    const std::string * mapped = FindMappedExportName(config.export_map, old_name);
+                    return mapped ? GetProcAddress(runtime.module, mapped->c_str()) : nullptr;
+                };
+
                 auto exp_mem = XOR_STR_A("CoreExecute");
                 runtime.memory_inject = reinterpret_cast<f_Memory_Inject>(resolve_export(exp_mem.get()));
                 auto exp_sym = XOR_STR_A("CoreSymbolState");
@@ -1665,6 +1679,13 @@ LUID luid{};
 
                 auto exp_err = XOR_STR_A("CoreLastError");
                 runtime.get_last_error_info = reinterpret_cast<f_GetLastErrorInfo>(resolve_export(exp_err.get()));
+
+                // Optional: a runtime built before the diagnostic ring gained a reset entry. It is
+                // looked up but never required, so an older runtime still loads and only loses the
+                // ability to clear a stale record between runs.
+                auto exp_clear_err = XOR_STR_A("CoreClearLastError");
+                runtime.clear_last_error_info = reinterpret_cast<f_ClearLastErrorInfo>(resolve_optional_export(exp_clear_err.get()));
+
                 if (runtime.set_raw_print_callback)
                 {
                     runtime.set_raw_print_callback(QuietPrint);
@@ -2177,6 +2198,77 @@ LUID luid{};
 
         if (VerboseOutputEnabled()) { wprintf(L"Verified SHA-256: %ls%ls%ls\n", kGreen, sha256.c_str(), kReset); }
         return true;
+    }
+
+    // Pre-flight capability report. A payload whose exports are erased by INJ_MM_CLEAN_DATA_DIR can no
+    // longer be resolved by name, which silently breaks any caller that intends to look its entry point up
+    // after the load. Erasing exports is deliberate anti-fingerprinting, so this is reported rather than
+    // treated as fatal.
+    void ReportPayloadCapabilities(const std::vector<BYTE> & payload, DWORD flags)
+    {
+        if (payload.size() < sizeof(IMAGE_DOS_HEADER))
+        {
+            return;
+        }
+
+        IMAGE_DOS_HEADER dos{};
+        std::memcpy(&dos, payload.data(), sizeof(dos));
+        if (dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0)
+        {
+            return;
+        }
+
+        const size_t nt_offset = static_cast<size_t>(dos.e_lfanew);
+        if (nt_offset > payload.size() || payload.size() - nt_offset < sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER))
+        {
+            return;
+        }
+
+        IMAGE_FILE_HEADER file_header{};
+        std::memcpy(&file_header, payload.data() + nt_offset + sizeof(DWORD), sizeof(file_header));
+
+        const size_t optional_offset = nt_offset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+        if (file_header.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) ||
+            optional_offset > payload.size() ||
+            file_header.SizeOfOptionalHeader > payload.size() - optional_offset)
+        {
+            return;
+        }
+
+        IMAGE_OPTIONAL_HEADER64 optional{};
+        std::memcpy(&optional, payload.data() + optional_offset, sizeof(optional));
+        if (optional.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        {
+            return;
+        }
+
+        auto directory_at = [&](DWORD index, IMAGE_DATA_DIRECTORY & out) -> bool
+        {
+            if (index >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES)
+            {
+                return false;
+            }
+
+            const size_t offset = offsetof(IMAGE_OPTIONAL_HEADER64, DataDirectory) + static_cast<size_t>(index) * sizeof(IMAGE_DATA_DIRECTORY);
+            if (offset + sizeof(IMAGE_DATA_DIRECTORY) > file_header.SizeOfOptionalHeader)
+            {
+                return false;
+            }
+
+            std::memcpy(&out, payload.data() + optional_offset + offset, sizeof(out));
+
+            return true;
+        };
+
+        IMAGE_DATA_DIRECTORY exports{};
+        const bool has_exports = directory_at(IMAGE_DIRECTORY_ENTRY_EXPORT, exports) && exports.Size != 0;
+
+        if (has_exports && (flags & INJ_MM_CLEAN_DATA_DIR) != 0)
+        {
+            wprintf(L"  %ls[*]%ls CleanDataDirectories is on; the payload's export directory is erased during the load.\n",
+                kDim, kReset);
+            wprintf(L"      Anything that resolves this payload by export name afterwards will fail.\n");
+        }
     }
 
     DWORD BuildFlags(const WizardConfig & config)
@@ -5262,12 +5354,15 @@ LUID luid{};
         wprintf(L"\n");
         std::vector<BYTE> raw_data;
         FileInformation fileInformation;
+        const DWORD preflight_flags = BuildFlags(config);
         if (!ResolveConfiguredPayload(config.dll_dir, config.payload_name, config.expected_payload_sha256,
-            BuildFlags(config), fileInformation, raw_data))
+            preflight_flags, fileInformation, raw_data))
         {
             PauseBeforeExit();
             return 1;
         }
+
+        ReportPayloadCapabilities(raw_data, preflight_flags);
 
         wprintf(L"\n%ls[+]%ls Downloading Windows symbols...\n", kGreen, kReset);
         DWORD symbol_state = INJ_ERR_SYMBOL_INIT_NOT_DONE;
@@ -5502,6 +5597,14 @@ LUID luid{};
         }
 
         const ULONGLONG inject_begin_ms = GetTickCount64();
+
+        // The diagnostic ring lives in the host process, so a record from an earlier attempt would be
+        // attributed to this one. Clearing first makes the detail that comes back describe this run.
+        if (runtime.clear_last_error_info)
+        {
+            runtime.clear_last_error_info();
+        }
+
         const DWORD result = runtime.memory_inject(&data);
         const ULONGLONG inject_window_ms = GetTickCount64() - inject_begin_ms;
 
@@ -5513,7 +5616,13 @@ LUID luid{};
             if (runtime.get_last_error_info)
             {
                 LAST_ERROR_INFO detail{};
-                if (runtime.get_last_error_info(&detail) == INJ_ERR_SUCCESS)
+                const DWORD detail_status = runtime.get_last_error_info(&detail);
+
+                if (detail_status == INJ_ERR_NO_LAST_ERROR)
+                {
+                    wprintf(L"  Runtime recorded no diagnostic detail for this attempt.\n");
+                }
+                else if (detail_status == INJ_ERR_SUCCESS)
                 {
                     wprintf(L"  Runtime detail: adv=%08X line=%d native=%d\n",
                         detail.AdvErrorCode, detail.Line, detail.bNative);

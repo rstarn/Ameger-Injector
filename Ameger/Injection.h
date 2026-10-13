@@ -66,7 +66,12 @@ struct LAST_ERROR_INFO
 static_assert(sizeof(LAST_ERROR_INFO) % 4 == 0, "LAST_ERROR_INFO must stay 4-byte aligned");
 
 using f_GetLastErrorInfo = DWORD(__stdcall *)(LAST_ERROR_INFO * Out);
+using f_ClearLastErrorInfo = DWORD(__stdcall *)();
 DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out);
+
+// Drops every record in the diagnostic ring, so a subsequent GetLastErrorInfo reports "no failure"
+// instead of re-surfacing a failure from a previous injection into the same host process.
+DWORD __stdcall ClearLastErrorInfo();
 
 DWORD __stdcall InitializeRuntime();
 DWORD __stdcall ShutdownRuntime();

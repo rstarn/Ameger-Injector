@@ -7,6 +7,23 @@
 namespace
 {
 
+	// The runtime state machine. Every transition goes through a compare exchange on this value, so a
+	// re-entrant or concurrent caller observes one of five stable states rather than a half built one.
+	//
+	// RUNTIME_STATE_FAILED and RUNTIME_STATE_SHUT_DOWN are deliberately *retryable*: a symbol download
+	// that timed out, or a launcher that shut the runtime down and then wants it back, must not leave
+	// the host process permanently unable to inject. The previous behaviour latched the failure state
+	// (and, worse, left the shut-down state behind after a no-op shutdown), which turned both into a
+	// permanent INJ_ERR_NOT_IMPLEMENTED.
+	enum : LONG
+	{
+		RUNTIME_STATE_UNINITIALIZED = 0,
+		RUNTIME_STATE_INITIALIZING = 1,
+		RUNTIME_STATE_READY = 2,
+		RUNTIME_STATE_FAILED = 3,
+		RUNTIME_STATE_SHUT_DOWN = 4
+	};
+
 	volatile LONG g_RuntimeInitializationState = 0;
 
 	void CloseEventHandle(HANDLE & handle)
@@ -33,6 +50,34 @@ namespace
 		std::wstring CacheRoot;
 	};
 
+	// Signals the workers and waits for them, then closes the events. The order matters: a worker that
+	// is still running when its event handle is closed would be signing a destroyed object, so the
+	// join always happens first. Both calls are idempotent, so this is safe at any construction depth.
+	void StopRuntimeWorkers()
+	{
+		sym_ntdll_native.Interrupt();
+
+		SetEvent(g_hInterruptEvent);
+		SetEvent(g_hInterruptImport);
+
+		JoinAsyncWorker(sym_ntdll_native_ret);
+		JoinAsyncWorker(import_handler_ret);
+	}
+
+	// Full teardown back to the uninitialized state, for a clean shutdown or a retry after a failure.
+	void TeardownRuntime()
+	{
+		StopRuntimeWorkers();
+
+		sym_ntdll_native.Cleanup();
+		sym_parser.Cleanup();
+		sym_ntdll_native.PurgePdb();
+
+		CloseRuntimeEvents();
+
+		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_UNINITIALIZED);
+	}
+
 	DWORD WINAPI SymbolWorkerEntry(void * param)
 	{
 		SymbolWorkerParams * args = static_cast<SymbolWorkerParams *>(param);
@@ -46,7 +91,7 @@ namespace
 		DWORD result = SYMBOL_ERR_DOWNLOAD_FAILED;
 		try
 		{
-			result = sym_ntdll_native.Initialize(args->ModulePath, args->CacheRoot, false, true);
+			result = sym_ntdll_native.Initialize(args->ModulePath, args->CacheRoot, false, !SymbolDownloadDisabled());
 		}
 		catch (...)
 		{
@@ -84,8 +129,15 @@ namespace
 
 	DWORD RuntimeInitializationFailed(DWORD error_code)
 	{
+		// A later step can fail after the workers are already running, so they are stopped here rather
+		// than only at the launch-failure branch below.
+		StopRuntimeWorkers();
+
 		CloseRuntimeEvents();
-		InterlockedExchange(&g_RuntimeInitializationState, 3);
+
+		// The failure state is retryable: InitializeRuntime claims it again on the next attempt instead
+		// of latching the failure for the rest of the host process's lifetime.
+		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
 
 		return error_code;
 	}
@@ -95,18 +147,17 @@ DWORD __stdcall InitializeRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStart", __FUNCDNAME__)
 
-	const LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, 1, 0);
-	if (previous_state == 2)
+	// Claim the uninitialized state. READY and INITIALIZING are reported as they are; FAILED and
+	// SHUT_DOWN fall through so a previous attempt can be retried instead of returning a permanent
+	// failure.
+	const LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
+	if (previous_state == RUNTIME_STATE_READY)
 	{
 		return INJ_ERR_SUCCESS;
 	}
-	if (previous_state == 1)
+	if (previous_state == RUNTIME_STATE_INITIALIZING)
 	{
 		return INJ_ERR_ALREADY_RUNNING;
-	}
-	if (previous_state != 0)
-	{
-		return INJ_ERR_NOT_IMPLEMENTED;
 	}
 
 	if (!GetOSVersion())
@@ -157,7 +208,18 @@ DWORD __stdcall InitializeRuntime()
 	std::wstring symbol_cache_root;
 	if (!GetSymbolCacheRoot(symbol_cache_root))
 	{
-		symbol_cache_root = g_RootPathW;
+		// The per user cache location was unavailable, so scratch storage moves into a dedicated
+		// subdirectory of the install folder. It must be a subdirectory: DeleteSymbolCacheRoot does a
+		// recursive delete, and handing it the install folder itself would take the runtime, the
+		// payload and the launcher with it.
+		symbol_cache_root = g_RootPathW + AMEGER_SCRATCH_LEAF_DIR + L"\\";
+
+		if (!CreateDirectoryW(symbol_cache_root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+		{
+			LOG(0, "Couldn't create the fallback symbol cache directory: %08X\n", GetLastError());
+
+			return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
+		}
 	}
 
 	SymbolWorkerParams * sym_params = nullptr;
@@ -182,17 +244,10 @@ DWORD __stdcall InitializeRuntime()
 
 		LOG(0, "Runtime initialization failed while launching worker threads\n");
 
-		sym_ntdll_native.Interrupt();
-		SetEvent(g_hInterruptEvent);
-		SetEvent(g_hInterruptImport);
-
-		JoinAsyncWorker(sym_ntdll_native_ret);
-		JoinAsyncWorker(import_handler_ret);
-
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_NEW);
 	}
 
-	InterlockedExchange(&g_RuntimeInitializationState, 2);
+	InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_READY);
 	LOG(0, "Runtime initialization started\n");
 
 	return INJ_ERR_SUCCESS;
@@ -202,64 +257,39 @@ DWORD __stdcall ShutdownRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStop", __FUNCDNAME__)
 
-	const LONG state = InterlockedCompareExchange(&g_RuntimeInitializationState, 1, 0);
-	if (state == 0)
-	{
-		InterlockedExchange(&g_RuntimeInitializationState, 4);
-
-		return INJ_ERR_SUCCESS;
-	}
-	if (state == 1)
-	{
-
-		return INJ_ERR_ALREADY_RUNNING;
-	}
-	if (state == 4)
+	// Read the state without publishing anything. A state of UNINITIALIZED or SHUT_DOWN is already
+	// idle, so a redundant shutdown is a no-op that leaves the state alone rather than overwriting it.
+	const LONG state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_UNINITIALIZED, RUNTIME_STATE_UNINITIALIZED);
+	if (state == RUNTIME_STATE_UNINITIALIZED || state == RUNTIME_STATE_SHUT_DOWN)
 	{
 		return INJ_ERR_SUCCESS;
 	}
-	if (state == 3)
+
+	if (state == RUNTIME_STATE_INITIALIZING)
 	{
-
-		sym_ntdll_native.Cleanup();
-		sym_parser.Cleanup();
-		sym_ntdll_native.PurgePdb();
-		CloseRuntimeEvents();
-		InterlockedExchange(&g_RuntimeInitializationState, 4);
-
-		return INJ_ERR_SUCCESS;
-	}
-	if (state != 2 || InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
-	{
-		InterlockedExchange(&g_RuntimeInitializationState, 2);
-
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
-	sym_ntdll_native.Interrupt();
-	SetEvent(g_hInterruptEvent);
-	SetEvent(g_hInterruptImport);
+	if (state == RUNTIME_STATE_READY && InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
+	{
+		// A load is in flight; leave the state to the gate owner.
+		return INJ_ERR_ALREADY_RUNNING;
+	}
 
+	// RUNTIME_STATE_READY and RUNTIME_STATE_FAILED both tear down through the same path. A failed init
+	// can leave a partially constructed worker set behind, so the teardown has to be unconditional.
 	try
 	{
-
-		JoinAsyncWorker(sym_ntdll_native_ret);
-		JoinAsyncWorker(import_handler_ret);
+		TeardownRuntime();
 	}
 	catch (...)
 	{
-		InterlockedExchange(&g_RuntimeInitializationState, 2);
+		// The runtime is left in the retryable failure state rather than wedged, so the caller can
+		// simply call InitializeRuntime again instead of the whole host being poisoned.
+		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
 
 		return INJ_ERR_INTERRUPT;
 	}
-
-	sym_ntdll_native.Cleanup();
-	sym_parser.Cleanup();
-
-	sym_ntdll_native.PurgePdb();
-	CloseRuntimeEvents();
-
-	InterlockedExchange(&g_RuntimeInitializationState, 4);
 
 	return INJ_ERR_SUCCESS;
 }

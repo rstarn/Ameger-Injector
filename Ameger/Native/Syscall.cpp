@@ -6,38 +6,60 @@
 // Syscall verbose logging (enabled via AMEGER_SYSCALL_VERBOSE=1)
 inline bool SyscallVerbose()
 {
-	static const bool verbose = []() -> bool
+    static const bool verbose = []() -> bool
+    {
+        wchar_t buffer[8] = {};
+        const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_SYSCALL_VERBOSE").get(), buffer, 4);
+        return (got == 1 && buffer[0] == L'1');
+    }();
+    return verbose;
+}
+
+// The CRT's default invalid parameter handler terminates the process. Logging is the last thing that
+// should be able to do that, so it is suppressed for the duration of the vsprintf_s below. This is a
+// no-op on a correctly formed call and only matters if a format string and its argument list ever
+// drift apart.
+namespace
+{
+	void SilencedInvalidParameter(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t) noexcept
 	{
-		wchar_t buffer[8] = {};
-		const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_SYSCALL_VERBOSE").get(), buffer, 4);
-		return (got == 1 && buffer[0] == L'1');
-	}();
-	return verbose;
+	}
 }
 
 void SyscallLog(int level, const char * fmt, ...)
 {
-	if (!SyscallVerbose() && level > 0)
-		return;
+    if (!SyscallVerbose() && level > 0)
+        return;
 
-	va_list args;
-	va_start(args, fmt);
-	char buf[1024]{ 0 };
-	vsprintf_s(buf, fmt, args);
-	va_end(args);
+    if (!fmt)
+        return;
 
-	f_raw_print_callback cb = g_print_raw_callback.load();
-	if (cb)
-	{
-		cb(buf);
-	}
-	else
-	{
-		size_t len = strlen(buf);
-		if (len > 0 && buf[len - 1] == '\n')
-			buf[len - 1] = '\0';
-		puts(buf);
-	}
+    const _invalid_parameter_handler previous_handler =
+        _set_thread_local_invalid_parameter_handler(SilencedInvalidParameter);
+
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024]{ 0 };
+    const int written = vsprintf_s(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    _set_thread_local_invalid_parameter_handler(previous_handler);
+
+    if (written <= 0)
+        return;
+
+    f_raw_print_callback cb = g_print_raw_callback.load();
+    if (cb)
+    {
+        cb(buf);
+    }
+    else
+    {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n')
+            buf[len - 1] = '\0';
+        puts(buf);
+    }
 }
 
 #define SC_LOG_OK(...)    SyscallLog(1, "\x1b[92m[+]\x1b[0m " __VA_ARGS__)
@@ -437,6 +459,13 @@ DWORD SyscallResolveAll()
 				Entry->Service = kInvalidService;
 			}
 
+			// Either a forwarded export (no code of its own) or a pointer that lands outside the mapped
+			// image. Both mean there is nothing here to read a service number out of.
+			if (Entry)
+			{
+				++oob;
+			}
+
 			continue;
 		}
 
@@ -474,7 +503,7 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	SC_LOG_INFO("Pass 1: scanned %u exports, matched %u, healthy %u, rerouted %u, OOB %u",
+	SC_LOG_INFO("Pass 1: scanned %u exports, matched %u, healthy %u, rerouted %u, unreadable %u",
 		Export->NumberOfNames, matched, healthy, rerouted, oob);
 
 	// Pass 2: reconstruct anything that could not be read directly. Service numbers on the thunks are

@@ -331,10 +331,6 @@ __forceinline NTSTATUS ScNtFreeVirtualMemory(HANDLE ProcessHandle, PVOID * BaseA
 	return Stub(ProcessHandle, BaseAddress, RegionSize, FreeType);
 }
 
-// Several of these services write their result through an optional pointer. Passing null for one of them
-// is not uniformly safe: on this platform NtProtectVirtualMemory faults rather than skipping the write,
-// so a null result pointer is substituted with a scratch local that is simply discarded. Every wrapper
-// below therefore routes its optional result pointer through this helper.
 __forceinline NTSTATUS ScNtProtectVirtualMemory(HANDLE ProcessHandle, PVOID * BaseAddress, SIZE_T * NumberOfBytesToProtect, ULONG NewAccessProtection, ULONG * OldAccessProtection)
 {
 	auto Stub = ReCa<f_ScNtProtectVirtualMemory>(SyscallStub(SC_NtProtectVirtualMemory));

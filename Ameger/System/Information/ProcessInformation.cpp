@@ -219,16 +219,18 @@ DWORD ProcessInformation::GetThreadId()
 
 bool ProcessInformation::GetThreadState(KTHREAD_STATE & state, KWAIT_REASON & reason)
 {
-		if (!m_pCurrentThread)
-		{
-			return false;
-		}
-
-		state	= m_pCurrentThread->ThreadState;
-		reason	= m_pCurrentThread->WaitReason;
-
-		return true;
+	if (!m_pCurrentThread)
+	{
+		return false;
 	}
+
+	// The kernel writes both fields as ULONGs; the enum mirrors narrow them to a byte on purpose so
+	// that a value outside the documented set is truncated rather than trusted.
+	state	= static_cast<KTHREAD_STATE>(static_cast<BYTE>(m_pCurrentThread->ThreadState));
+	reason	= static_cast<KWAIT_REASON>(static_cast<BYTE>(m_pCurrentThread->WaitReason));
+
+	return true;
+}
 
 HANDLE ProcessInformation::BorrowCurrentThreadHandle(DWORD tid) const
 {

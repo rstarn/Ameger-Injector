@@ -136,6 +136,15 @@ goto :failure
 :seeds_ready
 call :build_project "%LIBRARY_PROJ%" x64 "%DEPS_RELEASE%" "%LIBRARY64_OBJ%" "%TOOLSET_ARG%" "%SDK_ARG%" "%MUTATE_ARGS%"
 if errorlevel 1 goto :build_error
+
+REM The remote mapping shell is staged into the target as one contiguous span sized from
+REM (MMAP_SEC_END - ManualMapping_Shell), which is only correct if the linker merged every
+REM .mmap_sec$NN part into a single section. That has to be checked on the raw linker output:
+REM BuildPE.ps1 randomises every section name a few lines below, so by the end of the build the
+REM section is no longer called .mmap_sec and the check could not find it. This is the one content
+REM check that cannot be a byte scan, because an unmerged link still passes every pattern scan.
+call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
+if errorlevel 1 goto :verify_error
 echo.
 :runtime_timestamp_ready
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :runtime_mutate_ready
@@ -453,6 +462,16 @@ if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Stealth -Path "%RUNTIME_DLL%"
 exit /b %ERRORLEVEL%
 
+REM Confirms the remote mapping shell is still one contiguous, execute-read block. Takes the image
+REM path as an argument because it runs on the pre-mutation linker output, before BuildPE.ps1 has
+REM randomised the section names.
+:verify_mmap_sections
+if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
+set "MMAP_VERIFY_PATH=%~1"
+if not defined MMAP_VERIFY_PATH set "MMAP_VERIFY_PATH=%RUNTIME_DLL%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check MmapSections -Path "%MMAP_VERIFY_PATH%"
+exit /b %ERRORLEVEL%
+
 :remove_import_artifacts
 for %%F in ("%~1\*.lib" "%~1\*.exp") do if exist "%%~F" (
   del /f /q "%%~F"
@@ -680,7 +699,7 @@ echo %C_RED%ERROR: one or more expected binaries are missing.%C_RESET%
 goto :failure
 
 :verify_content_error
-echo %C_RED%ERROR: content verification failed (embedded runtime hash, config magic, deployed pin, per-build config key, or syscall/stealth layer).%C_RESET%
+echo %C_RED%ERROR: content verification failed (embedded runtime hash, config magic, deployed pin, per-build config key, syscall/stealth layer, or mmap section merge).%C_RESET%
 goto :failure
 
 :cleanup_error

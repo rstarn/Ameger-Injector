@@ -1764,6 +1764,11 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
+	// The section walk reports its own result rather than re-reading pData->ntRet at the end: an
+	// earlier stage may legitimately have left a non zero status there, and conflating the two would
+	// turn a successful protection pass into a failure (or the reverse).
+	bool section_failure = false;
+
 	auto pCurrentSectionHeader = IMAGE_FIRST_SECTION(pData->pNtHeaders);
 
 	for (UINT i = 0; i != pData->pFileHeader->NumberOfSections; ++i, ++pCurrentSectionHeader)
@@ -1803,12 +1808,13 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 			pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &pSectionBase, &SectionSize, NewProtection, &OldProtection);
 			if (NT_FAIL(pData->ntRet))
 			{
+				section_failure = true;
 				break;
 			}
 		}
 	}
 
-	if (NT_FAIL(pData->ntRet))
+	if (section_failure)
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
@@ -2074,6 +2080,12 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 
 	bool unlinked = false;
 
+	// Bookkeeping for the TLS_ENTRY that LdrpHandleTlsData allocated inside the target. The entry has
+	// to be unlinked *and* freed: unlinking alone leaves a permanent, observable allocation in the
+	// victim's loader heap, and because the fake LDR entry is detached the loader will never reclaim
+	// it on its own.
+	BYTE * pAllocatedTlsEntry = nullptr;
+
 	const bool tls_off_ok = pData->NtOffsets.TlsEntryModuleEntry + sizeof(void *) <= pData->NtOffsets.TlsEntrySize &&
 		pData->NtOffsets.TlsEntrySize >= sizeof(LIST_ENTRY) + sizeof(void *) &&
 		pData->NtOffsets.TlsEntrySize < 0x1000;
@@ -2093,6 +2105,7 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 					list_entry->Blink->Flink = list_entry->Flink;
 					list_entry->Flink->Blink = list_entry->Blink;
 					unlinked = true;
+					pAllocatedTlsEntry = entry_bytes;
 				}
 
 				break;
@@ -2100,13 +2113,29 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 		}
 	}
 
-	// The fake dependency node is owned by the entry record, so it is released once both are gone.
-	if (unlinked)
+	// The loader's TLS bookkeeping, then the fake LDR / DDAG nodes it pointed at. The last two are
+	// released unconditionally: they are only reachable through the unlinked entry, so if the unlink
+	// did not run there is nothing left to keep them alive for.
+	if (pAllocatedTlsEntry)
 	{
-		DeleteObject(f, pDummyLdr);
-		DeleteObject(f, pDdagRaw);
+		DeleteObject(f, pAllocatedTlsEntry);
+		pAllocatedTlsEntry = nullptr;
 	}
 
+	if (!unlinked)
+	{
+		LOG(1, "MMI_HandleTLS: loader TLS entry not found; released the fake nodes only\n");
+	}
+
+	DeleteObject(f, pDummyLdr);
+	DeleteObject(f, pDdagRaw);
+	pDummyLdr = nullptr;
+	pDdagRaw = nullptr;
+
+	// The loader hands out one TLS index per LdrpHandleTlsData call and there is no public way to give
+	// one back for a detached entry. That is a fixed per process budget of 64 slots (TLS_MINIMUM_
+	// AVAILABLE), which is ample for a fresh launcher process but is the real ceiling on how many
+	// times one host can map a TLS carrying payload.
 	return tls_result;
 }
 

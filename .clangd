@@ -1,10 +1,20 @@
 Diagnostics:
   UnusedIncludes: None
+
+# Include roots.
+#
+# "Ameger/" is the include root for every internal header (Core/..., NT/..., System/...,
+# Execution/..., Injection/...), and the repository root is needed so that "../../../Injection.h"
+# resolves from Ameger/Core/Utility/Header.
+#
+# clangd resolves a relative -I against its own working directory, which is not guaranteed to be the
+# repository root or its parent, so the absolute forms are listed first and are what actually resolves.
+# The relative forms are kept afterwards purely as a fallback for a checkout at a different path:
+# clangd treats a -I that names a directory which does not exist as "no such root" rather than as an
+# error, so the unused entries are harmless.
 CompileFlags:
   Add:
     - -std=c++20
-    - -ID:/Ameger/Injector/Ameger
-    - -ID:/Ameger/Injector
     - -target
     - x86_64-pc-windows-msvc
     - -fms-compatibility
@@ -14,6 +24,7 @@ CompileFlags:
     - -Wno-microsoft-enum-value
     - -Wno-microsoft-exception-spec
     - -Wno-msvc-include
+    - -Wno-delayed-template-parsing-in-cxx20
     - -DWIN32
     - -D_WIN64
     - -D_WINDOWS
@@ -22,3 +33,9 @@ CompileFlags:
     - -DNTDDI_VERSION=0x0A00000C
     - -D_WIN32_WINNT=0x0A00
     - -DNOMINMAX
+    - -ID:/Ameger/Injector/Ameger
+    - -ID:/Ameger/Injector
+    - -IAmeger
+    - -I.
+    - -IInjector/Ameger
+    - -IInjector

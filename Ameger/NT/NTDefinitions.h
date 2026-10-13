@@ -188,6 +188,12 @@ typedef struct _PROCESS_BASIC_INFORMATION
 	HANDLE		InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION, * PPROCESS_BASIC_INFORMATION;
 
+// Mirror of ntdll's SYSTEM_THREAD_INFORMATION as returned by
+// NtQuerySystemInformation(SystemProcessInformation). ThreadState and WaitReason are ULONGs, not
+// single byte enums: declaring them as UCHAR values shrinks the element from 80 to 72 bytes, which
+// silently desynchronises the Threads[] stride inside SYSTEM_PROCESS_INFORMATION (every thread
+// after the first is then read from the wrong address) and misreads WaitReason from byte 1 of
+// ThreadState. The static_asserts below are what keep the mirror honest across SDK revisions.
 typedef struct _SYSTEM_THREAD_INFORMATION
 {
 	LARGE_INTEGER	KernelTime;
@@ -199,8 +205,8 @@ typedef struct _SYSTEM_THREAD_INFORMATION
 	KPRIORITY		Priority;
 	LONG			BasePriority;
 	ULONG			ContextSwitches;
-	KTHREAD_STATE	ThreadState;
-	KWAIT_REASON	WaitReason;
+	ULONG			ThreadState;
+	ULONG			WaitReason;
 } SYSTEM_THREAD_INFORMATION, * PSYSTEM_THREAD_INFORMATION;
 
 typedef struct _SYSTEM_PROCESS_INFORMATION
@@ -403,6 +409,18 @@ static_assert(offsetof(AMEGER_PEB, CrossProcessFlags) == 80);
 static_assert(offsetof(AMEGER_PEB, TlsExpansionCounter) == 112);
 static_assert(offsetof(AMEGER_PEB, LoaderLock) == 272);
 static_assert(offsetof(AMEGER_PEB, OSBuildNumber) == 288);
+
+// Layout of the two kernel written structures the runtime walks. These are the only mirrors in
+// this header that the code indexes as an array, so their element size is load bearing: an
+// under-sized SYSTEM_THREAD_INFORMATION shifts every thread entry after the first, and an
+// under-sized SYSTEM_PROCESS_INFORMATION shifts the first entry.
+static_assert(sizeof(SYSTEM_THREAD_INFORMATION) == 80);
+static_assert(sizeof(SYSTEM_PROCESS_INFORMATION) == 0x100 + sizeof(SYSTEM_THREAD_INFORMATION));
+static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ClientId) == 40);
+static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ThreadState) == 68);
+static_assert(offsetof(SYSTEM_THREAD_INFORMATION, WaitReason) == 72);
+static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
+static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
 typedef struct _LDR_SERVICE_TAG_RECORD
 {

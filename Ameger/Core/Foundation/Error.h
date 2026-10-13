@@ -54,6 +54,11 @@
 #define INJ_ERR_WINDOWS_BUILD_UNSUPPORTED	0x0000004E
 #define INJ_ERR_HANDLE_HIJACK_FAILED		0x0000004F
 
+// Returned by GetLastErrorInfo when the diagnostic ring holds no record. Deliberately distinct from
+// INJ_ERR_SUCCESS: "no failure was recorded" is a different claim from "a failure was recorded and
+// has been reported", and conflating them makes the result of the call impossible to interpret.
+#define INJ_ERR_NO_LAST_ERROR				0x00000050
+
 #define INJ_MM_ERR_NO_DATA						0x00400001
 #define INJ_MM_ERR_HEAP_ALLOC					0x00400003
 #define INJ_MM_ERR_UPDATE_PAGE_PROTECTION		0x00400006

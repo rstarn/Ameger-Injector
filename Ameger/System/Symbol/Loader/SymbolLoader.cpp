@@ -791,25 +791,36 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		LOG(1, "SYMBOL_LOADER: fetching %ls (%lu bytes URL, GUID/age redacted)\n",
 			PdbFileName.c_str(), static_cast<unsigned long>(url.size()));
 
+		if (AutoDownload)
+		{
+			m_bStartDownload = true;
+		}
+
 		if (!m_bStartDownload)
 		{
-			LOG(1, "SYMBOL_LOADER: waiting for download start\n");
-		}
+			// The host has not granted a download yet. The grant normally arrives within milliseconds
+			// (the launcher calls CoreFetch immediately after CoreStart), but the park used to be
+			// unbounded, so a host that never grants one left the worker parked for the whole session
+			// and the caller's poll loop timed out with a misleading "not done" code. A bounded park
+			// turns that into an immediate, attributable failure.
+			constexpr DWORD kGrantWaitMs = 1500;
+			const ULONGLONG grant_deadline = GetTickCount64() + kGrantWaitMs;
 
-		while (!m_bStartDownload && !m_bInterruptEvent)
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
+			while (!m_bStartDownload && !m_bInterruptEvent && GetTickCount64() < grant_deadline)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
 
-		if (m_bInterruptEvent)
-		{
-			VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
+			if (!m_bStartDownload)
+			{
+				VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
 
-			delete[] pRawData;
+				delete[] pRawData;
 
-			LOG(1, "SYMBOL_LOADER: download interrupted\n");
+				LOG(1, "SYMBOL_LOADER: no download was granted within %lu ms\n", kGrantWaitMs);
 
-			return SYMBOL_ERR_INTERRUPT;
+				return m_bInterruptEvent ? SYMBOL_ERR_INTERRUPT : SYMBOL_ERR_DOWNLOAD_FAILED;
+			}
 		}
 
 		LOG(1, "SYMBOL_LOADER: downloading PDB\n");
@@ -996,7 +1007,11 @@ void SYMBOL_LOADER::PurgePdb()
 
 	if (!m_szRootPath.empty())
 	{
-		DeleteSymbolCacheRoot(m_szRootPath);
+		if (!DeleteSymbolCacheRoot(m_szRootPath))
+		{
+			LOG(1, "SYMBOL_LOADER: symbol cache root could not be removed\n");
+		}
+
 		m_szRootPath.clear();
 	}
 }

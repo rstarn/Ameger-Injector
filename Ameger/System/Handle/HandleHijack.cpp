@@ -72,6 +72,22 @@ namespace
 		return Status >= 0;
 	}
 
+	std::wstring LowercaseW(const std::wstring & text)
+	{
+		std::wstring out = text;
+
+		for (size_t i = 0; i < out.size(); ++i)
+		{
+			wchar_t & c = out[i];
+			if (c >= L'A' && c <= L'Z')
+			{
+				c = static_cast<wchar_t>(c - L'A' + L'a');
+			}
+		}
+
+		return out;
+	}
+
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
 		// Only the locally built syscall stubs are needed from here on. Nothing in this file resolves a
@@ -292,6 +308,61 @@ namespace
 		return false;
 	}
 
+	// How a candidate process handle is proven to actually be usable for cross process memory work.
+	//
+	//   reserve  (default) reserve and immediately release one page in the target. The strongest proof
+	//             that the handle carries PROCESS_VM_OPERATION, because only a real MEM_RESERVE in the
+	//             target answers, but every candidate leaves a transient reservation in the victim's
+	//             address space and therefore a short-lived VAD.
+	//   protect  re-protect a page the target already has committed to the protection it already
+	//             carries. Proves the same access mask without mutating the address space at all, so
+	//             a busy scan no longer churns the victim's VADs. Slightly weaker: it does not prove
+	//             the caller may commit new memory.
+	//   none     skip the probe entirely and trust the pid + image name checks alone. For callers that
+	//             already hold a verified sponsor handle.
+	enum class VM_PROBE_POLICY
+	{
+		Reserve = 0,
+		Protect = 1,
+		None = 2
+	};
+
+	VM_PROBE_POLICY GetVmProbePolicy()
+	{
+		static const VM_PROBE_POLICY policy = []() -> VM_PROBE_POLICY
+		{
+			wchar_t buffer[16]{ 0 };
+			auto env_name = XOR_STR_W(L"AMEGER_VM_PROBE");
+			const DWORD got = GetEnvironmentVariableW(env_name.get(), buffer, static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])) - 1);
+
+			if (got == 0 || got >= static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])) - 1)
+			{
+				return VM_PROBE_POLICY::Reserve;
+			}
+
+			const std::wstring value = LowercaseW(buffer);
+
+			if (value == L"protect")
+			{
+				return VM_PROBE_POLICY::Protect;
+			}
+
+			if (value == L"none")
+			{
+				return VM_PROBE_POLICY::None;
+			}
+
+			if (value != L"reserve")
+			{
+				LOG(1, "HandleAcq: unknown AMEGER_VM_PROBE value, using the default (reserve)\n");
+			}
+
+			return VM_PROBE_POLICY::Reserve;
+		}();
+
+		return policy;
+	}
+
 	bool ProbeQueryUsable(HANDLE Candidate, DWORD TargetPid)
 	{
 		if (ScGetProcessId(Candidate) != TargetPid)
@@ -305,6 +376,42 @@ namespace
 
 	bool ProbeVmOperation(HANDLE Candidate)
 	{
+		switch (GetVmProbePolicy())
+		{
+			case VM_PROBE_POLICY::None:
+			{
+				// Deliberately not a failure: the caller explicitly declined the probe, so the donor is
+				// judged on its pid and image name alone.
+				return true;
+			}
+
+			case VM_PROBE_POLICY::Protect:
+			{
+				// Re-protect an already committed readable page to its existing protection. The kernel
+				// treats this as a no-op on the page contents, so nothing in the target changes, while
+				// the call still goes through the same access check that gates every later mapper stage.
+				MEMORY_BASIC_INFORMATION info{ 0 };
+				if (!VirtualQueryEx(Candidate, nullptr, &info, sizeof(info)) || info.State != MEM_COMMIT)
+				{
+					return false;
+				}
+
+				if (!(info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
+				{
+					return false;
+				}
+
+				ULONG old_protect = 0;
+				return ScProtectMemory(Candidate, info.BaseAddress, info.RegionSize, info.Protect, &old_protect);
+			}
+
+			case VM_PROBE_POLICY::Reserve:
+			default:
+			{
+				break;
+			}
+		}
+
 		// Reservation only, no commit. A probe that never materialises a page leaves the target's
 		// address space untouched, and the reservation is released immediately afterwards.
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
