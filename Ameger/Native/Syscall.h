@@ -575,13 +575,11 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 
 	BYTE * Cursor = ReCa<BYTE *>(BaseAddress);
 	SIZE_T Remaining = Size;
-	bool success = true;
 	while (Remaining)
 	{
 		const SIZE_T ThisChunk = Remaining < Chunk ? Remaining : Chunk;
 		if (!ScWriteProcessMemory(ProcessHandle, Cursor, Zeros, ThisChunk, nullptr))
 		{
-			success = false;
 			break;
 		}
 

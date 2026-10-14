@@ -95,6 +95,7 @@ namespace
 		}
 		catch (...)
 		{
+			LOG(0, "SymbolWorkerEntry: unhandled exception\n");
 			result = SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
 
@@ -119,6 +120,7 @@ namespace
 		}
 		catch (...)
 		{
+			LOG(0, "ImportWorkerEntry: unhandled exception\n");
 			result = INJ_ERR_UNHANDLED_EXCEPTION;
 		}
 

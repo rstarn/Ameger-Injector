@@ -468,12 +468,20 @@ namespace
 		}
 
 		HANDLE Raw = Owner ? Owner.get() : nullptr;
+		if (!Raw)
+		{
+			return nullptr;
+		}
+		// Release ownership from the local UniqueHandle before moving to the vector.
+		// If emplace_back throws, we still own the handle via Raw and must close it.
+		Owner.release();
 		try
 		{
-			Owners.emplace_back(OwnerPid, std::move(Owner));
+			Owners.emplace_back(OwnerPid, UniqueHandle(Raw));
 		}
 		catch (...)
 		{
+			CloseHandle(Raw);
 			return nullptr;
 		}
 
@@ -1032,6 +1040,7 @@ DWORD HijackProcessHandle(DWORD TargetPid, DWORD DesiredAccess, HANDLE & OutHand
 	}
 	catch (...)
 	{
+		LOG(0, "HijackProcessHandle: unhandled exception\n");
 		OutHandle = nullptr;
 		Result = INJ_ERR_OUT_OF_MEMORY_NEW;
 	}
@@ -1052,6 +1061,7 @@ DWORD HijackThreadHandle(DWORD TargetPid, DWORD TargetTid, DWORD DesiredAccess, 
 	}
 	catch (...)
 	{
+		LOG(0, "HijackThreadHandle: unhandled exception\n");
 		OutHandle = nullptr;
 		Result = INJ_ERR_OUT_OF_MEMORY_NEW;
 	}
