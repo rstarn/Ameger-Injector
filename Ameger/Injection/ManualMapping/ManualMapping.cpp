@@ -244,6 +244,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	table_local->MMIP_SetPageProtections	= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_SetPageProtections)		- mmap_sec_base));
 	table_local->MMIP_EnableExceptions		= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_EnableExceptions)		- mmap_sec_base));
 	table_local->MMIP_HandleTLS				= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_HandleTLS)				- mmap_sec_base));
+	table_local->MMIP_RunTlsCallbacks		= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_RunTlsCallbacks)			- mmap_sec_base));
 	table_local->MMIP_ExecuteDllMain		= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_ExecuteDllMain)			- mmap_sec_base));
 	table_local->MMIP_CleanDataDirectories	= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_CleanDataDirectories)	- mmap_sec_base));
 	table_local->MMIP_CloakHeader			= ReCa<f_MMI_FUNCTION>(pShells + (ReCa<BYTE *>(MMI_CloakHeader)				- mmap_sec_base));
@@ -649,8 +650,8 @@ DWORD __declspec(code_seg(".mmap_sec$05")) __stdcall MMI_SetExecProtections(MANU
 
 	const ULONG NewProtect = NewState == MM_EXEC_STATE_EXECUTE ? PAGE_EXECUTE_READ : PAGE_READWRITE;
 
-	auto * pSec = IMAGE_FIRST_SECTION(pData->pNtHeaders);
-	for (UINT i = 0; i != pData->pFileHeader->NumberOfSections; ++i, ++pSec)
+	auto * pSec = MMI_Sections(pData);
+	for (UINT i = 0; i != MMI_SectionCount(pData); ++i, ++pSec)
 	{
 		if (!(pSec->Characteristics & IMAGE_SCN_MEM_EXECUTE))
 		{
@@ -1087,7 +1088,29 @@ DWORD __declspec(code_seg(".mmap_sec$01")) __stdcall ManualMapping_Shell(MANUAL_
 		return ret;
 	}
 
+	ret = f->MMIP_RunTlsCallbacks(pData);
+	if (ret != INJ_ERR_SUCCESS)
+	{
+		f->MMIP_CleanUp(pData);
+
+		return ret;
+	}
+
 	ret = f->MMIP_ExecuteDllMain(pData);
+	if (ret != INJ_ERR_SUCCESS)
+	{
+		f->MMIP_CleanUp(pData);
+
+		return ret;
+	}
+
+	// The erase runs only after every step that executes payload code. The payload's entry point - and,
+	// for a packed payload, the unpacker that runs as its DllMain - reads the image's own PE header, so
+	// erasing the header before the entry point faults the payload with an access violation. The TLS
+	// callbacks and the entry point therefore run with intact headers, and the erase sits immediately
+	// after them. The finalisation stages that still need header values (clean data directories, page
+	// protections) read the snapshot taken in MMI_MapSections, so nothing dereferences the erased pages.
+	ret = f->MMIP_CloakHeader(pData);
 	if (ret != INJ_ERR_SUCCESS)
 	{
 		f->MMIP_CleanUp(pData);
@@ -1104,14 +1127,6 @@ DWORD __declspec(code_seg(".mmap_sec$01")) __stdcall ManualMapping_Shell(MANUAL_
 	}
 
 	ret = f->MMIP_SetPageProtections(pData);
-	if (ret != INJ_ERR_SUCCESS)
-	{
-		f->MMIP_CleanUp(pData);
-
-		return ret;
-	}
-
-	ret = f->MMIP_CloakHeader(pData);
 	if (ret != INJ_ERR_SUCCESS)
 	{
 		f->MMIP_CleanUp(pData);
@@ -1175,7 +1190,30 @@ DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections(MANUAL_MAPP
 	pData->pOptionalHeader = &pData->pNtHeaders->OptionalHeader;
 	pData->pFileHeader = &pData->pNtHeaders->FileHeader;
 
-	SIZE_T ImgSize = static_cast<SIZE_T>(pData->pOptionalHeader->SizeOfImage);
+	// Snapshot the header values the post-erase stages still need, here, while the raw headers are
+	// guaranteed intact. The accessors in ManualMappingInternal.h serve these to any stage that runs
+	// after MMI_CloakHeader, so erasing the headers cannot strand a later step on a zeroed page.
+	{
+		auto * raw_nt = pData->pNtHeaders;
+
+		DWORD section_count = raw_nt->FileHeader.NumberOfSections;
+		if (section_count > MM_MAX_CACHED_SECTIONS)
+		{
+			section_count = MM_MAX_CACHED_SECTIONS;
+		}
+
+		pData->CachedSizeOfImage	= raw_nt->OptionalHeader.SizeOfImage;
+		pData->CachedSizeOfHeaders	= raw_nt->OptionalHeader.SizeOfHeaders;
+		pData->CachedEntryPoint		= raw_nt->OptionalHeader.AddressOfEntryPoint;
+		pData->CachedSectionCount	= section_count;
+
+		f->memmove(pData->CachedSections, IMAGE_FIRST_SECTION(raw_nt),
+			static_cast<size_t>(section_count) * sizeof(IMAGE_SECTION_HEADER));
+		f->memmove(pData->CachedDataDirectory, &raw_nt->OptionalHeader.DataDirectory,
+			sizeof(pData->CachedDataDirectory));
+	}
+
+	SIZE_T ImgSize = static_cast<SIZE_T>(MMI_SizeOfImage(pData));
 
 	// Reservation protect is execute and read, which is what a real LoadLibrary leaves behind on the
 	// VAD. The pages are opened for writing, mapped, and re-protected by MMI_SetPageProtections, so the
@@ -1198,13 +1236,13 @@ DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections(MANUAL_MAPP
 	pData->pImageBase = pData->pAllocationBase;
 	pData->ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
 
-	f->memmove(pData->pImageBase, pData->pRawData, pData->pOptionalHeader->SizeOfHeaders);
+	f->memmove(pData->pImageBase, pData->pRawData, MMI_SizeOfHeaders(pData));
 
-	auto * pCurrentSectionHeader = IMAGE_FIRST_SECTION(pData->pNtHeaders);
-	for (UINT i = 0; i != pData->pFileHeader->NumberOfSections; ++i, ++pCurrentSectionHeader)
+	auto * pCurrentSectionHeader = MMI_Sections(pData);
+	for (UINT i = 0; i != MMI_SectionCount(pData); ++i, ++pCurrentSectionHeader)
 	{
 
-		if (pCurrentSectionHeader->VirtualAddress < pData->pOptionalHeader->SizeOfHeaders)
+		if (pCurrentSectionHeader->VirtualAddress < MMI_SizeOfHeaders(pData))
 		{
 			return INJ_MM_ERR_INVALID_PE_IMAGE;
 		}
@@ -1233,8 +1271,8 @@ DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections(MANUAL_MAPP
 
 	if (pData->Flags & INJ_MM_SET_PAGE_PROTECTIONS)
 	{
-		auto * pSec = IMAGE_FIRST_SECTION(pData->pNtHeaders);
-		for (UINT i = 0; i < pData->pFileHeader->NumberOfSections; ++i, ++pSec)
+		auto * pSec = MMI_Sections(pData);
+		for (UINT i = 0; i < MMI_SectionCount(pData); ++i, ++pSec)
 		{
 			const DWORD characteristics = pSec->Characteristics;
 
@@ -1259,7 +1297,7 @@ DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage(MANUAL_MA
 
 	if (LocationDelta)
 	{
-		auto * pRelocDir = ReCa<IMAGE_DATA_DIRECTORY *>(&pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]);
+		auto * pRelocDir = ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC]);
 
 		if (!pRelocDir->Size || pRelocDir->Size < sizeof(IMAGE_BASE_RELOCATION))
 		{
@@ -1291,7 +1329,7 @@ DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage(MANUAL_MA
 				if (RELOC_FLAG(*pRelativeInfo))
 				{
 					const ULONGLONG patch_rva = static_cast<ULONGLONG>(pRelocData->VirtualAddress) + (*pRelativeInfo & 0xFFF);
-					if (patch_rva + sizeof(ULONG_PTR) > pData->pOptionalHeader->SizeOfImage)
+					if (patch_rva + sizeof(ULONG_PTR) > MMI_SizeOfImage(pData))
 					{
 						return INJ_MM_ERR_IMAGE_CANT_BE_RELOCATED;
 					}
@@ -1312,7 +1350,7 @@ DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage(MANUAL_MA
 
 DWORD __declspec(code_seg(".mmap_sec$04")) __stdcall MMI_InitializeCookie(MANUAL_MAPPING_DATA * pData)
 {
-	if (!(pData->Flags & INJ_MM_INIT_SECURITY_COOKIE) || !pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size)
+	if (!(pData->Flags & INJ_MM_INIT_SECURITY_COOKIE) || !MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size)
 	{
 
 		return INJ_ERR_SUCCESS;
@@ -1328,7 +1366,7 @@ DWORD __declspec(code_seg(".mmap_sec$04")) __stdcall MMI_InitializeCookie(MANUAL
 		new_cookie |= (new_cookie | 0x4711) << 0x10;
 	}
 
-	const IMAGE_DATA_DIRECTORY & load_config = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+	const IMAGE_DATA_DIRECTORY & load_config = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
 	if (load_config.Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) + sizeof(ULONG_PTR) ||
 		!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + load_config.VirtualAddress), sizeof(IMAGE_LOAD_CONFIG_DIRECTORY)))
 	{
@@ -1361,7 +1399,7 @@ DWORD __declspec(code_seg(".mmap_sec$06")) __stdcall MMI_LoadImports(MANUAL_MAPP
 
 	NTSTATUS ntRet = STATUS_SUCCESS;
 
-	IMAGE_DATA_DIRECTORY	* pImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]);
+	IMAGE_DATA_DIRECTORY	* pImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT]);
 	IMAGE_IMPORT_DESCRIPTOR * pImportDescr	= nullptr;
 	IMAGE_IMPORT_DESCRIPTOR * const pImportEnd = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pImportDir->VirtualAddress + pImportDir->Size);
 
@@ -1560,7 +1598,7 @@ DWORD __declspec(code_seg(".mmap_sec$07")) __stdcall MMI_LoadDelayImports(MANUAL
 
 	NTSTATUS ntRet = STATUS_SUCCESS;
 
-	IMAGE_DATA_DIRECTORY		* pDelayImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]);
+	IMAGE_DATA_DIRECTORY		* pDelayImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]);
 	IMAGE_DELAYLOAD_DESCRIPTOR	* pDelayImportDescr = nullptr;
 	IMAGE_DELAYLOAD_DESCRIPTOR	* const pDelayImportEnd = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pDelayImportDir->VirtualAddress + pDelayImportDir->Size);
 
@@ -1756,12 +1794,19 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 	auto f = pData->FunctionTable;
 
 	ULONG OldProtection = 0;
-	SIZE_T SizeOut = pData->pOptionalHeader->SizeOfHeaders;
-	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), ReCa<void **>(&pData->pImageBase), &SizeOut, PAGE_READONLY, &OldProtection);
 
-	if (NT_FAIL(pData->ntRet))
+	// When the headers were erased they were already closed to every access by MMI_CloakHeader.
+	// Re-protecting the header span to READONLY here would reopen those pages, so the header pass is
+	// skipped in that case; only the per-section pass runs.
+	if (!(pData->Flags & INJ_ERASE_HEADER))
 	{
-		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
+		SIZE_T SizeOut = MMI_SizeOfHeaders(pData);
+		pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), ReCa<void **>(&pData->pImageBase), &SizeOut, PAGE_READONLY, &OldProtection);
+
+		if (NT_FAIL(pData->ntRet))
+		{
+			return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
+		}
 	}
 
 	// The section walk reports its own result rather than re-reading pData->ntRet at the end: an
@@ -1769,9 +1814,9 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 	// turn a successful protection pass into a failure (or the reverse).
 	bool section_failure = false;
 
-	auto pCurrentSectionHeader = IMAGE_FIRST_SECTION(pData->pNtHeaders);
+	auto pCurrentSectionHeader = MMI_Sections(pData);
 
-	for (UINT i = 0; i != pData->pFileHeader->NumberOfSections; ++i, ++pCurrentSectionHeader)
+	for (UINT i = 0; i != MMI_SectionCount(pData); ++i, ++pCurrentSectionHeader)
 	{
 		void * pSectionBase		= pData->pImageBase + pCurrentSectionHeader->VirtualAddress;
 		DWORD characteristics	= pCurrentSectionHeader->Characteristics;
@@ -1842,7 +1887,7 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 	}
 
 #ifdef _WIN64
-	const IMAGE_DATA_DIRECTORY & exc_dir = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+	const IMAGE_DATA_DIRECTORY & exc_dir = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
 
 	if (exc_dir.Size)
 	{
@@ -1897,7 +1942,7 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 				return INJ_MM_ERR_ENABLING_SEH_FAILED;
 			}
 
-			f->RtlInsertInvertedFunctionTable(pData->pImageBase, pData->pOptionalHeader->SizeOfImage);
+			f->RtlInsertInvertedFunctionTable(pData->pImageBase, MMI_SizeOfImage(pData));
 			const BYTE * table_base = ReCa<const BYTE *>(f->LdrpInvertedFunctionTable);
 			const DWORD inv_count = *ReCa<const DWORD *>(table_base + dyno.InvertedTableCount);
 			const BYTE * entries_base = table_base + dyno.InvertedTableEntries;
@@ -1951,19 +1996,19 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 		return INJ_ERR_SUCCESS;
 	}
 
-	if (!pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size)
+	if (!MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].Size)
 	{
 		return INJ_ERR_SUCCESS;
 	}
 
 	auto f = pData->FunctionTable;
 
-	if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress), sizeof(IMAGE_TLS_DIRECTORY)))
+	if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress), sizeof(IMAGE_TLS_DIRECTORY)))
 	{
 		return INJ_MM_ERR_INVALID_PE_IMAGE;
 	}
 
-	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
 
 	{
 		const DWORD ProtRet = MMI_SetExecProtections(pData, MM_EXEC_STATE_EXECUTE);
@@ -1992,7 +2037,7 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 	WritePtrField(pDummyLdrRaw, ldr_base_off, pData->pImageBase);
 	if (ldr_image_off + sizeof(ULONG) <= ldr_size)
 	{
-		*ReCa<ULONG *>(ReCa<BYTE *>(pDummyLdrRaw) + ldr_image_off) = pData->pOptionalHeader->SizeOfImage;
+		*ReCa<ULONG *>(ReCa<BYTE *>(pDummyLdrRaw) + ldr_image_off) = MMI_SizeOfImage(pData);
 	}
 
 	// A dependency graph node sitting in a state the loader already considers complete. Without it any
@@ -2030,6 +2075,33 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 		DeleteObject(f, pDummyLdrRaw);
 
 		return static_cast<DWORD>(pData->ntRet);
+	}
+
+	// Hand the registered TLS state to MMI_RunTlsCallbacks, which drives the callbacks while the
+	// headers are still intact: the erase runs only after every payload-code step (TLS callbacks and
+	// the entry point). The TLS directory lives in a section, not in the erased headers, so it stays
+	// readable across the boundary even though the callback driver itself runs before the erase.
+	pData->TlsDirectory = pTLS;
+	pData->TlsDummyLdr  = pDummyLdrRaw;
+	pData->TlsDdagNode  = pDdagRaw;
+
+	return INJ_ERR_SUCCESS;
+}
+
+DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPPING_DATA * pData)
+{
+	auto f = pData->FunctionTable;
+
+	auto * pDummyLdrRaw	= ReCa<BYTE *>(pData->TlsDummyLdr);
+	auto * pDummyLdr	= ReCa<LDR_DATA_TABLE_ENTRY *>(pDummyLdrRaw);
+	void * pDdagRaw		= pData->TlsDdagNode;
+	auto * pTLS			= ReCa<IMAGE_TLS_DIRECTORY *>(pData->TlsDirectory);
+
+	// Nothing was registered - EXECUTE_TLS was off, the image carries no TLS directory, or the setup
+	// already released the fake nodes on failure - so there is nothing to drive.
+	if (!pTLS || !pDummyLdrRaw)
+	{
+		return INJ_ERR_SUCCESS;
 	}
 
 	ULONG callback_count = 0;
@@ -2124,13 +2196,15 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 
 	if (!unlinked)
 	{
-		LOG(1, "MMI_HandleTLS: loader TLS entry not found; released the fake nodes only\n");
+		LOG(1, "MMI_RunTlsCallbacks: loader TLS entry not found; released the fake nodes only\n");
 	}
 
-	DeleteObject(f, pDummyLdr);
+	DeleteObject(f, pDummyLdrRaw);
 	DeleteObject(f, pDdagRaw);
-	pDummyLdr = nullptr;
-	pDdagRaw = nullptr;
+
+	pData->TlsDirectory = nullptr;
+	pData->TlsDummyLdr  = nullptr;
+	pData->TlsDdagNode  = nullptr;
 
 	// The loader hands out one TLS index per LdrpHandleTlsData call and there is no public way to give
 	// one back for a detached entry. That is a fixed per process budget of 64 slots (TLS_MINIMUM_
@@ -2148,7 +2222,7 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 
 	auto f = pData->FunctionTable;
 
-	if (!pData->pOptionalHeader->AddressOfEntryPoint)
+	if (!MMI_EntryPoint(pData))
 	{
 		return INJ_ERR_SUCCESS;
 	}
@@ -2176,7 +2250,7 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 		}
 	}
 
-	f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + pData->pOptionalHeader->AddressOfEntryPoint);
+	f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + MMI_EntryPoint(pData));
 	if (!DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_ATTACH, nullptr))
 	{
 
@@ -2214,12 +2288,12 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 
 	auto f = pData->FunctionTable;
 
-	pData->MapStats.ImportSize		= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
-	pData->MapStats.DelayImportSize	= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size;
-	pData->MapStats.DebugSize		= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
-	pData->MapStats.RelocSize		= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
-	pData->MapStats.TlsSize			= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size;
-	pData->MapStats.ExportSize		= pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+	pData->MapStats.ImportSize		= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+	pData->MapStats.DelayImportSize	= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size;
+	pData->MapStats.DebugSize		= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+	pData->MapStats.RelocSize		= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+	pData->MapStats.TlsSize			= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].Size;
+	pData->MapStats.ExportSize		= MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
 	pData->MapStats.CleanedMask		=
 		((pData->MapStats.ImportSize		? 1u : 0u) << IMAGE_DIRECTORY_ENTRY_IMPORT) |
 		((pData->MapStats.DelayImportSize	? 1u : 0u) << IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT) |
@@ -2236,11 +2310,11 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 		}
 	}
 
-	DWORD Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+	DWORD Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
 	if (Size)
 	{
-		auto * pImportEnd = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress + Size);
-		auto * pImportDescr = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+		auto * pImportEnd = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress + Size);
+		auto * pImportDescr = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
 		while (pImportDescr && pImportDescr < pImportEnd && MMI_InImage(pData, pImportDescr, sizeof(*pImportDescr)) && pImportDescr->Name)
 		{
 			const size_t mod_length = MMI_ImageStringLength(pData, ReCa<char *>(pData->pImageBase + pImportDescr->Name));
@@ -2288,15 +2362,15 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 			++pImportDescr;
 		}
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 0;
 	}
 
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size;
 	if (Size)
 	{
-		auto * pDelayImportEnd = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress + Size);
-		auto * pDelayImportDescr = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress);
+		auto * pDelayImportEnd = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress + Size);
+		auto * pDelayImportDescr = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress);
 
 		while (pDelayImportDescr && pDelayImportDescr < pDelayImportEnd && MMI_InImage(pData, pDelayImportDescr, sizeof(*pDelayImportDescr)) && pDelayImportDescr->DllNameRVA)
 		{
@@ -2343,14 +2417,14 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 			++pDelayImportDescr;
 		}
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size = 0;
 	}
 
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
 	if (Size)
 	{
-		auto * pExportDir = ReCa<IMAGE_EXPORT_DIRECTORY *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+		auto * pExportDir = ReCa<IMAGE_EXPORT_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 		if (!MMI_InImage(pData, pExportDir, sizeof(*pExportDir)))
 		{
 			return INJ_MM_ERR_INVALID_PE_IMAGE;
@@ -2424,14 +2498,14 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 
 		f->RtlZeroMemory(pExportDir, sizeof(*pExportDir));
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_EXPORT].Size = 0;
 	}
 
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
 	if (Size)
 	{
-		auto * pDebugDir = ReCa<IMAGE_DEBUG_DIRECTORY *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress);
+		auto * pDebugDir = ReCa<IMAGE_DEBUG_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress);
 		if (!MMI_InImage(pData, pDebugDir, sizeof(*pDebugDir)))
 		{
 			return INJ_MM_ERR_INVALID_PE_IMAGE;
@@ -2449,15 +2523,15 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 		pDebugDir->AddressOfRawData = 0;
 		pDebugDir->PointerToRawData = 0;
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DEBUG].Size = 0;
 	}
 
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
 	if (Size)
 	{
-		auto * pRelocEnd = ReCa<BYTE *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress + Size);
-		auto * pRelocData = ReCa<IMAGE_BASE_RELOCATION *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+		auto * pRelocEnd = ReCa<BYTE *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress + Size);
+		auto * pRelocData = ReCa<IMAGE_BASE_RELOCATION *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
 		while (ReCa<BYTE *>(pRelocData) + sizeof(IMAGE_BASE_RELOCATION) <= pRelocEnd && pRelocData->VirtualAddress)
 		{
 			if (pRelocData->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) ||
@@ -2475,19 +2549,19 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 			pRelocData = ReCa<IMAGE_BASE_RELOCATION *>(ReCa<BYTE *>(pRelocData) + pRelocData->SizeOfBlock);
 		}
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = 0;
 	}
 
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].Size;
 	if (Size)
 	{
-		if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress), sizeof(IMAGE_TLS_DIRECTORY)))
+		if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress), sizeof(IMAGE_TLS_DIRECTORY)))
 		{
 			return INJ_MM_ERR_INVALID_PE_IMAGE;
 		}
 
-		auto * pTLS			= ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+		auto * pTLS			= ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
 		auto * pCallback	= ReCa<PIMAGE_TLS_CALLBACK *>(pTLS->AddressOfCallBacks);
 		ULONG callback_count = 0;
 		for (; pCallback && MMI_InImage(pData, pCallback, sizeof(*pCallback)) && (*pCallback) && callback_count < 1024; ++pCallback, ++callback_count)
@@ -2501,33 +2575,33 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 		pTLS->SizeOfZeroFill		= 0;
 		pTLS->StartAddressOfRawData = 0;
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress	= 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size			= 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress	= 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].Size			= 0;
 	}
 
 	// Bound import directory: a bound import table left behind carries the exact named imports of the
 	// payload plus the timestamps they were resolved against, which is a far stronger fingerprint than
 	// the import directory itself ever was.
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size;
 	if (Size)
 	{
-		auto * pBound = ReCa<IMAGE_BOUND_IMPORT_DESCRIPTOR *>(pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress);
+		auto * pBound = ReCa<IMAGE_BOUND_IMPORT_DESCRIPTOR *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress);
 		if (MMI_InImage(pData, pBound, Size))
 		{
 			f->RtlZeroMemory(pBound, Size);
 		}
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
 	}
 
 	// Resource tree: the directory entries themselves are harmless, but a resource name string and a
 	// version information block together are the original file name, product name and build stamp of
 	// the payload, verbatim. Every name string is cleared and every RT_VERSION blob is zeroed.
-	Size = pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size;
+	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size;
 	if (Size)
 	{
-		BYTE * pResRoot = pData->pImageBase + pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+		BYTE * pResRoot = pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
 
 		if (MMI_InImage(pData, pResRoot, Size))
 		{
@@ -2623,18 +2697,18 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 			walk_resource_dir(walk_resource_dir, pResRoot, 0);
 		}
 
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size = 0;
 	}
 
 	// Managed image directory and the informational import address table directory.
-	if (pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size ||
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size)
+	if (MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size ||
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IAT].Size)
 	{
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = 0;
-		pData->pOptionalHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = 0;
+		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IAT].Size = 0;
 	}
 
 	{
@@ -2659,7 +2733,7 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 			IMAGE_DIRECTORY_ENTRY_IAT,
 		};
 
-		auto * dirs = pData->pOptionalHeader->DataDirectory;
+		auto * dirs = MMI_DataDirectory(pData);
 		DWORD residual = 0;
 		for (const DWORD entry : kCleanedDirectories)
 		{
@@ -2696,27 +2770,71 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
-	// Precise header extent: DOS + NT + section headers. SizeOfHeaders normally
-	// spans this, but the explicit calculation guarantees the section-header
-	// array (which follows the optional header) is included even if SizeOfHeaders
-	// is under-reported.
-	const DWORD size_of_headers = pNt->OptionalHeader.SizeOfHeaders;
-	const DWORD end_of_headers =
-		pDos->e_lfanew +
-		static_cast<DWORD>(FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader)) +
-		pNt->FileHeader.SizeOfOptionalHeader +
-		static_cast<DWORD>(pNt->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
+	// Every header field is read before a single byte is overwritten. e_lfanew comes from the DOS
+	// header at offset 0x3C; the section count and the optional-header length come from the file
+	// header.
+	const DWORD e_lfanew		= pDos->e_lfanew;
+	const DWORD nt_size			= static_cast<DWORD>(sizeof(IMAGE_NT_HEADERS64));						// 0x108 on x64
+	const DWORD section_size	= static_cast<DWORD>(sizeof(IMAGE_SECTION_HEADER));						// 0x28 per section
+	const DWORD opt_hdr_off		= static_cast<DWORD>(FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader));	// 0x18
+	const DWORD size_optional	= pNt->FileHeader.SizeOfOptionalHeader;
+	DWORD		num_sections	= pNt->FileHeader.NumberOfSections;
+	const DWORD size_of_image	= pNt->OptionalHeader.SizeOfImage;
 
-	DWORD wipe_size = (end_of_headers > size_of_headers) ? end_of_headers : size_of_headers;
-
-	// Never cross into the first section's memory; the headers always sit before it.
-	if (pNt->FileHeader.NumberOfSections > 0)
+	// The header region can never reach past the first section, and never past the mapped image.
+	DWORD limit = size_of_image;
+	if (num_sections)
 	{
-		const auto * pFirstSection = IMAGE_FIRST_SECTION(pNt);
-		if (pFirstSection->VirtualAddress < wipe_size)
+		const DWORD first_section = IMAGE_FIRST_SECTION(pNt)->VirtualAddress;
+		if (first_section && first_section < limit)
 		{
-			wipe_size = pFirstSection->VirtualAddress;
+			limit = first_section;
 		}
+	}
+
+	if (!limit)
+	{
+		return INJ_ERR_SUCCESS;
+	}
+
+	// DOS header: 0x40 bytes at the image base.
+	DWORD dos_bytes = 0x40;
+	if (dos_bytes > limit)
+	{
+		dos_bytes = limit;
+	}
+
+	// NT headers: 0x108 bytes at image_base + e_lfanew.
+	DWORD nt_bytes = 0;
+	if (e_lfanew < limit)
+	{
+		const DWORD room = limit - e_lfanew;
+		nt_bytes = room < nt_size ? room : nt_size;
+	}
+
+	// Section headers: 0x28 bytes per section, immediately after the optional header. The section
+	// count is clamped first, so a corrupt or hostile header can never push the writes past the
+	// mapped image.
+	DWORD sec_bytes = 0;
+	const DWORD sec_off = e_lfanew + opt_hdr_off + size_optional;
+	if (sec_off < limit)
+	{
+		const DWORD max_sections = (limit - sec_off) / section_size;
+		if (num_sections > max_sections)
+		{
+			num_sections = max_sections;
+		}
+		sec_bytes = num_sections * section_size;
+	}
+
+	DWORD wipe_size = dos_bytes;
+	if (nt_bytes && e_lfanew + nt_bytes > wipe_size)
+	{
+		wipe_size = e_lfanew + nt_bytes;
+	}
+	if (sec_bytes && sec_off + sec_bytes > wipe_size)
+	{
+		wipe_size = sec_off + sec_bytes;
 	}
 
 	if (!wipe_size)
@@ -2735,17 +2853,21 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
-	// 2) Secure multi-pass wipe. Two keystream scramble passes (non-recoverable,
-	//    random-looking fill derived from the payload decode seeds) followed by a
-	//    final zero pass. A single zero pass would leave a trivial "was zeroed"
-	//    pattern and the original bytes recoverable; multiple passes prevent that.
-	const DWORD64 seed0 = pData->PayloadSeed0 ^ ReCa<DWORD64>(pData->pImageBase);
-	const DWORD64 seed1 = pData->PayloadSeed1 ^ static_cast<DWORD64>(wipe_size);
-
-	MMI_KeyTransformInPlace(ReCa<BYTE *>(pData->pImageBase), wipe_size, seed0, seed1);
-	MMI_KeyTransformInPlace(ReCa<BYTE *>(pData->pImageBase), wipe_size,
-		seed0 ^ 0x9E3779B97F4A7C15ULL, seed1 ^ 0xC2B2AE3D27D4EB4FULL);
-	f->RtlZeroMemory(pData->pImageBase, wipe_size);
+	// 2) Zero the three header blocks. The ranges are the spec exactly - DOS 0x40, NT 0x108, section
+	//    headers 0x28 x NumberOfSections - each already clamped above. RtlZeroMemory is the shell's
+	//    own memset; the plain stores keep the write sequence trivial to reason about.
+	if (dos_bytes)
+	{
+		f->RtlZeroMemory(pData->pImageBase, dos_bytes);
+	}
+	if (nt_bytes)
+	{
+		f->RtlZeroMemory(pData->pImageBase + e_lfanew, nt_bytes);
+	}
+	if (sec_bytes)
+	{
+		f->RtlZeroMemory(pData->pImageBase + sec_off, sec_bytes);
+	}
 
 	// 3) Final protection: NOACCESS for maximum stealth. The now-empty header
 	//    cannot be read, written, or executed, shrinking the memory-scan attack
@@ -2760,8 +2882,12 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
-	pData->HeaderWipeSize = wipe_size;
-	pData->HeaderWipeProtect = final_access;
+	// Publish the true wiped span and the resulting protection to the host verification step. The
+	// declared SizeOfHeaders is only the header span the loader would map; the region actually wiped
+	// is the union of the DOS stub, the NT headers and the section table, clamped to the image, and
+	// the protected span is that region rounded up to a page.
+	pData->MapStats.HeaderWipeSize = wipe_size;
+	pData->MapStats.HeaderWipeProtect = final_access;
 
 	return INJ_ERR_SUCCESS;
 }

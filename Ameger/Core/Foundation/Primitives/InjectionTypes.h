@@ -68,9 +68,15 @@ struct MAP_STATS
 	DWORD ExportSize = 0;
 	DWORD Verified = 0;
 	DWORD ResidualMask = 0;
+	// PE-header erasure telemetry, written by MMI_CloakHeader. HeaderWipeSize is the true number of
+	// header bytes zeroed (DOS stub + NT headers + section table, clamped to the image); it is not
+	// the declared SizeOfHeaders. HeaderWipeProtect is the final page protection applied to the
+	// wiped span. Both are surfaced by the launcher's "Erase PE header" verification step.
+	DWORD HeaderWipeSize = 0;
+	DWORD HeaderWipeProtect = 0;
 };
 
-static_assert(sizeof(MAP_STATS) == 36);
+static_assert(sizeof(MAP_STATS) == 44);
 
 struct STRING_STATS
 {

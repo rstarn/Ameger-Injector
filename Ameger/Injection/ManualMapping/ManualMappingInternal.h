@@ -15,6 +15,10 @@
 
 #define BASE_ALIGNMENT 0x10
 
+// Upper bound for the section-table snapshot kept in MANUAL_MAPPING_DATA. The PE format caps the
+// section count at 96, so a larger value cannot come from a well-formed image.
+#define MM_MAX_CACHED_SECTIONS 96
+
 namespace MMAP_NATIVE
 {
 	struct MANUAL_MAPPING_DATA;
@@ -44,6 +48,7 @@ DWORD __declspec(code_seg(".mmap_sec$07")) __stdcall MMI_LoadDelayImports		(MMAP
 DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS				(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
+DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
@@ -112,6 +117,7 @@ namespace MMAP_NATIVE
 		ALIGN f_MMI_FUNCTION MMIP_SetPageProtections	= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_EnableExceptions		= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_HandleTLS				= nullptr;
+		ALIGN f_MMI_FUNCTION MMIP_RunTlsCallbacks		= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_ExecuteDllMain		= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_CleanDataDirectories	= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_CloakHeader			= nullptr;
@@ -186,10 +192,29 @@ namespace MMAP_NATIVE
 		// reporting the aggregate range error.
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
-		// PE-header erasure telemetry, written by MMI_CloakHeader for the host
-		// verification step.
-		ALIGN DWORD	HeaderWipeSize	= 0;
-		ALIGN ULONG	HeaderWipeProtect	= 0;
+
+		// Snapshot of the header values the stages that run *after* the erase still need.
+		// The shell erases the headers before any payload code runs, so the module-load
+		// finalisation steps (clean data directories, page protections) and the payload
+		// drivers (TLS, entry point) can no longer read them from the image. The snapshot
+		// is captured in MMI_MapSections while the raw headers are still intact, and the
+		// MMI_* accessors below consult it only when INJ_ERASE_HEADER is set, so a run
+		// without header erasure reads the live headers exactly as before.
+		ALIGN DWORD					CachedSizeOfImage	= 0;
+		ALIGN DWORD					CachedSizeOfHeaders	= 0;
+		ALIGN DWORD					CachedEntryPoint	= 0;
+		ALIGN DWORD					CachedSectionCount	= 0;
+		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
+		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
+
+		// Transient TLS state. MMI_HandleTLS registers the payload's TLS data (LdrpHandleTlsData
+		// reads the image's own headers to find the TLS directory, so the erase has to follow it),
+		// then the header erase runs, then MMI_RunTlsCallbacks drives the callbacks. These three
+		// pointers carry the setup across that boundary; they are heap objects and section data, not
+		// header bytes, so they survive the erase.
+		ALIGN void *	TlsDirectory	= nullptr;	// IMAGE_TLS_DIRECTORY * inside the mapped image
+		ALIGN void *	TlsDummyLdr		= nullptr;	// fake LDR_DATA_TABLE_ENTRY handed to LdrpHandleTlsData
+		ALIGN void *	TlsDdagNode		= nullptr;	// fake LDR_DDAG_NODE linked from the fake entry
  	};
 }
 
@@ -331,6 +356,69 @@ __forceinline void * ReadPtrField(const void * Base, DWORD Off)
 	return *ReCa<void * const *>(ReCa<const BYTE *>(Base) + Off);
 }
 
+// Header accessors. When the header region has been erased the live pointers address zeroed,
+// no-access pages, so every post-erase read is served from the snapshot instead. When erasure is
+// off the accessors are pass-throughs onto the mapped headers, keeping the unerased run identical.
+__forceinline IMAGE_SECTION_HEADER * MMI_Sections(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return const_cast<IMAGE_SECTION_HEADER *>(pData->CachedSections);
+	}
+
+	return IMAGE_FIRST_SECTION(pData->pNtHeaders);
+}
+
+__forceinline DWORD MMI_SectionCount(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return pData->CachedSectionCount;
+	}
+
+	return pData->pFileHeader->NumberOfSections;
+}
+
+__forceinline IMAGE_DATA_DIRECTORY * MMI_DataDirectory(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return const_cast<IMAGE_DATA_DIRECTORY *>(pData->CachedDataDirectory);
+	}
+
+	return pData->pOptionalHeader->DataDirectory;
+}
+
+__forceinline DWORD MMI_SizeOfImage(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return pData->CachedSizeOfImage;
+	}
+
+	return pData->pOptionalHeader->SizeOfImage;
+}
+
+__forceinline DWORD MMI_SizeOfHeaders(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return pData->CachedSizeOfHeaders;
+	}
+
+	return pData->pOptionalHeader->SizeOfHeaders;
+}
+
+__forceinline DWORD MMI_EntryPoint(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
+{
+	if (pData->Flags & INJ_ERASE_HEADER)
+	{
+		return pData->CachedEntryPoint;
+	}
+
+	return pData->pOptionalHeader->AddressOfEntryPoint;
+}
+
 __forceinline bool MMI_InImage(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const void * address, size_t size)
 {
 	if (!pData || !pData->pImageBase || !pData->pOptionalHeader || !address || !size)
@@ -340,7 +428,7 @@ __forceinline bool MMI_InImage(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, c
 
 	const ULONG_PTR base = ReCa<ULONG_PTR>(pData->pImageBase);
 	const ULONG_PTR target = ReCa<ULONG_PTR>(address);
-	const ULONG_PTR image_size = pData->pOptionalHeader->SizeOfImage;
+	const ULONG_PTR image_size = MMI_SizeOfImage(pData);
 
 	return target >= base && size <= image_size && target - base <= image_size - size;
 }
@@ -365,7 +453,7 @@ __forceinline size_t MMI_ImageStringLength(const MMAP_NATIVE::MANUAL_MAPPING_DAT
 	}
 
 	const ULONG_PTR base = ReCa<ULONG_PTR>(pData->pImageBase);
-	const size_t maximum = static_cast<size_t>(pData->pOptionalHeader->SizeOfImage - (ReCa<ULONG_PTR>(text) - base));
+	const size_t maximum = static_cast<size_t>(MMI_SizeOfImage(pData) - (ReCa<ULONG_PTR>(text) - base));
 
 	const size_t length = MMI_BoundedStringLength(text, maximum);
 

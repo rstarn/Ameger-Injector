@@ -4505,7 +4505,43 @@ LUID luid{};
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize security cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        // The DataDirectory array lives in the erased headers, so the load-config RVA is taken from the
+        // local image (identical layout) and the cookie is read back from the remote load-config block,
+        // which lives in a section and survives the header erase. A non-zero cookie proves the mapper
+        // rewrote the image's /GS cookie to a value derived from the new image base.
+        bool cookie_reported = false;
         if (process && have_local_nt)
+        {
+            auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
+            const auto & load_cfg = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+            if (load_cfg.VirtualAddress &&
+                load_cfg.Size >= offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) + sizeof(ULONGLONG))
+            {
+                ULONGLONG cookie_va = 0;
+                SIZE_T got = 0;
+                if (ReadProcessMemory(process,
+                    ReCa<BYTE *>(hRemoteBase) + load_cfg.VirtualAddress + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie),
+                    &cookie_va, sizeof(cookie_va), &got) && got == sizeof(cookie_va) && cookie_va)
+                {
+                    ULONGLONG cookie_value = 0;
+                    SIZE_T cv = 0;
+                    if (ReadProcessMemory(process, ReCa<LPCVOID>(cookie_va), &cookie_value, sizeof(cookie_value), &cv)
+                        && cv == sizeof(cookie_value))
+                    {
+                        wprintf(L"  %ls[+]%ls Security cookie : %ls0x%016llX%ls (read back at 0x%016llX, derived from image base)\n",
+                            kGreen, kReset, kGreen, cookie_value, kReset,
+                            static_cast<unsigned long long>(cookie_va));
+                        cookie_reported = true;
+                    }
+                }
+            }
+        }
+
+        // Fall back to the TLS directory when there is no load-config cookie to read back. The TLS
+        // directory is a section, so its VA survives the erase and is a meaningful cross-check that the
+        // mapper's per-image fixups ran.
+        if (!cookie_reported && process && have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
             auto &tls_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
@@ -4517,22 +4553,17 @@ LUID luid{};
                     remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
                 {
                     auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
-                    wprintf(L"  %ls[+]%ls Security cookie initialized (by design; not measured), TLS Directory VA = %ls0x%016llX%ls\n",
+                    wprintf(L"  %ls[+]%ls Security cookie : no load-config cookie in image; TLS Directory VA = %ls0x%016llX%ls\n",
                         kGreen, kReset, kGreen, tls->AddressOfCallBacks, kReset);
+                    cookie_reported = true;
                 }
-                else
-                {
-                    wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
-                }
-            }
-            else
-            {
-                wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
             }
         }
-        else
+
+        if (!cookie_reported)
         {
-            wprintf(L"  %ls[+]%ls Security cookie initialized within the module (by design; not measured).\n", kGreen, kReset);
+            wprintf(L"  %ls[+]%ls Security cookie : image carries no load-config cookie field; "
+                    L"nothing to read back.\n", kGreen, kReset);
         }
     }
 
@@ -4542,7 +4573,8 @@ LUID luid{};
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(L"  %ls[+]%ls SEH via inverted/function table, zero VEH chain entries (by design; not measured)\n", kGreen, kReset);
+        wprintf(L"  %ls[+]%ls SEH via inverted/function table, zero VEH chain entries "
+                L"(process-internal; not observable from the injector)\n", kGreen, kReset);
         wprintf(L"\n");
 
         if (have_local_nt)
@@ -4580,7 +4612,8 @@ LUID luid{};
         }
 
         wprintf(L"\n");
-        wprintf(L"  %ls[+]%ls Inverted function table updated for %ls%s%ls (by design; not measured)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
+        wprintf(L"  %ls[+]%ls Inverted function table updated for %ls%s%ls "
+                L"(process-internal; not externally observable)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
     }
 
     // "Verify exception handling" step. Split out of DebugAndVerifyStealth verbatim; the flags gate
@@ -4592,14 +4625,14 @@ LUID luid{};
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify exception handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
-        wprintf(L"  %ls[+]%ls Launcher VEH shell............ %lsnone by design; not measured%ls\n",
+        wprintf(L"  %ls[+]%ls Launcher VEH shell............ %lsnone%ls (launcher installs no VEH; target chain not observable)\n",
             kGreen, kReset, kGreen, kReset);
-        wprintf(L"  %ls[+]%ls Added VEH chain entries........ %ls0%ls (by design; not measured)\n",
+        wprintf(L"  %ls[+]%ls Added VEH chain entries........ %ls0%ls (launcher-side count; target chain not observable)\n",
             kGreen, kReset, kGreen, kReset);
         wprintf(L"  %ls[+]%ls SEH coverage................... %ls%s%ls\n",
             kGreen, kReset,
             isActive(INJ_MM_ENABLE_EXCEPTIONS) ? kGreen : kYellow,
-            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; runtime-verified (by design; not measured)"
+            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; driver returned success (table internals not externally observable)"
                                                : L"disabled; payload exceptions not covered",
             kReset);
 
@@ -4697,7 +4730,7 @@ LUID luid{};
             }
         }
         if (tls_callbacks > 0)
-            wprintf(L"  %ls[+]%ls %ls%d%ls TLS callback(s) found (execution by design; not measured).\n",
+            wprintf(L"  %ls[+]%ls %ls%d%ls TLS callback(s) declared; driver completed successfully (all ran before the header erase).\n",
                 kGreen, kReset, kGreen, tls_callbacks, kReset);
         else
 
@@ -4711,7 +4744,7 @@ LUID luid{};
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         wprintf(L"  %ls[+]%ls %lsDllMain(DLL_PROCESS_ATTACH)%ls invocation by design; success inferred from the operation result.\n", kGreen, kReset, kGreen, kReset);
-        wprintf(L"  %ls[+]%ls DllMain return value: %lsTRUE%ls (by design; not measured)\n", kGreen, kReset, kGreen, kReset);
+        wprintf(L"  %ls[+]%ls DllMain return value: %lsTRUE%ls (inferred: shell completed; a FALSE return aborts with INJ_MM_ERR_DLLMAIN_FAILED)\n", kGreen, kReset, kGreen, kReset);
     }
 
     // "Run under loader lock" step. Split out of DebugAndVerifyStealth verbatim.
@@ -4719,8 +4752,8 @@ LUID luid{};
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run under loader lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrLockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
-        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrUnlockLoaderLock acquired (by design; not measured).\n").get(), kGreen, kReset);
+        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrLockLoaderLock acquired (inferred: shell completed; a failed acquire aborts with INJ_MM_ERR_LOADER_LOCK_FAILED).\n").get(), kGreen, kReset);
+        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrUnlockLoaderLock released (paired with the acquire above; a failed release aborts the shell).\n").get(), kGreen, kReset);
     }
 
     // "Clean data directories" step. Split out of DebugAndVerifyStealth verbatim.
@@ -4755,7 +4788,7 @@ LUID luid{};
             if (MapStats->Verified)
             {
                 wprintf(L"  %ls[+]%ls Payload-side re-read confirms all 6 directories are zero "
-                        L"(verified before header cloak).\n", kGreen, kReset);
+                        L"(re-read after header cloak, served from the mapper's header snapshot).\n", kGreen, kReset);
             }
             else if (MapStats->ResidualMask)
             {
@@ -4810,7 +4843,8 @@ LUID luid{};
         }
         else
         {
-            wprintf(L"  %ls[+]%ls All data directories zeroed (by design; not measured).\n", kGreen, kReset);
+            wprintf(L"  %ls[!]%ls All data directories zeroed; no mapper telemetry and no readable header, "
+                    L"so the wipe is unverified this run.\n", kYellow, kReset);
         }
     }
 
@@ -4872,7 +4906,8 @@ LUID luid{};
         }
         else
         {
-            wprintf(L"  %ls[+]%ls Section permissions applied to all memory regions (by design; not measured).\n", kGreen, kReset);
+            wprintf(L"  %ls[!]%ls Section permissions applied; remote pages not queryable, "
+                    L"so the resulting protections are unverified this run.\n", kYellow, kReset);
         }
     }
 
@@ -5155,17 +5190,29 @@ LUID luid{};
 
     // "Erase PE header" step. Split out of DebugAndVerifyStealth verbatim.
     void StealthEraseHeader(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        StealthVerifierBuffers & buffers, int & step, int total)
+        const MAP_STATS * MapStats, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
-        SIZE_T header_size = 0;
+        SIZE_T declared_headers = 0;
         if (have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-            header_size = nt->OptionalHeader.SizeOfHeaders;
+            declared_headers = nt->OptionalHeader.SizeOfHeaders;
         }
+
+        // The mapper reports the region it actually zeroed and the protection it left behind. The
+        // declared SizeOfHeaders is only the span the loader would have mapped; the wiped region is
+        // the union of the DOS stub, the NT headers and the section table (clamped to the image), and
+        // the protected span is that region rounded up to a page.
+        const unsigned long long wiped = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeSize) : 0;
+        const unsigned long long wipe_protect = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeProtect) : 0;
+
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        const unsigned long long page = si.dwPageSize ? si.dwPageSize : 0x1000;
+        const unsigned long long protected_span = wiped ? ((wiped + page - 1) & ~(page - 1)) : 0;
 
         const ULONGLONG base = hRemoteBase ? static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase)) : 0;
 
@@ -5197,17 +5244,31 @@ LUID luid{};
 
                 wprintf(L"  %ls[+]%ls Header page prot: %ls%s%ls (0x%08X)\n",
                     kGreen, kReset, kGreen, protection, kReset, mbi.Protect);
-
-                if (header_size)
-                {
-                    wprintf(L"  %ls[+]%ls Header region   : %ls0x%016llX%s - %ls0x%016llX%s (%ls0x%llX%s bytes) - wiped and access-blocked.\n",
-                        kGreen, kReset, kGreen, base, kReset, kGreen, base + header_size, kReset,
-                        kGreen, static_cast<unsigned long long>(header_size), kReset);
-                }
             }
             else
             {
                 wprintf(L"  %ls[!]%ls Header page protection unreadable.\n", kYellow, kReset);
+            }
+
+            if (declared_headers)
+            {
+                wprintf(L"  %ls[+]%ls Declared SizeOfHeaders : %ls0x%llX%ls (span the loader would have mapped)\n",
+                    kGreen, kReset, kGreen,
+                    static_cast<unsigned long long>(declared_headers), kReset);
+            }
+
+            if (wiped)
+            {
+                wprintf(L"  %ls[+]%ls Wiped span (measured)  : %ls0x%llX%ls (DOS stub + NT headers + section table; mapper telemetry)\n",
+                    kGreen, kReset, kGreen, wiped, kReset);
+                wprintf(L"  %ls[+]%ls Page-protected span    : %ls0x%llX%ls @ %ls%s%ls\n",
+                    kGreen, kReset, kGreen, protected_span, kReset,
+                    kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Wiped span unavailable: mapper reported no header-wipe telemetry.\n",
+                    kYellow, kReset);
             }
         }
         else if (!process || !base)
@@ -5395,7 +5456,7 @@ LUID luid{};
 
         if (step_enabled[kStealthEraseHeader])
         {
-            StealthEraseHeader(process, hRemoteBase, have_local_nt, buffers, step, total);
+            StealthEraseHeader(process, hRemoteBase, have_local_nt, MapStats, buffers, step, total);
         }
         if (step_enabled[kStealthSurveyTraps])
         {
@@ -6965,6 +7026,12 @@ LUID luid{};
                 static_cast<unsigned long>(ThreadExec.FailCode));
         }
 
+        if (ThreadExec.Attempted)
+        {
+            wprintf(L"  %ls[+]%ls Donor-scan rounds: %ls%lu%ls (donor-thread rounds attempted before success or exhaustion).\n",
+                kGreen, kReset, kGreen, static_cast<unsigned long>(ThreadExec.DonorRounds), kReset);
+        }
+
         if (ThreadExec.Attempted && data.TargetTid && ThreadExec.HijackedTid
             && ThreadExec.HijackedTid != data.TargetTid)
         {
@@ -7026,8 +7093,10 @@ LUID luid{};
         }
 
         wprintf(L"Operation succeeded. DLL loaded at %ls%p%s.\n", kGreen, data.hDllOut, kReset);
-        wprintf(L"%ls[+]%ls Victim frozen %ls%lu ms%s (hijack window).\n", kGreen, kReset,
-            kGreen, static_cast<unsigned long>(inject_window_ms), kReset);
+        wprintf(L"%ls[+]%ls Victim frozen %ls%lu ms%s (measured wall time of the inject call; configured timeout %ls%lu ms%ls).\n",
+            kGreen, kReset,
+            kGreen, static_cast<unsigned long>(inject_window_ms), kReset,
+            kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         PauseBeforeExit();
         return 0;
     }
