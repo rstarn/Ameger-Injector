@@ -5202,12 +5202,19 @@ LUID luid{};
             declared_headers = nt->OptionalHeader.SizeOfHeaders;
         }
 
-        // The mapper reports the region it actually zeroed and the protection it left behind. The
-        // declared SizeOfHeaders is only the span the loader would have mapped; the wiped region is
-        // the union of the DOS stub, the NT headers and the section table (clamped to the image), and
-        // the protected span is that region rounded up to a page.
+        // The mapper reports the structural header span, the region it actually zeroed and the
+        // protection it left behind. The declared SizeOfHeaders is only the span the loader would have
+        // mapped; the structural span is the DOS stub + NT headers + section table; the zeroed span is
+        // the ENTIRE pre-section header region (a superset); and the protected span is that region
+        // rounded up to a page. The scan counts are the in-shell proof the zeroed span carries no MZ/PE.
         const unsigned long long wiped = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeSize) : 0;
         const unsigned long long wipe_protect = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeProtect) : 0;
+        const unsigned long long structural = MapStats ? static_cast<unsigned long long>(MapStats->HeaderStructuralSize) : 0;
+        const unsigned long long scan_bytes = MapStats ? static_cast<unsigned long long>(MapStats->HeaderScanBytes) : 0;
+        const unsigned long long scan_mz = MapStats ? static_cast<unsigned long long>(MapStats->HeaderScanMZ) : 0;
+        const unsigned long long scan_pe = MapStats ? static_cast<unsigned long long>(MapStats->HeaderScanPE) : 0;
+        const ULONGLONG retained_base = MapStats ? static_cast<ULONGLONG>(MapStats->RetainedAllocBase) : 0;
+        const unsigned long long retained_size = MapStats ? static_cast<unsigned long long>(MapStats->RetainedAllocSize) : 0;
 
         SYSTEM_INFO si{};
         GetSystemInfo(&si);
@@ -5215,6 +5222,28 @@ LUID luid{};
         const unsigned long long protected_span = wiped ? ((wiped + page - 1) & ~(page - 1)) : 0;
 
         const ULONGLONG base = hRemoteBase ? static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase)) : 0;
+
+        // Sliding-window signature counter for the host-side scan below. Same two sequences the mapper
+        // scans in-shell: MZ (0x4D5A) and PE\0\0 (0x50450000).
+        auto count_signatures = [](const BYTE * data, size_t size, unsigned long long & mz, unsigned long long & pe)
+        {
+            mz = 0;
+            pe = 0;
+            for (size_t i = 0; i + 2 <= size; ++i)
+            {
+                if (data[i] == 0x4D && data[i + 1] == 0x5A)
+                {
+                    ++mz;
+                }
+            }
+            for (size_t i = 0; i + 4 <= size; ++i)
+            {
+                if (data[i] == 0x50 && data[i + 1] == 0x45 && data[i + 2] == 0x00 && data[i + 3] == 0x00)
+                {
+                    ++pe;
+                }
+            }
+        };
 
         if (base)
         {
@@ -5259,16 +5288,55 @@ LUID luid{};
 
             if (wiped)
             {
-                wprintf(L"  %ls[+]%ls Wiped span (measured)  : %ls0x%llX%ls (DOS stub + NT headers + section table; mapper telemetry)\n",
+                wprintf(L"  %ls[+]%ls Structural header span : %ls0x%llX%ls (DOS stub + NT headers + section table)\n",
+                    kGreen, kReset, kGreen, structural, kReset);
+                wprintf(L"  %ls[+]%ls Zeroed header span     : %ls0x%llX%ls (entire pre-section region; mapper telemetry)\n",
                     kGreen, kReset, kGreen, wiped, kReset);
                 wprintf(L"  %ls[+]%ls Page-protected span    : %ls0x%llX%ls @ %ls%s%ls\n",
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
+
+                // In-shell scan result. The image header page is NOACCESS by design after the cloak, so
+                // a host read-back is impossible; this mapper-side scan (run pre-NOACCESS) is the
+                // authoritative proof for the image allocation.
+                wprintf(L"  %ls[+]%ls MZ/PE scan (image)     : %ls%llu%ls hit(s) for MZ (0x4D5A) and %ls%llu%ls hit(s) for PE\\0\\0 (0x50450000) in the first %ls0x%llX%ls byte(s) of the mapped image (in-shell, pre-NOACCESS)\n",
+                    kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
             }
             else
             {
                 wprintf(L"  %ls[!]%ls Wiped span unavailable: mapper reported no header-wipe telemetry.\n",
                     kYellow, kReset);
+            }
+
+            // Host-side scan of any OTHER injection allocation still mapped and readable at this stage.
+            // The image header page is NOACCESS (covered above), and the manual-map and thread-hijack
+            // staging regions are scrubbed and released before control returns, so the only possible
+            // survivor is a deliberately retained allocation (e.g. the fake SEH directory kept alive
+            // for the inverted function table).
+            if (retained_base && retained_size)
+            {
+                const size_t want = static_cast<size_t>(retained_size < 0x1000 ? retained_size : 0x1000);
+                std::vector<BYTE> scan_buf(want, 0);
+                SIZE_T got = 0;
+                if (ReadProcessMemory(process, ReCa<LPCVOID>(retained_base), scan_buf.data(), want, &got) && got)
+                {
+                    unsigned long long r_mz = 0;
+                    unsigned long long r_pe = 0;
+                    count_signatures(scan_buf.data(), got, r_mz, r_pe);
+                    wprintf(L"  %ls[+]%ls MZ/PE scan (host)      : %ls%llu%ls hit(s) for MZ (0x4D5A) and %ls%llu%ls hit(s) for PE\\0\\0 (0x50450000) in the first %ls%llu%ls byte(s) of retained allocation %ls0x%llX%ls\n",
+                        kGreen, kReset, kGreen, r_mz, kReset, kGreen, r_pe, kReset,
+                        kGreen, static_cast<unsigned long long>(got), kReset, kGreen, retained_base, kReset);
+                }
+                else
+                {
+                    wprintf(L"  %ls[!]%ls MZ/PE scan (host)      : retained allocation %ls0x%llX%ls not readable (protection changed).\n",
+                        kYellow, kReset, kYellow, retained_base, kReset);
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[+]%ls MZ/PE scan (host)      : no other injection allocation remains readable - the manual-map and thread-hijack staging regions are scrubbed and released before this stage, and the image header page is NOACCESS by design.\n",
+                    kGreen, kReset);
             }
         }
         else if (!process || !base)

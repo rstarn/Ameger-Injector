@@ -68,15 +68,28 @@ struct MAP_STATS
 	DWORD ExportSize = 0;
 	DWORD Verified = 0;
 	DWORD ResidualMask = 0;
-	// PE-header erasure telemetry, written by MMI_CloakHeader. HeaderWipeSize is the true number of
-	// header bytes zeroed (DOS stub + NT headers + section table, clamped to the image); it is not
-	// the declared SizeOfHeaders. HeaderWipeProtect is the final page protection applied to the
-	// wiped span. Both are surfaced by the launcher's "Erase PE header" verification step.
+	// PE-header erasure telemetry, written by MMI_CloakHeader. HeaderStructuralSize is the structural
+	// span the loader recognises (DOS stub + NT headers + section table, clamped to the image) and is
+	// not the declared SizeOfHeaders. HeaderWipeSize is the span actually zeroed: the ENTIRE
+	// pre-section header region [0, min(SizeOfImage, first_section_VA)), a superset of the structural
+	// span that for a standard image is the whole first page (0x1000). HeaderWipeProtect is the final
+	// page protection applied to the wiped span. HeaderScanBytes/HeaderScanMZ/HeaderScanPE are the
+	// in-shell signature scan over the zeroed span (sliding window for 0x4D5A and 0x50450000). All are
+	// surfaced by the launcher's "Erase PE header" verification step.
+	DWORD HeaderStructuralSize = 0;
 	DWORD HeaderWipeSize = 0;
 	DWORD HeaderWipeProtect = 0;
+	DWORD HeaderScanBytes = 0;
+	DWORD HeaderScanMZ = 0;
+	DWORD HeaderScanPE = 0;
+	// A target allocation the injector deliberately RETAINS past the injection (currently the fake SEH
+	// directory kept alive for the inverted function table), if any. The launcher scans its first page
+	// host-side. Zero when nothing extra survives; the mapped image itself is not reported here.
+	ULONG_PTR RetainedAllocBase = 0;
+	DWORD RetainedAllocSize = 0;
 };
 
-static_assert(sizeof(MAP_STATS) == 44);
+static_assert(sizeof(MAP_STATS) == 80);
 
 struct STRING_STATS
 {

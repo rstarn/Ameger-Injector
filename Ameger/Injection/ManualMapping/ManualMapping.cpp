@@ -1968,6 +1968,12 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 					{
 						break;
 					}
+					// The fake SEH directory outlives the injection (the inverted function table keeps
+					// a pointer to it), so publish it as a retained target allocation for the host to
+					// scan. It is freshly committed zero pages, so the scan is expected to be clean.
+					pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pFakeSEHDirectory);
+					pData->MapStats.RetainedAllocSize = static_cast<DWORD>(FakeDirSize);
+
 					UINT_PTR pRaw = ReCa<UINT_PTR>(pData->pFakeSEHDirectory);
 					const DWORD cookie = *ReCa<volatile DWORD *>(ReCa<BYTE *>(static_cast<UINT_PTR>(KUSER_SHARED_DATA)) + dyno.KuserCookie);
 					UINT_PTR pEncoded = static_cast<UINT_PTR>(MMI_RotateRight64(cookie ^ pRaw, cookie & 0x3F));
@@ -2782,13 +2788,22 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 	const DWORD size_of_image	= pNt->OptionalHeader.SizeOfImage;
 
 	// The header region can never reach past the first section, and never past the mapped image.
+	// pre_section is the full pre-section bound [0, first_section_VA) clamped to the image - the whole
+	// span a scanner can read before it reaches section data. It is the bound the wipe is extended to;
+	// it stays 0 when the image declares no section (or a zero first-section RVA), in which case there
+	// is no safe pre-section bound and only the structural span is wiped.
 	DWORD limit = size_of_image;
+	DWORD pre_section = 0;
 	if (num_sections)
 	{
 		const DWORD first_section = IMAGE_FIRST_SECTION(pNt)->VirtualAddress;
 		if (first_section && first_section < limit)
 		{
 			limit = first_section;
+		}
+		if (first_section)
+		{
+			pre_section = first_section < size_of_image ? first_section : size_of_image;
 		}
 	}
 
@@ -2827,14 +2842,25 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 		sec_bytes = num_sections * section_size;
 	}
 
-	DWORD wipe_size = dos_bytes;
-	if (nt_bytes && e_lfanew + nt_bytes > wipe_size)
+	// The structural header span: DOS stub + NT headers + section table, each already clamped above.
+	DWORD structural_size = dos_bytes;
+	if (nt_bytes && e_lfanew + nt_bytes > structural_size)
 	{
-		wipe_size = e_lfanew + nt_bytes;
+		structural_size = e_lfanew + nt_bytes;
 	}
-	if (sec_bytes && sec_off + sec_bytes > wipe_size)
+	if (sec_bytes && sec_off + sec_bytes > structural_size)
 	{
-		wipe_size = sec_off + sec_bytes;
+		structural_size = sec_off + sec_bytes;
+	}
+
+	// Extend the wipe from the structural span to the ENTIRE pre-section header region, so no MZ/PE
+	// remnant can survive anywhere a scanner can reach before the first section. For a standard image
+	// that is the whole first page (0x1000). The extension is bounded by pre_section, which is itself
+	// clamped to the mapped image, so a hostile header can never widen the wipe past section data.
+	DWORD wipe_size = structural_size;
+	if (pre_section && pre_section > wipe_size)
+	{
+		wipe_size = pre_section;
 	}
 
 	if (!wipe_size)
@@ -2853,20 +2879,36 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
 
-	// 2) Zero the three header blocks. The ranges are the spec exactly - DOS 0x40, NT 0x108, section
-	//    headers 0x28 x NumberOfSections - each already clamped above. RtlZeroMemory is the shell's
-	//    own memset; the plain stores keep the write sequence trivial to reason about.
-	if (dos_bytes)
+	// 2) Zero the ENTIRE header region [0, wipe_size) in one pass - DOS stub, the gaps between the
+	//    header blocks, the NT headers, the section table and any linker padding up to the first
+	//    section. A single call is used deliberately: it also covers the gaps the three structural
+	//    blocks leave behind, which is exactly the space a stale MZ/PE remnant could otherwise hide in.
+	//    RtlZeroMemory is the shell's own memset; the range is already clamped above.
+	f->RtlZeroMemory(pData->pImageBase, wipe_size);
+
+	// 2b) In-shell signature scan of the just-zeroed span. The region is still writable here (NOACCESS
+	//     is applied in step 3), so a plain byte read is valid. A sliding window counts the two
+	//     sequences a loader or memory scanner would recognise - MZ (0x4D5A) and PE\0\0 (0x50450000) -
+	//     across the zeroed span; the counts are surfaced to the host and never fail the injection. The
+	//     scan is bounded by wipe_size, so it never reads section data beyond the header region.
+	DWORD scan_mz = 0;
+	DWORD scan_pe = 0;
 	{
-		f->RtlZeroMemory(pData->pImageBase, dos_bytes);
-	}
-	if (nt_bytes)
-	{
-		f->RtlZeroMemory(pData->pImageBase + e_lfanew, nt_bytes);
-	}
-	if (sec_bytes)
-	{
-		f->RtlZeroMemory(pData->pImageBase + sec_off, sec_bytes);
+		const BYTE * pScan = ReCa<const BYTE *>(pData->pImageBase);
+		for (DWORD i = 0; i + 2 <= wipe_size; ++i)
+		{
+			if (pScan[i] == 0x4D && pScan[i + 1] == 0x5A)
+			{
+				++scan_mz;
+			}
+		}
+		for (DWORD i = 0; i + 4 <= wipe_size; ++i)
+		{
+			if (pScan[i] == 0x50 && pScan[i + 1] == 0x45 && pScan[i + 2] == 0x00 && pScan[i + 3] == 0x00)
+			{
+				++scan_pe;
+			}
+		}
 	}
 
 	// 3) Final protection: NOACCESS for maximum stealth. The now-empty header
@@ -2883,11 +2925,16 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 	}
 
 	// Publish the true wiped span and the resulting protection to the host verification step. The
-	// declared SizeOfHeaders is only the header span the loader would map; the region actually wiped
-	// is the union of the DOS stub, the NT headers and the section table, clamped to the image, and
-	// the protected span is that region rounded up to a page.
-	pData->MapStats.HeaderWipeSize = wipe_size;
-	pData->MapStats.HeaderWipeProtect = final_access;
+	// declared SizeOfHeaders is only the header span the loader would map; the structural span is the
+	// DOS stub + NT headers + section table, and the region actually wiped is the whole pre-section
+	// header region (a superset), clamped to the image. The protected span is that region rounded up
+	// to a page. The scan counts are the in-shell proof that the wiped span carries no MZ/PE remnant.
+	pData->MapStats.HeaderStructuralSize	= structural_size;
+	pData->MapStats.HeaderWipeSize			= wipe_size;
+	pData->MapStats.HeaderWipeProtect		= final_access;
+	pData->MapStats.HeaderScanBytes			= wipe_size;
+	pData->MapStats.HeaderScanMZ			= scan_mz;
+	pData->MapStats.HeaderScanPE			= scan_pe;
 
 	return INJ_ERR_SUCCESS;
 }
