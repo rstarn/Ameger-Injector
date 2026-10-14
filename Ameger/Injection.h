@@ -49,6 +49,7 @@ using f_GetLastHijackStats = void(__stdcall *)(HijackStats * ProcessOut, HijackS
 using f_GetLastMapStats = void(__stdcall *)(MAP_STATS * Out);
 using f_GetLastStringStats = void(__stdcall *)(STRING_STATS * Out);
 using f_GetLastThreadExecStats = void(__stdcall *)(THREAD_EXEC_STATS * Out);
+using f_GetLastExecTelemetry = void(__stdcall *)(VERIFIABLE_EXEC_TELEMETRY * Out);
 
 using f_raw_print_callback = void(__stdcall *)(const char * szText);
 using f_SetRawPrintCallback = DWORD(__stdcall *)(f_raw_print_callback callback);
@@ -79,7 +80,9 @@ void __stdcall GetLastHijackStats(HijackStats * ProcessOut, HijackStats * Thread
 void __stdcall GetLastMapStats(MAP_STATS * Out);
 void __stdcall GetLastStringStats(STRING_STATS * Out);
 void __stdcall GetLastThreadExecStats(THREAD_EXEC_STATS * Out);
+void __stdcall GetLastExecTelemetry(VERIFIABLE_EXEC_TELEMETRY * Out);
 
 void ResetHijackStats();
 void ResetMapStats();
 void ResetThreadExecStats();
+void ResetExecTelemetry();

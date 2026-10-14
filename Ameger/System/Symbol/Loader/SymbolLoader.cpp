@@ -51,7 +51,7 @@ namespace
 
 		if (!dyn::LoadWinInet(api, module))
 		{
-			LOG(1, "SYMBOL_LOADER: WinINet unavailable (module or symbol missing)\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: WinINet unavailable (module or symbol missing)\n").get());
 
 			return E_FAIL;
 		}
@@ -62,7 +62,7 @@ namespace
 		const std::wstring allowed_prefix = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
 		if (url.size() < allowed_prefix.size() || url.compare(0, allowed_prefix.size(), allowed_prefix) != 0)
 		{
-			LOG(1, "SYMBOL_LOADER: refusing symbol URL outside the allowlist\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: refusing symbol URL outside the allowlist\n").get());
 
 			dyn::ReleaseModule(module);
 
@@ -74,7 +74,7 @@ namespace
 		HINTERNET session = api.InternetOpenW(agent.get(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
 		if (!session)
 		{
-			LOG(1, "SYMBOL_LOADER: InternetOpen failed: 0x%08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: InternetOpen failed: 0x%08X\n").get(), GetLastError());
 
 			dyn::ReleaseModule(module);
 
@@ -92,7 +92,7 @@ namespace
 			0);
 		if (!request)
 		{
-			LOG(1, "SYMBOL_LOADER: InternetOpenUrl failed: 0x%08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: InternetOpenUrl failed: 0x%08X\n").get(), GetLastError());
 
 			api.InternetCloseHandle(session);
 
@@ -111,7 +111,7 @@ namespace
 			(security_flags & SECURITY_FLAG_SECURE) == 0 ||
 			(security_flags & SECURITY_SET_MASK) != 0)
 		{
-			LOG(1, "SYMBOL_LOADER: TLS certificate validation not confirmed (flags 0x%08X)\n", security_flags);
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: TLS certificate validation not confirmed (flags 0x%08X)\n").get(), security_flags);
 
 			api.InternetCloseHandle(request);
 			api.InternetCloseHandle(session);
@@ -124,7 +124,7 @@ namespace
 		HANDLE file = CreateFileW(dest.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
-			LOG(1, "SYMBOL_LOADER: can't create PDB file: 0x%08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: can't create PDB file: 0x%08X\n").get(), GetLastError());
 		}
 		else
 		{
@@ -141,7 +141,7 @@ namespace
 				DWORD read = 0;
 				if (!api.InternetReadFile(request, buffer, sizeof(buffer), &read))
 				{
-					LOG(1, "SYMBOL_LOADER: InternetReadFile failed: 0x%08X\n", GetLastError());
+					LOG(1, XOR_STR_A("SYMBOL_LOADER: InternetReadFile failed: 0x%08X\n").get(), GetLastError());
 
 					break;
 				}
@@ -156,7 +156,7 @@ namespace
 				DWORD written = 0;
 				if (!WriteFile(file, buffer, read, &written, nullptr) || written != read)
 				{
-					LOG(1, "SYMBOL_LOADER: write failed: 0x%08X\n", GetLastError());
+					LOG(1, XOR_STR_A("SYMBOL_LOADER: write failed: 0x%08X\n").get(), GetLastError());
 
 					break;
 				}
@@ -202,12 +202,12 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	// Points 2 and 3 bind the file to this exact ntdll build, so a substituted or tampered PDB fails
 	// closed even if the transport were compromised. The PDB is never executed, only parsed for
 	// structure offsets.
-	LOG(2, "SYMBOL_LOADER::VerifyExistingPdb called\n");
+	LOG(2, XOR_STR_A("SYMBOL_LOADER::VerifyExistingPdb called\n").get());
 
 	std::ifstream f(m_szPdbPath.c_str(), std::ios::binary | std::ios::ate);
 	if (!f.is_open())
 	{
-		LOG(2, "SYMBOL_LOADER: failed to open PDB for verification\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: failed to open PDB for verification\n").get());
 
 		return false;
 	}
@@ -217,7 +217,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		f.close();
 
-		LOG(2, "SYMBOL_LOADER: invaild file size\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invaild file size\n").get());
 
 		return false;
 	}
@@ -227,7 +227,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		f.close();
 
-		LOG(2, "SYMBOL_LOADER: invaild file size\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invaild file size\n").get());
 
 		return false;
 	}
@@ -237,7 +237,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		f.close();
 
-		LOG(2, "SYMBOL_LOADER: failed to allocate memory\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: failed to allocate memory\n").get());
 
 		return false;
 	}
@@ -248,19 +248,19 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 		delete[] pdb_raw;
 		f.close();
 
-		LOG(2, "SYMBOL_LOADER: failed to read PDB\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: failed to read PDB\n").get());
 
 		return false;
 	}
 	f.close();
 
-	LOG(2, "SYMBOL_LOADER: PDB loaded into memory\n");
+	LOG(2, XOR_STR_A("SYMBOL_LOADER: PDB loaded into memory\n").get());
 
 	if (size_on_disk < sizeof(PDBHeader7))
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: raw size smaller than PDBHeader7\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: raw size smaller than PDBHeader7\n").get());
 
 		return false;
 	}
@@ -271,7 +271,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: PDB signature mismatch\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: PDB signature mismatch\n").get());
 
 		return false;
 	}
@@ -280,7 +280,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid PDB page metadata\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid PDB page metadata\n").get());
 
 		return false;
 	}
@@ -291,7 +291,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: PDB size smaller than page_size * page_count\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: PDB size smaller than page_size * page_count\n").get());
 
 		return false;
 	}
@@ -301,7 +301,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid root page list\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root page list\n").get());
 
 		return false;
 	}
@@ -311,7 +311,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid root page number\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root page number\n").get());
 
 		return false;
 	}
@@ -321,7 +321,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid root stream offset\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root stream offset\n").get());
 
 		return false;
 	}
@@ -332,7 +332,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid root stream\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root stream\n").get());
 
 		return false;
 	}
@@ -342,7 +342,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid root stream\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root stream\n").get());
 
 		return false;
 	}
@@ -357,7 +357,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 		{
 			delete[] pdb_raw;
 
-			LOG(2, "SYMBOL_LOADER: invalid stream size\n");
+			LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid stream size\n").get());
 
 			return false;
 		}
@@ -367,7 +367,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 		{
 			delete[] pdb_raw;
 
-			LOG(2, "SYMBOL_LOADER: invalid root stream page list\n");
+			LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid root stream page list\n").get());
 
 			return false;
 		}
@@ -383,7 +383,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 		{
 			delete[] pdb_raw;
 
-			LOG(2, "SYMBOL_LOADER: invalid stream size\n");
+			LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid stream size\n").get());
 
 			return false;
 		}
@@ -403,7 +403,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 			{
 				delete[] pdb_raw;
 
-				LOG(2, "SYMBOL_LOADER: invalid stream page\n");
+				LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid stream page\n").get());
 
 				return false;
 			}
@@ -414,14 +414,14 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 		streams.insert({ i, numbers });
 	}
 
-	LOG(2, "SYMBOL_LOADER: PDB size parsed\n");
+	LOG(2, XOR_STR_A("SYMBOL_LOADER: PDB size parsed\n").get());
 
 	const auto pdb_information_stream = streams.find(1);
 	if (pdb_information_stream == streams.end() || pdb_information_stream->second.empty())
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: PDB information stream missing\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: PDB information stream missing\n").get());
 
 		return false;
 	}
@@ -431,7 +431,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid PDB information page\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid PDB information page\n").get());
 
 		return false;
 	}
@@ -441,7 +441,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	{
 		delete[] pdb_raw;
 
-		LOG(2, "SYMBOL_LOADER: invalid PDB information stream\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: invalid PDB information stream\n").get());
 
 		return false;
 	}
@@ -485,19 +485,19 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 
 	if (guid_eq != 0)
 	{
-		LOG(2, "SYMBOL_LOADER: guid mismatch\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: guid mismatch\n").get());
 	}
 	else if (!age_eq)
 	{
-		LOG(1, "SYMBOL_LOADER: PDB DBI age %u does not match module age %u; rejecting PDB\n", dbi_age, age);
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB DBI age %u does not match module age %u; rejecting PDB\n").get(), dbi_age, age);
 	}
 	else if (!dbi_age_available)
 	{
-		LOG(2, "SYMBOL_LOADER: guid match, PDB DBI age unavailable\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: guid match, PDB DBI age unavailable\n").get());
 	}
 	else
 	{
-		LOG(2, "SYMBOL_LOADER: guid and age match\n");
+		LOG(2, XOR_STR_A("SYMBOL_LOADER: guid and age match\n").get());
 	}
 
 	return ret;
@@ -512,12 +512,12 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		m_bStartDownload = true;
 	}
 
-	LOG(1, "SYMBOL_LOADER::Initialize called in thread %08lX (%lu)\n", GetCurrentThreadId(), GetCurrentThreadId());
+	LOG(1, XOR_STR_A("SYMBOL_LOADER::Initialize called in thread %08lX (%lu)\n").get(), GetCurrentThreadId(), GetCurrentThreadId());
 
 	std::ifstream File(szModulePath.c_str(), std::ios::binary | std::ios::ate);
 	if (!File.good())
 	{
-		LOG(1, "SYMBOL_LOADER: can't open module path\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: can't open module path\n").get());
 
 		return SYMBOL_ERR_CANT_OPEN_MODULE;
 	}
@@ -525,7 +525,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	auto FileSize = File.tellg();
 	if (FileSize <= 0)
 	{
-		LOG(1, "SYMBOL_LOADER: invalid file size\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: invalid file size\n").get());
 
 		return SYMBOL_ERR_FILE_SIZE_IS_NULL;
 	}
@@ -535,7 +535,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	{
 		File.close();
 
-		LOG(1, "SYMBOL_LOADER: can't allocate memory\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: can't allocate memory\n").get());
 
 		return SYMBOL_ERR_CANT_ALLOC_MEMORY_NEW;
 	}
@@ -547,13 +547,13 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		delete[] pRawData;
 		File.close();
 
-		LOG(1, "SYMBOL_LOADER: short read of module file\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: short read of module file\n").get());
 
 		return SYMBOL_ERR_CANT_OPEN_MODULE;
 	}
 	File.close();
 
-	LOG(1, "SYMBOL_LOADER: ready to parse PE headers\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: ready to parse PE headers\n").get());
 
 	PE_IMAGE::OPTIONS module_options;
 	module_options.EnableExceptions = true;
@@ -563,7 +563,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	{
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: invalid module layout: %08X\n", validation_result);
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: invalid module layout: %08X\n").get(), validation_result);
 
 		return SYMBOL_ERR_INVALID_FILE_ARCHITECTURE;
 	}
@@ -574,7 +574,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	IMAGE_OPTIONAL_HEADER64 * pOpt64 = ReCa<IMAGE_OPTIONAL_HEADER64 *>(&pNT->OptionalHeader);
 
-	LOG(1, "SYMBOL_LOADER: x64 target identified\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: x64 target identified\n").get());
 
 	DWORD ImageSize = pOpt64->SizeOfImage;
 
@@ -583,7 +583,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	{
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: can't allocate memory: 0x%08X\n", GetLastError());
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: can't allocate memory: 0x%08X\n").get(), GetLastError());
 
 		return SYMBOL_ERR_CANT_ALLOC_MEMORY;
 	}
@@ -599,7 +599,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		}
 	}
 
-	LOG(1, "SYMBOL_LOADER: sections mapped\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: sections mapped\n").get());
 
 	IMAGE_DATA_DIRECTORY * pDataDir = &pOpt64->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
 
@@ -615,7 +615,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: no PDB debug data\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: no PDB debug data\n").get());
 
 		return SYMBOL_ERR_NO_PDB_DEBUG_DATA;
 	}
@@ -633,7 +633,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: CodeView record outside the mapped image\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: CodeView record outside the mapped image\n").get());
 
 		return SYMBOL_ERR_NO_PDB_DEBUG_DATA;
 	}
@@ -645,7 +645,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: invalid PDB signature\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: invalid PDB signature\n").get());
 
 		return SYMBOL_ERR_NO_PDB_DEBUG_DATA;
 	}
@@ -656,7 +656,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: empty download path\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: empty download path\n").get());
 
 		return SYMBOL_ERR_PATH_DOESNT_EXIST;
 	}
@@ -668,13 +668,13 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	m_szRootPath = m_szPdbPath;
 
-	LOG(1, "SYMBOL_LOADER: PDB signature identified\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB signature identified\n").get());
 
 	if (!CreateDirectoryW(m_szPdbPath.c_str(), nullptr))
 	{
 		if (GetLastError() != ERROR_ALREADY_EXISTS)
 		{
-			LOG(1, "SYMBOL_LOADER: can't create/open download path: 0x%08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: can't create/open download path: 0x%08X\n").get(), GetLastError());
 
 			VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
 			delete[] pRawData;
@@ -693,7 +693,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	}
 	else if (GetLastError() != ERROR_ALREADY_EXISTS)
 	{
-		LOG(1, "SYMBOL_LOADER: can't create/open download path: 0x%08X\n", GetLastError());
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: can't create/open download path: 0x%08X\n").get(), GetLastError());
 
 		VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
 		delete[] pRawData;
@@ -728,14 +728,14 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		VirtualFree(pLocalImageBase, 0, MEM_RELEASE);
 		delete[] pRawData;
 
-		LOG(1, "SYMBOL_LOADER: unsafe PDB file name\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: unsafe PDB file name\n").get());
 
 		return SYMBOL_ERR_INVALID_SYMBOL_NAME;
 	}
 
 	m_szPdbPath += PdbFileName;
 
-	LOG(1, "SYMBOL_LOADER: PDB path = %ls\n", m_szPdbPath.c_str());
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB path = %ls\n").get(), m_szPdbPath.c_str());
 
 	m_Filesize = 0;
 	WIN32_FILE_ATTRIBUTE_DATA file_attr_data{ 0 };
@@ -745,7 +745,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		if (!Redownload && !VerifyExistingPdb(pdbInformation->Guid, pdbInformation->Age))
 		{
-			LOG(1, "SYMBOL_LOADER: verification failed, PDB will be redownloaded\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: verification failed, PDB will be redownloaded\n").get());
 
 			Redownload = true;
 		}
@@ -757,7 +757,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	}
 	else
 	{
-		LOG(1, "SYMBOL_LOADER: file doesn't exist, PDB will be downloaded\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: file doesn't exist, PDB will be downloaded\n").get());
 
 		Redownload = true;
 	}
@@ -773,12 +773,12 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 			delete[] pRawData;
 
-			LOG(1, "SYMBOL_LOADER: failed to parse GUID");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: failed to parse GUID").get());
 
 			return SYMBOL_ERR_CANT_CONVERT_PDB_GUID;
 		}
 
-		LOG(1, "SYMBOL_LOADER: PDB GUID resolved (%zu chars, value redacted)\n", guid_filtered.size());
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB GUID resolved (%zu chars, value redacted)\n").get(), guid_filtered.size());
 
 		std::wstring url = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
 		url += PdbFileName;
@@ -788,7 +788,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 		url += '/';
 		url += PdbFileName;
 
-		LOG(1, "SYMBOL_LOADER: fetching %ls (%lu bytes URL, GUID/age redacted)\n",
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: fetching %ls (%lu bytes URL, GUID/age redacted)\n").get(),
 			PdbFileName.c_str(), static_cast<unsigned long>(url.size()));
 
 		if (AutoDownload)
@@ -817,13 +817,13 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 				delete[] pRawData;
 
-				LOG(1, "SYMBOL_LOADER: no download was granted within %lu ms\n", kGrantWaitMs);
+				LOG(1, XOR_STR_A("SYMBOL_LOADER: no download was granted within %lu ms\n").get(), kGrantWaitMs);
 
 				return m_bInterruptEvent ? SYMBOL_ERR_INTERRUPT : SYMBOL_ERR_DOWNLOAD_FAILED;
 			}
 		}
 
-		LOG(1, "SYMBOL_LOADER: downloading PDB\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: downloading PDB\n").get());
 
 		constexpr DWORD kDownloadInactivityTimeoutMs = 60000;
 		if (!m_DlMgr.SetTimeout(kDownloadInactivityTimeoutMs))
@@ -832,7 +832,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 			delete[] pRawData;
 
-			LOG(1, "SYMBOL_LOADER: failed to arm download timeout\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: failed to arm download timeout\n").get());
 
 			return SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
@@ -854,7 +854,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 			{
 				break;
 			}
-			LOG(1, "SYMBOL_LOADER: download attempt %d/3 failed: 0x%08X\n", attempt, dl_hr);
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: download attempt %d/3 failed: 0x%08X\n").get(), attempt, dl_hr);
 			if (dl_hr == E_ABORT || m_bInterruptEvent || m_DlMgr.TimedOut())
 			{
 				dl_aborted = true;
@@ -891,11 +891,11 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 			delete[] pRawData;
 
-			LOG(1, "SYMBOL_LOADER: failed to download file: 0x%08X\n", dl_hr);
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: failed to download file: 0x%08X\n").get(), dl_hr);
 
 			if (dl_timed_out)
 			{
-				LOG(1, "SYMBOL_LOADER: PDB download timed out\n");
+				LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB download timed out\n").get());
 
 				return SYMBOL_ERR_DOWNLOAD_FAILED;
 			}
@@ -903,7 +903,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 			return (dl_hr == E_ABORT || dl_aborted) ? SYMBOL_ERR_INTERRUPT : SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
 
-		LOG(1, "SYMBOL_LOADER: download finished\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: download finished\n").get());
 
 		if (!VerifyExistingPdb(pdbInformation->Guid, pdbInformation->Age))
 		{
@@ -913,7 +913,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 			DeleteFileW(m_szPdbPath.c_str());
 
-			LOG(1, "SYMBOL_LOADER: downloaded PDB failed verification\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: downloaded PDB failed verification\n").get());
 
 			return SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
@@ -925,13 +925,13 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	delete[] pRawData;
 
-	LOG(1, "SYMBOL_LOADER: PDB verified\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: PDB verified\n").get());
 
 	if (Redownload || !m_Filesize)
 	{
 		if (!GetFileAttributesExW(m_szPdbPath.c_str(), GetFileExInfoStandard, &file_attr_data))
 		{
-			LOG(1, "SYMBOL_LOADER: can't access PDB file: 0x%08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: can't access PDB file: 0x%08X\n").get(), GetLastError());
 
 			DeleteFileW(m_szPdbPath.c_str());
 
@@ -946,7 +946,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	{
 		m_hPdbFile = nullptr;
 
-		LOG(1, "SYMBOL_LOADER: can't open PDB file: 0x%08X\n", GetLastError());
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: can't open PDB file: 0x%08X\n").get(), GetLastError());
 
 		DeleteFileW(m_szPdbPath.c_str());
 
@@ -960,7 +960,7 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 void SYMBOL_LOADER::Cleanup()
 {
-	LOG(1, "SYMBOL_LOADER::Cleanup\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER::Cleanup\n").get());
 
 	m_bReady = false;
 
@@ -992,11 +992,11 @@ void SYMBOL_LOADER::PurgePdb()
 
 	if (!DeleteFileW(m_szPdbPath.c_str()))
 	{
-		LOG(1, "SYMBOL_LOADER: failed to purge cached PDB: 0x%08X\n", GetLastError());
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: failed to purge cached PDB: 0x%08X\n").get(), GetLastError());
 		return;
 	}
 
-	LOG(1, "SYMBOL_LOADER: cached PDB purged from disk\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER: cached PDB purged from disk\n").get());
 	m_Filesize = 0;
 
 	if (m_bCreatedPdbDir && !m_szPdbDir.empty())
@@ -1009,7 +1009,7 @@ void SYMBOL_LOADER::PurgePdb()
 	{
 		if (!DeleteSymbolCacheRoot(m_szRootPath))
 		{
-			LOG(1, "SYMBOL_LOADER: symbol cache root could not be removed\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: symbol cache root could not be removed\n").get());
 		}
 
 		m_szRootPath.clear();
@@ -1023,7 +1023,7 @@ void SYMBOL_LOADER::SetDownload(bool bDownload)
 
 void SYMBOL_LOADER::Interrupt()
 {
-	LOG(1, "SYMBOL_LOADER::Interrupt\n");
+	LOG(1, XOR_STR_A("SYMBOL_LOADER::Interrupt\n").get());
 
 	m_bInterruptEvent = true;
 
@@ -1031,16 +1031,16 @@ void SYMBOL_LOADER::Interrupt()
 	{
 		if (!SetEvent(m_hInterruptEvent))
 		{
-			LOG(1, "SYMBOL_LOADER: SetEvent failed to trigger interrupt event: %08X\n", GetLastError());
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: SetEvent failed to trigger interrupt event: %08X\n").get(), GetLastError());
 		}
 		else
 		{
-			LOG(1, "SYMBOL_LOADER: interrupt event set\n");
+			LOG(1, XOR_STR_A("SYMBOL_LOADER: interrupt event set\n").get());
 		}
 	}
 	else
 	{
-		LOG(1, "SYMBOL_LOADER: no interrupt event specified\n");
+		LOG(1, XOR_STR_A("SYMBOL_LOADER: no interrupt event specified\n").get());
 	}
 
 }

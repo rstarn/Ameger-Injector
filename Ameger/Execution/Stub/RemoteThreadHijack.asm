@@ -83,14 +83,30 @@ StubFpSaveDone:
     fldcw word ptr [rbx+SR_SHELL_CW]
     ldmxcsr dword ptr [rbx+SR_SHELL_MXCSR]
 
-    mov rax, [rbx+SR_ROUTINE]
+    mov r15, [rbx+SR_ROUTINE]
     mov rcx, [rbx+SR_ARG]
 RemoteThreadTebReadIn:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_BUFFER], r11d
     mov qword ptr [rbx+SR_STATE], 1
+    ; Ground-truth cycle capture: t0 -> [SR_CYCLES_DELTA] temp, then delta after call.
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    mov [rbx+SR_CYCLES_DELTA], rax
+    mov rax, r15
     call rax
     mov [rbx+SR_RET], eax
+    ; t1 - t0 -> RoutineCyclesDelta.
+    push rcx
+    push rdx
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    sub rax, [rbx+SR_CYCLES_DELTA]
+    mov [rbx+SR_CYCLES_DELTA], rax
+    pop rdx
+    pop rcx
 RemoteThreadTebReadOut:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_LAST_ERROR], r11d
@@ -136,6 +152,10 @@ ENDIF
     mov r10, gs:[10h]
     cmp r10, rdi
     jae StubStackScrubDone
+    ; Ground-truth scrub audit: (saved_rsp - StackLimit) in bytes.
+    mov rax, r12
+    sub rax, r10
+    mov [rbx+SR_SCRUB_BYTES], rax
     mov rdx, rdi
     sub rdx, r10
     shr rdx, 3
@@ -185,7 +205,10 @@ RemoteThreadShellCwPad0  DW 0
 RemoteThreadShellCwPad1  DD 0
 RemoteThreadShellMxcsr   DD 01F80h
 RemoteThreadShellMxPad   DD 0
-RemoteThreadFpReserved   BYTE 48 DUP (0)
+RemoteThreadCyclesDelta  DQ 0
+RemoteThreadScrubBytes   DQ 0
+RemoteThreadSavedRsp     DQ 0
+RemoteThreadFpReserved   BYTE 24 DUP (0)
 RemoteThreadFpArea       BYTE SR_FP_AREA_SIZE DUP (0)
 RemoteThreadReturnTarget DQ 0
 

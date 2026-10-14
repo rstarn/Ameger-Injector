@@ -42,7 +42,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>AMEGER_MMAP_SENTINEL=$(AmegerMmapSentinel);AMEGER_STRING_SEED=$(AmegerStringSeed);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>AMEGER_MMAP_SENTINEL=$(AmegerMmapSentinel);AMEGER_STRING_SEED=$(AmegerStringSeed);AMEGER_KEEP_RUNTIME_LOGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level4</WarningLevel>
       <ConformanceMode>true</ConformanceMode>
       <DebugInformationFormat>None</DebugInformationFormat>

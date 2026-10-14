@@ -12,6 +12,7 @@ namespace
 {
 
 	MAP_STATS g_LastMapStats{};
+	VERIFIABLE_EXEC_TELEMETRY g_LastExecTelemetry{};
 
 	void StoreMapStats(const MAP_STATS & Src)
 	{
@@ -30,6 +31,27 @@ namespace
 		volatile LONG * src = ReCa<volatile LONG *>(&g_LastMapStats);
 		LONG * dst = ReCa<LONG *>(&Dst);
 		for (size_t i = 0; i < sizeof(MAP_STATS) / sizeof(LONG); ++i)
+		{
+			dst[i] = InterlockedCompareExchange(&src[i], 0, 0);
+		}
+	}
+
+	void StoreExecTelemetry(const VERIFIABLE_EXEC_TELEMETRY & Src)
+	{
+		static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0, "telemetry must be LONG-multiple");
+		LONG * dst = ReCa<LONG *>(&g_LastExecTelemetry);
+		const LONG * src = ReCa<const LONG *>(&Src);
+		for (size_t i = 0; i < sizeof(VERIFIABLE_EXEC_TELEMETRY) / sizeof(LONG); ++i)
+		{
+			InterlockedExchange(&dst[i], src[i]);
+		}
+	}
+
+	void LoadExecTelemetry(VERIFIABLE_EXEC_TELEMETRY & Dst)
+	{
+		volatile LONG * src = ReCa<volatile LONG *>(&g_LastExecTelemetry);
+		LONG * dst = ReCa<LONG *>(&Dst);
+		for (size_t i = 0; i < sizeof(VERIFIABLE_EXEC_TELEMETRY) / sizeof(LONG); ++i)
 		{
 			dst[i] = InterlockedCompareExchange(&src[i], 0, 0);
 		}
@@ -488,6 +510,17 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 
 	StoreMapStats(data.MapStats);
+	StoreExecTelemetry(data.ExecTelemetry);
+	// Forensic ground-truth summary: every line below is a read-back value,
+	// never an inference. Pre/post protection queries happen in-shell and the
+	// host only reports the recorded NTSTATUS/return/scan counts.
+	LOG(1, "[MMAP] [+] Image Relocation: base=%p sections=%u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
+	LOG(1, "[MMAP] [+] DllMain: result=%d win32=0x%08X cycles=%llu\n", (int)data.ExecTelemetry.DllMainResult, data.ExecTelemetry.DllMainLastWin32Error, (unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
+	LOG(1, "[MMAP] [+] LoaderLock: lock=0x%08X state=%u cookie=0x%llX unlock=0x%08X\n", (unsigned)data.ExecTelemetry.LdrLockStatus, data.ExecTelemetry.LoaderLockState, (unsigned long long)data.ExecTelemetry.LoaderLockCookie, (unsigned)data.ExecTelemetry.LdrUnlockStatus);
+	LOG(1, "[MMAP] [+] TLS: configured=%u executed=%u failed=%u last=%p\n", data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted, data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
+	LOG(1, "[MMAP] [+] SEH: dynamic=%d inverted=%d entry=%p\n", (int)data.ExecTelemetry.DynamicTableInstalled, (int)data.ExecTelemetry.InvertedTableInstalled, data.ExecTelemetry.InvertedTableEntryBase);
+	LOG(1, "[CLOAK] [+] Wipe: span=%llu mz=%u pe=%u prot=0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
+	LOG(1, "[MMAP] [+] PageProtections: %u section records\n", data.SectionProtCount);
 
 	if (remote_ret != INJ_ERR_SUCCESS)
 	{
@@ -1815,17 +1848,26 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 	bool section_failure = false;
 
 	auto pCurrentSectionHeader = MMI_Sections(pData);
+	const DWORD section_count = MMI_SectionCount(pData);
 
-	for (UINT i = 0; i != MMI_SectionCount(pData); ++i, ++pCurrentSectionHeader)
+	pData->SectionProtCount = 0;
+	for (DWORD si = 0; si < MM_MAX_PROT_RECORDS; ++si)
+	{
+		pData->SectionProt[si] = SECTION_PROT_RECORD{};
+	}
+
+	for (UINT i = 0; i != section_count; ++i, ++pCurrentSectionHeader)
 	{
 		void * pSectionBase		= pData->pImageBase + pCurrentSectionHeader->VirtualAddress;
 		DWORD characteristics	= pCurrentSectionHeader->Characteristics;
 		SIZE_T SectionSize		= (std::max)(static_cast<SIZE_T>(pCurrentSectionHeader->Misc.VirtualSize), static_cast<SIZE_T>(pCurrentSectionHeader->SizeOfRawData));
 
+		ULONG NewProtection = PAGE_NOACCESS;
+		NTSTATUS prot_status = STATUS_SUCCESS;
+		ULONG old_prot = 0;
+
 		if (SectionSize)
 		{
-
-			ULONG NewProtection = PAGE_NOACCESS;
 
 			if (characteristics & IMAGE_SCN_MEM_EXECUTE)
 			{
@@ -1851,11 +1893,41 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 			}
 
 			pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &pSectionBase, &SectionSize, NewProtection, &OldProtection);
+			prot_status = pData->ntRet;
+			old_prot = OldProtection;
 			if (NT_FAIL(pData->ntRet))
 			{
 				section_failure = true;
-				break;
 			}
+		}
+
+		// Ground-truth record: exact RVA/size/request/status per section.
+		if (i < MM_MAX_PROT_RECORDS)
+		{
+			SECTION_PROT_RECORD rec{};
+			for (int ci = 0; ci < 8; ++ci)
+			{
+				rec.SectionName[ci] = ReCa<const char *>(pCurrentSectionHeader->Name)[ci];
+				if (rec.SectionName[ci] == '\0')
+				{
+					break;
+				}
+			}
+			rec.VirtualRva = pCurrentSectionHeader->VirtualAddress;
+			rec.VirtualSize = pCurrentSectionHeader->Misc.VirtualSize;
+			rec.RawSize = pCurrentSectionHeader->SizeOfRawData;
+			rec.Characteristics = characteristics;
+			rec.RequestedProtect = NewProtection;
+			rec.ProtectStatus = prot_status;
+			rec.OldProtect = old_prot;
+			pData->SectionProt[i] = rec;
+			pData->SectionProtCount = i + 1;
+		}
+
+		if (NT_FAIL(prot_status))
+		{
+			section_failure = true;
+			break;
 		}
 	}
 
@@ -1912,6 +1984,7 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 			return INJ_MM_ERR_ENABLING_SEH_FAILED;
 		}
 		pData->pDynamicFunctionTable = pExceptionHandlers;
+		pData->ExecTelemetry.DynamicTableInstalled = TRUE;
 
 		bool dynamic_ok = true;
 		if (f->RtlLookupFunctionEntry && EntryCount)
@@ -1922,6 +1995,10 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 			BYTE history[128]{};
 			RUNTIME_FUNCTION * found = f->RtlLookupFunctionEntry(probe, &lookup_base, history);
 			dynamic_ok = (found != nullptr && lookup_base == ReCa<ULONGLONG>(pData->pImageBase));
+		}
+		if (!dynamic_ok)
+		{
+			pData->ExecTelemetry.DynamicTableInstalled = FALSE;
 		}
 
 		if (!dynamic_ok)
@@ -1958,6 +2035,8 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 				inv_entry = true;
 
 				pData->InvertedTableInstalled = 1;
+				pData->ExecTelemetry.InvertedTableInstalled = TRUE;
+				pData->ExecTelemetry.InvertedTableEntryBase = pData->pImageBase;
 				const DWORD exc_size = *ReCa<const DWORD *>(entry + dyno.InvertedEntryExceptionDirectorySize);
 				if (!exc_size)
 				{
@@ -2111,7 +2190,28 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 	}
 
 	ULONG callback_count = 0;
+	ULONG configured_count = 0;
 	DWORD tls_result = INJ_ERR_SUCCESS;
+	auto * pScan = ReCa<PIMAGE_TLS_CALLBACK *>(pTLS->AddressOfCallBacks);
+	while (pScan)
+	{
+		if (!MMI_InImage(pData, pScan, sizeof(*pScan)))
+		{
+			break;
+		}
+		if (!(*pScan))
+		{
+			break;
+		}
+		++configured_count;
+		++pScan;
+		if (configured_count >= 1025)
+		{
+			break;
+		}
+	}
+	pData->ExecTelemetry.TlsCallbacksConfigured = configured_count;
+
 	auto * pCallback = ReCa<PIMAGE_TLS_CALLBACK *>(pTLS->AddressOfCallBacks);
 	while (pCallback)
 	{
@@ -2120,6 +2220,8 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 		{
 			pData->TlsCallbackIndex = callback_count;
 			pData->TlsCallbackAddress = ReCa<ULONG_PTR>(pCallback);
+			pData->ExecTelemetry.TlsCallbacksFailed = (configured_count > callback_count) ? (configured_count - callback_count) : 1;
+			pData->ExecTelemetry.TlsCallbacksExecuted = callback_count;
 			tls_result = INJ_MM_ERR_TLS_CALLBACK_RANGE;
 			break;
 		}
@@ -2135,6 +2237,8 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 		{
 			pData->TlsCallbackIndex = callback_count;
 			pData->TlsCallbackAddress = ReCa<ULONG_PTR>(Callback);
+			pData->ExecTelemetry.TlsCallbacksFailed = (configured_count > callback_count) ? (configured_count - callback_count) : 1;
+			pData->ExecTelemetry.TlsCallbacksExecuted = callback_count;
 			tls_result = INJ_MM_ERR_TLS_CALLBACK_RANGE;
 			break;
 		}
@@ -2147,13 +2251,21 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 		{
 			pData->TlsCallbackIndex = callback_count;
 			pData->TlsCallbackAddress = ReCa<ULONG_PTR>(Callback);
+			pData->ExecTelemetry.TlsCallbacksFailed = (configured_count > callback_count) ? (configured_count - callback_count) : 1;
+			pData->ExecTelemetry.TlsCallbacksExecuted = callback_count;
 			tls_result = INJ_MM_ERR_TLS_CALLBACK_RANGE;
 			break;
 		}
 
 		Callback(pData->pImageBase, DLL_PROCESS_ATTACH, nullptr);
+		pData->ExecTelemetry.TlsLastExecutedAddress = ReCa<PVOID>(Callback);
 		++callback_count;
 		++pCallback;
+	}
+	if (tls_result == INJ_ERR_SUCCESS)
+	{
+		pData->ExecTelemetry.TlsCallbacksExecuted = callback_count;
+		pData->ExecTelemetry.TlsCallbacksFailed = 0;
 	}
 
 	bool unlinked = false;
@@ -2248,6 +2360,9 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 	if (pData->Flags & INJ_MM_RUN_UNDER_LDR_LOCK)
 	{
 		pData->ntRet = f->LdrLockLoaderLock(NULL, &State, &Cookie);
+		pData->ExecTelemetry.LdrLockStatus = pData->ntRet;
+		pData->ExecTelemetry.LoaderLockState = State;
+		pData->ExecTelemetry.LoaderLockCookie = Cookie;
 
 		locked = NT_SUCCESS(pData->ntRet);
 		if (!locked)
@@ -2257,15 +2372,39 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 	}
 
 	f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + MMI_EntryPoint(pData));
-	if (!DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_ATTACH, nullptr))
+	const unsigned __int64 dll_t0 = __rdtsc();
+	const BOOL dll_result = DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_ATTACH, nullptr);
+	const unsigned __int64 dll_t1 = __rdtsc();
+	// Ground truth: exact return + TEB LastError at return, no inference.
+	// The TEB is reached through the GS segment rather than through the _TEB type, because the public
+	// struct is not guaranteed to be declared on every SDK/headers combination, while gs:[0x60] is the
+	// architectural TEB self-pointer. The field offset itself is the PDB-resolved one, so this reads the
+	// same slot the hijack stub saves and restores (RemoteThreadTebReadIn/Out).
+	DWORD dll_win32 = 0;
+	{
+		const DWORD teb_last_error = pData->NtOffsets.TebLastErrorValue;
+		if (teb_last_error)
+		{
+			const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x60));
+			if (teb)
+			{
+				dll_win32 = *ReCa<DWORD *>(ReCa<BYTE *>(teb) + teb_last_error);
+			}
+		}
+	}
+	pData->ExecTelemetry.DllMainResult = dll_result;
+	pData->ExecTelemetry.DllMainLastWin32Error = dll_win32;
+	pData->ExecTelemetry.DllMainCyclesDelta = (dll_t1 >= dll_t0) ? (dll_t1 - dll_t0) : 0;
+	if (!dll_result)
 	{
 
 		DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_DETACH, nullptr);
 
 		if ((pData->Flags & INJ_MM_RUN_UNDER_LDR_LOCK) && locked)
 		{
-
-			if (!NT_SUCCESS(f->LdrUnlockLoaderLock(NULL, Cookie)))
+			const NTSTATUS unlock_st = f->LdrUnlockLoaderLock(NULL, Cookie);
+			pData->ExecTelemetry.LdrUnlockStatus = unlock_st;
+			if (!NT_SUCCESS(unlock_st))
 			{
 				return INJ_MM_ERR_LOADER_LOCK_FAILED;
 			}
@@ -2276,7 +2415,9 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 
 	if ((pData->Flags & INJ_MM_RUN_UNDER_LDR_LOCK) && locked)
 	{
-		if (!NT_SUCCESS(f->LdrUnlockLoaderLock(NULL, Cookie)))
+		const NTSTATUS unlock_st = f->LdrUnlockLoaderLock(NULL, Cookie);
+		pData->ExecTelemetry.LdrUnlockStatus = unlock_st;
+		if (!NT_SUCCESS(unlock_st))
 		{
 			return INJ_MM_ERR_LOADER_LOCK_FAILED;
 		}
@@ -2935,6 +3076,10 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 	pData->MapStats.HeaderScanBytes			= wipe_size;
 	pData->MapStats.HeaderScanMZ			= scan_mz;
 	pData->MapStats.HeaderScanPE			= scan_pe;
+	pData->ExecTelemetry.PreSectionSpanWiped = static_cast<SIZE_T>(wipe_size);
+	pData->ExecTelemetry.MZRemnantsFound = scan_mz;
+	pData->ExecTelemetry.PERemnantsFound = scan_pe;
+	pData->ExecTelemetry.PostWipeProtection = final_access;
 
 	return INJ_ERR_SUCCESS;
 }
@@ -3043,5 +3188,21 @@ void __stdcall GetLastMapStats(MAP_STATS * Out)
 	if (Out)
 	{
 		LoadMapStats(*Out);
+	}
+}
+
+void ResetExecTelemetry()
+{
+	const VERIFIABLE_EXEC_TELEMETRY Empty{};
+	StoreExecTelemetry(Empty);
+}
+
+void __stdcall GetLastExecTelemetry(VERIFIABLE_EXEC_TELEMETRY * Out)
+{
+#pragma EXPORT_FUNCTION("CoreExecTelemetry", __FUNCDNAME__)
+
+	if (Out)
+	{
+		LoadExecTelemetry(*Out);
 	}
 }

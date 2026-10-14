@@ -42,9 +42,17 @@ struct HijackStats
 
 	DWORD SponsorValidated = 0;
 	DWORD SponsorProbed = 0;
+	// Forensic handle-census telemetry (appended; original offsets preserved).
+	DWORD SnapshotBytes = 0;
+	DWORD ProbeMethod = 0;
+	ULONG_PTR ProbePage = 0;
+	DWORD ProbeProtect = 0;
+	DWORD Reserved2 = 0;
 };
 
-static_assert(sizeof(HijackStats) == 72);
+static_assert(sizeof(HijackStats) == 96);
+static_assert(offsetof(HijackStats, Attempted) == 0);
+static_assert(offsetof(HijackStats, SponsorProbed) == 68);
 
 struct THREAD_EXEC_STATS
 {
@@ -53,9 +61,26 @@ struct THREAD_EXEC_STATS
 	DWORD HijackedTid = 0;
 	DWORD FailCode = 0;
 	DWORD DonorRounds = 0;
+	// Forensic-grade hijack telemetry (appended; first five fields keep offsets).
+	DWORD64 RoutineCyclesDelta = 0;
+	ULONG_PTR StackScrubbedBytes = 0;
+	DWORD PollIterations = 0;
+	DWORD ExecMs = 0;
+	// Ground-truth return value of the remote routine (the manual-map shell's own status).
+	DWORD RoutineRet = 0;
+	ULONG_PTR OldRip = 0;
+	ULONG_PTR SavedRsp = 0;
+	ULONG_PTR StackLimit = 0;
+	DWORD FpMode = 0;
+	DWORD FpMask = 0;
 };
 
-static_assert(sizeof(THREAD_EXEC_STATS) == 20);
+static_assert(sizeof(THREAD_EXEC_STATS) == 88);
+static_assert(offsetof(THREAD_EXEC_STATS, Attempted) == 0);
+static_assert(offsetof(THREAD_EXEC_STATS, DonorRounds) == 16);
+static_assert(offsetof(THREAD_EXEC_STATS, PollIterations) == 40);
+static_assert(offsetof(THREAD_EXEC_STATS, RoutineRet) == 48);
+static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 84);
 
 struct MAP_STATS
 {
@@ -103,3 +128,60 @@ struct STRING_STATS
 };
 
 static_assert(sizeof(STRING_STATS) == 28);
+
+// Verifiable in-shell execution telemetry. Every field is written by the remote
+// shell from an explicit return value, queried state, or NTSTATUS — never inferred.
+//
+// The NTSTATUS sentinels are spelled as literals rather than STATUS_* macros: this header is pulled
+// in from Ameger/Injection.h, which sits above NT/NTDefinitions.h (where those macros live), and
+// redefining them here would collide with that header's unconditional #defines.
+#define AMEGER_NTSTATUS_UNSUCCESSFUL	((NTSTATUS)0xC0000001L)
+#define AMEGER_NTSTATUS_SUCCESS		((NTSTATUS)0x00000000L)
+
+struct VERIFIABLE_EXEC_TELEMETRY
+{
+	// Loader lock ground truth.
+	NTSTATUS LdrLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	ULONG LoaderLockState = 0;
+	ULONG_PTR LoaderLockCookie = 0;
+	NTSTATUS LdrUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+
+	// DllMain ground truth.
+	BOOL DllMainResult = FALSE;
+	DWORD DllMainLastWin32Error = 0;
+	unsigned __int64 DllMainCyclesDelta = 0;
+
+	// TLS callback ground truth.
+	DWORD TlsCallbacksConfigured = 0;
+	DWORD TlsCallbacksExecuted = 0;
+	DWORD TlsCallbacksFailed = 0;
+	PVOID TlsLastExecutedAddress = nullptr;
+
+	// Exception handling ground truth.
+	BOOL InvertedTableInstalled = FALSE;
+	BOOL DynamicTableInstalled = FALSE;
+	PVOID InvertedTableEntryBase = nullptr;
+
+	// Cloaking ground truth.
+	SIZE_T PreSectionSpanWiped = 0;
+	DWORD MZRemnantsFound = 0;
+	DWORD PERemnantsFound = 0;
+	DWORD PostWipeProtection = 0;
+};
+
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % 4 == 0);
+
+// Per-section page-protection telemetry recorded in-shell.
+struct SECTION_PROT_RECORD
+{
+	char SectionName[8]{};
+	DWORD VirtualRva = 0;
+	DWORD VirtualSize = 0;
+	DWORD RawSize = 0;
+	DWORD Characteristics = 0;
+	ULONG RequestedProtect = 0;
+	NTSTATUS ProtectStatus = AMEGER_NTSTATUS_SUCCESS;
+	ULONG OldProtect = 0;
+};
+
+#define MM_MAX_PROT_RECORDS 96

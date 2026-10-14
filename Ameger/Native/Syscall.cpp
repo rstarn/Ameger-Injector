@@ -6,11 +6,13 @@
 // Syscall verbose logging (enabled via AMEGER_SYSCALL_VERBOSE=1)
 inline bool SyscallVerbose()
 {
+    // Detailed by default so the resolution table is part of the normal audit trail.
+    // Set AMEGER_SYSCALL_VERBOSE=0 to silence it.
     static const bool verbose = []() -> bool
     {
         wchar_t buffer[8] = {};
         const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_SYSCALL_VERBOSE").get(), buffer, 4);
-        return (got == 1 && buffer[0] == L'1');
+        return !(got == 1 && buffer[0] == L'0');
     }();
     return verbose;
 }
@@ -118,6 +120,35 @@ namespace
 
 	constexpr size_t kSyscallTableCount	= sizeof(g_SyscallTable) / sizeof(g_SyscallTable[0]);
 	constexpr DWORD	kStubAreaSize		= static_cast<DWORD>(kSyscallTableCount) * SC_STUB_SIZE;
+
+	const char * kSyscallNames[kSyscallTableCount] =
+	{
+		"NtOpenProcess",
+		"NtOpenThread",
+		"NtDuplicateObject",
+		"NtClose",
+		"NtQuerySystemInformation",
+		"NtQueryInformationProcess",
+		"NtQueryInformationThread",
+		"NtAllocateVirtualMemory",
+		"NtFreeVirtualMemory",
+		"NtProtectVirtualMemory",
+		"NtWriteVirtualMemory",
+		"NtReadVirtualMemory",
+		"NtSuspendThread",
+		"NtResumeThread",
+		"NtGetContextThread",
+		"NtSetContextThread",
+	};
+
+	struct RESOLUTION_INFO
+	{
+		bool Reconstructed = false;
+		bool Hooked = false;
+		DWORD Rva = 0;
+		BYTE Prologue[4]{};
+	};
+	RESOLUTION_INFO g_Resolution[kSyscallTableCount]{};
 
 	constexpr BYTE kInvalidService = 0xFF;
 
@@ -475,6 +506,14 @@ DWORD SyscallResolveAll()
 			if (Entry && Entry->Service == kServiceUnknown)
 			{
 				Entry->Service = Service;
+				const size_t idx = static_cast<size_t>(Entry - g_SyscallTable);
+				if (idx < kSyscallTableCount)
+				{
+					g_Resolution[idx].Hooked = false;
+					g_Resolution[idx].Reconstructed = false;
+					g_Resolution[idx].Rva = Rva;
+					memcpy(g_Resolution[idx].Prologue, Ntdll + Rva, 4);
+				}
 			}
 
 			if (HarvestedCount < kHarvestedCap)
@@ -499,6 +538,17 @@ DWORD SyscallResolveAll()
 		{
 			// Rerouted entry point. Keep the name hash but mark the service for reconstruction.
 			Entry->Service = kInvalidService;
+			const size_t idx = static_cast<size_t>(Entry - g_SyscallTable);
+			if (idx < kSyscallTableCount)
+			{
+				g_Resolution[idx].Hooked = true;
+				g_Resolution[idx].Reconstructed = false;
+				g_Resolution[idx].Rva = Rva;
+				if (BoundedRead(Ntdll, Rva, 4, ImageSize))
+				{
+					memcpy(g_Resolution[idx].Prologue, Ntdll + Rva, 4);
+				}
+			}
 			++rerouted;
 		}
 	}
@@ -596,6 +646,8 @@ DWORD SyscallResolveAll()
 					if (Reconstructed > 0 && Reconstructed <= 0xFFFF)
 					{
 						g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
+						g_Resolution[i].Reconstructed = true;
+						SC_LOG_INFO("Recovered %s via SSN 0x%04X + %u | Distance: 0x%X bytes | Stride 1:1", kSyscallNames[i], Lower->Service, (Rva - Lower->Rva), span_rva);
 					}
 				}
 			}
@@ -628,6 +680,50 @@ DWORD SyscallResolveAll()
 		if (g_SyscallTable[i].Stub)
 		{
 			++Ready;
+		}
+	}
+
+	// Forensic resolution table: two-pass verification output.
+	SC_LOG_INFO("[SYSCALL] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
+	SC_LOG_INFO("[SYSCALL] [*] Export Census: %u total exports harvested (%u healthy)\n", Export->NumberOfNames, healthy);
+	SC_LOG_INFO("[SYSCALL] [=] System Service Resolution Table:\n");
+	SC_LOG_INFO("  IDX  SERVICE NAME              SSN      STATUS        PROLOGUE      ADDRESS               METHOD\n");
+	for (size_t ti = 0; ti < kSyscallTableCount; ++ti)
+	{
+		const DWORD svc = g_SyscallTable[ti].Service;
+		const bool valid = (svc != kServiceUnknown && svc != static_cast<DWORD>(kInvalidService));
+		const char * status = !valid ? "FAILED" : (g_Resolution[ti].Reconstructed ? "HOOKED" : (g_Resolution[ti].Hooked ? "HOOKED" : "CLEAN"));
+		const char * method = !valid ? "Unresolved" : (g_Resolution[ti].Reconstructed ? "Neighbor Interp" : "Direct Export");
+		const void * addr = valid ? ReCa<const void *>(Ntdll + g_Resolution[ti].Rva) : nullptr;
+		SC_LOG_INFO("  [%02zu] %-24s 0x%04X   %-8s    %02X %02X %02X %02X  %p  %s\n",
+			ti, kSyscallNames[ti], valid ? svc : 0, status,
+			g_Resolution[ti].Prologue[0], g_Resolution[ti].Prologue[1], g_Resolution[ti].Prologue[2], g_Resolution[ti].Prologue[3],
+			addr, method);
+	}
+	{
+		void * pool = g_SyscallPool.load(std::memory_order_acquire);
+		MEMORY_BASIC_INFORMATION mbi{};
+		DWORD rwx_count = 0;
+		if (pool && VirtualQuery(pool, &mbi, sizeof(mbi)))
+		{
+			const bool is_rx = (mbi.Protect == PAGE_EXECUTE_READ);
+			if (!is_rx && mbi.Protect == PAGE_EXECUTE_READWRITE)
+			{
+				rwx_count = 1;
+			}
+			if (is_rx)
+			{
+				SC_LOG_OK("[SYSCALL] [+] Stub Pool Staging: VA=%p Size=0x%X bytes\n", pool, kStubAreaSize);
+				SC_LOG_OK("[SYSCALL] [+] Memory Protection Query: Verified PAGE_EXECUTE_READ (RX) | RWX Count: 0\n");
+			}
+			else
+			{
+				SC_LOG_ERR("[SYSCALL] [x] Stub pool protection mismatch: 0x%08X (RWX=%u)\n", mbi.Protect, rwx_count);
+			}
+		}
+		else
+		{
+			SC_LOG_ERR("[SYSCALL] [x] Stub pool not queryable; protection unverified\n");
 		}
 	}
 

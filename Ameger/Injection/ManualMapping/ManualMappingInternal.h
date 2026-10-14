@@ -207,15 +207,23 @@ namespace MMAP_NATIVE
 		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
 
-		// Transient TLS state. MMI_HandleTLS registers the payload's TLS data (LdrpHandleTlsData
-		// reads the image's own headers to find the TLS directory, so the erase has to follow it),
-		// then the header erase runs, then MMI_RunTlsCallbacks drives the callbacks. These three
-		// pointers carry the setup across that boundary; they are heap objects and section data, not
-		// header bytes, so they survive the erase.
-		ALIGN void *	TlsDirectory	= nullptr;	// IMAGE_TLS_DIRECTORY * inside the mapped image
-		ALIGN void *	TlsDummyLdr		= nullptr;	// fake LDR_DATA_TABLE_ENTRY handed to LdrpHandleTlsData
-		ALIGN void *	TlsDdagNode		= nullptr;	// fake LDR_DDAG_NODE linked from the fake entry
- 	};
+ 		// Transient TLS state. MMI_HandleTLS registers the payload's TLS data (LdrpHandleTlsData
+ 		// reads the image's own headers to find the TLS directory, so the erase has to follow it),
+ 		// then the header erase runs, then MMI_RunTlsCallbacks drives the callbacks. These three
+ 		// pointers carry the setup across that boundary; they are heap objects and section data, not
+ 		// header bytes, so they survive the erase.
+ 		ALIGN void *	TlsDirectory	= nullptr;	// IMAGE_TLS_DIRECTORY * inside the mapped image
+ 		ALIGN void *	TlsDummyLdr		= nullptr;	// fake LDR_DATA_TABLE_ENTRY handed to LdrpHandleTlsData
+ 		ALIGN void *	TlsDdagNode		= nullptr;	// fake LDR_DDAG_NODE linked from the fake entry
+
+ 		// Verifiable execution telemetry. Written in-shell from explicit NTSTATUS,
+ 		// DllMain return, rdtsc deltas, and sliding-window scans — never inferred.
+ 		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
+
+ 		// Per-section page-protection ground truth recorded in-shell.
+ 		ALIGN DWORD SectionProtCount = 0;
+ 		ALIGN SECTION_PROT_RECORD SectionProt[MM_MAX_PROT_RECORDS]{};
+  	};
 }
 
 // Both sides of the transfer need the same rotation helper.

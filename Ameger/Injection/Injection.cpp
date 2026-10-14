@@ -44,6 +44,7 @@ namespace
 						stats.GrantedAccess = access_mask;
 						stats.NewHandle = PtrToUlong(duplicated);
 						stats.SponsorProbed = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 1;
+						stats.ProbeMethod = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 3;
 						stats.FailCode = INJ_ERR_SUCCESS;
 						RecordHijackOutcome(stats, false);
 						LOG(0, "Acquired target process handle from sponsor\n");
@@ -218,6 +219,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	ResetHijackStats();
 	ResetMapStats();
 	ResetThreadExecStats();
+	ResetExecTelemetry();
 
 	// Single source of truth for INJ_MM_MAP_FROM_MEMORY: the runtime always transfers the payload
 	// in-memory, so the flag is forced here and never re-derived by the caller or the mapper.

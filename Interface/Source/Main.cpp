@@ -72,7 +72,8 @@ namespace
 // ------------------------------------------------------------------
 namespace ameger_ui_log
 {
-    constexpr size_t kMaxChars = 65536;
+    constexpr size_t kMaxChars = 2097152;
+    constexpr size_t kMaxBytes = 2097152 * sizeof(wchar_t);
 
     inline SRWLOCK & Lock()
     {
@@ -101,17 +102,34 @@ namespace ameger_ui_log
         clean.reserve(len);
         for (size_t i = 0; text[i]; ++i)
         {
-            // Strip ANSI SGR sequences: ESC [ <digits/;> m
+            // Strip full VT100/SGR CSI sequences: ESC [ params intermediate final.
+            // Final byte is in @-~; we consume params (0-9:;<=>?!) so plain-text
+            // clipboard stays legible while the console keeps ANSI colors.
             if (text[i] == L'\x1b' && text[i + 1] == L'[')
             {
                 size_t j = i + 2;
-                while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';'))
+                while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
+                    text[j] == L'<' || text[j] == L'=' || text[j] == L'>' || text[j] == L'?' || text[j] == L'!'))
                 {
                     ++j;
                 }
-                if (text[j] == L'm')
+                // Intermediate bytes (space to /) then single final byte (@-~).
+                while (text[j] && text[j] >= L' ' && text[j] <= L'/')
+                {
+                    ++j;
+                }
+                if (text[j] && text[j] >= L'@' && text[j] <= L'~')
                 {
                     i = j;
+                    continue;
+                }
+            }
+            else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
+            {
+                // Two-char VT100 charset/designation sequences.
+                if (text[i + 2])
+                {
+                    i += 2;
                     continue;
                 }
             }
@@ -1394,6 +1412,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         f_GetLastMapStats get_last_map_stats = nullptr;
         f_GetLastStringStats get_last_string_stats = nullptr;
         f_GetLastThreadExecStats get_last_thread_exec_stats = nullptr;
+        f_GetLastExecTelemetry get_last_exec_telemetry = nullptr;
         f_GetLastErrorInfo get_last_error_info = nullptr;
         f_ClearLastErrorInfo clear_last_error_info = nullptr;
     };
@@ -1468,33 +1487,43 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         // WINDOWS subsystem: no console is ever allocated. Console output is
         // emitted only when a console is present; otherwise the message goes
         // to the debugger so headless runs stay silent.
+        //
+        // The clipboard log is written unconditionally: it is the only output channel a headless
+        // run has, so routing errors past it would drop exactly the diagnostics an operator needs
+        // most. The debugger copy is additive, not a replacement.
+        if (message)
+        {
+            wchar_t line[1024]{};
+            swprintf_s(line, L"%ls[x]%ls %ls", kRed, kReset, message);
+            ameger_ui_log::AppendStripped(line);
+            OutputDebugStringW(line);
+            OutputDebugStringW(L"\n");
+            return;
+        }
         HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
             fwprintf(stderr, L"%ls%ls%ls\n", kRed, message, kReset);
-            return;
-        }
-        if (message)
-        {
-            OutputDebugStringW(message);
-            OutputDebugStringW(L"\n");
         }
     }
 
     void PrintWarning(const wchar_t * message)
     {
+        if (message)
+        {
+            wchar_t line[1024]{};
+            swprintf_s(line, L"  %ls[!]%ls %ls", kYellow, kReset, message);
+            ameger_ui_log::AppendStripped(line);
+            OutputDebugStringW(line);
+            OutputDebugStringW(L"\n");
+            return;
+        }
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
             wprintf(L"%ls[!]%ls %ls\n", kYellow, kReset, message);
-            return;
-        }
-        if (message)
-        {
-            OutputDebugStringW(message);
-            OutputDebugStringW(L"\n");
         }
     }
 
@@ -1511,6 +1540,29 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     void __stdcall QuietPrint(const char *)
     {
+    }
+
+    // Forwards the runtime's narrow diagnostics into the launcher's normal log pipeline, so the
+    // in-shell telemetry (syscall resolution table, thread census, MMAP/CLOAK ground truth) reaches
+    // the console and the clipboard. Installed only when AMEGER_VERBOSE=1; otherwise QuietPrint keeps
+    // the runtime completely silent, which is the default posture for a headless launcher.
+    void __stdcall VerbosePrint(const char * text)
+    {
+        if (!text || !*text)
+        {
+            return;
+        }
+        const int need = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+        if (need <= 1)
+        {
+            return;
+        }
+        std::vector<wchar_t> wide(static_cast<size_t>(need));
+        if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide.data(), need) <= 0)
+        {
+            return;
+        }
+        wprintf(L"%ls", wide.data());
     }
 
     void DetachInterfaceConsole()
@@ -1738,14 +1790,175 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     bool VerboseOutputEnabled()
     {
-        static const bool verbose = []() -> bool
+        // Detailed by default: the in-shell telemetry tables (syscall resolution, thread census,
+// MMAP/CLOAK ground truth) are the point of the audit trail. Set AMEGER_VERBOSE=0 to fall
+// back to the condensed posture-only report.
+static const bool verbose = []() -> bool
         {
             wchar_t buffer[8] = {};
 
             const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_VERBOSE").get(), buffer, 4);
-            return (got == 1 && buffer[0] == L'1');
+            return !(got == 1 && buffer[0] == L'0');
         }();
         return verbose;
+    }
+
+    // ------------------------------------------------------------------
+    // Phase timeline. Every stage of the run is bracketed so the log can be
+    // read top-to-bottom as a start-to-end account, and a summary table at
+    // the end reports each phase's wall time plus the dominant share.
+    // ------------------------------------------------------------------
+    namespace Trace
+    {
+        constexpr size_t kMaxPhases = 64;
+
+        // Narrow -> wide helper. Configuration keys and export names are stored as narrow strings;
+        // handing one to a wide format produces mojibake rather than a diagnostic.
+        inline const wchar_t * Widen(const char * text)
+        {
+            if (!text || !*text)
+            {
+                return L"";
+            }
+            const int need = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+            if (need <= 1)
+            {
+                return L"";
+            }
+            thread_local std::vector<wchar_t> buffer;
+            buffer.assign(static_cast<size_t>(need), L'\0');
+            if (MultiByteToWideChar(CP_UTF8, 0, text, -1, buffer.data(), need) <= 0)
+            {
+                return L"";
+            }
+            return buffer.data();
+        }
+
+        struct PhaseRecord
+        {
+            wchar_t name[48]{};
+            ULONGLONG start_ms = 0;
+            ULONGLONG elapsed_ms = 0;
+            bool open = false;
+        };
+
+        inline PhaseRecord (& Phases())[kMaxPhases]
+        {
+            static PhaseRecord phases[kMaxPhases];
+            return phases;
+        }
+
+        inline size_t & PhaseCount()
+        {
+            static size_t count = 0;
+            return count;
+        }
+
+        inline ULONGLONG & T0()
+        {
+            static ULONGLONG t0 = 0;
+            return t0;
+        }
+
+        inline ULONGLONG NowMs()
+        {
+            return GetTickCount64();
+        }
+
+        inline void BeginSession()
+        {
+            T0() = NowMs();
+            PhaseCount() = 0;
+            SYSTEMTIME st{};
+            GetLocalTime(&st);
+            wprintf(L"\n====================================================================================================\n");
+            wprintf(L" [AMEGER INJECTOR] -- FULL PROCEDURE TRACE (start %02u:%02u:%02u.%03u PID %lu)\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                static_cast<unsigned long>(GetCurrentProcessId()));
+            wprintf(L"====================================================================================================\n");
+        }
+
+        // Opens a phase and prints its banner. Safe to call with the same name repeatedly;
+        // each call becomes its own record so repeated stages stay individually timed.
+        inline PhaseRecord & Begin(const wchar_t * name)
+        {
+            PhaseRecord (& phases)[kMaxPhases] = Phases();
+            size_t & count = PhaseCount();
+            if (count >= kMaxPhases)
+            {
+                return phases[kMaxPhases - 1];
+            }
+            PhaseRecord & rec = phases[count++];
+            rec = PhaseRecord{};
+            wcsncpy_s(rec.name, name, _TRUNCATE);
+            rec.start_ms = NowMs() - T0();
+            rec.open = true;
+            wprintf(L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
+            return rec;
+        }
+
+        // Closes the most recent phase, stamping its elapsed time.
+        inline void End()
+        {
+            PhaseRecord (& phases)[kMaxPhases] = Phases();
+            const size_t count = PhaseCount();
+            if (!count)
+            {
+                return;
+            }
+            PhaseRecord & rec = phases[count - 1];
+            if (!rec.open)
+            {
+                return;
+            }
+            rec.elapsed_ms = NowMs() - T0() - rec.start_ms;
+            rec.open = false;
+            wprintf(L"     %ls[+]%ls %-44ls %ls%6llu ms%s  (+%llu ms)\n",
+                kGreen, kReset, rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
+        }
+
+        // Free-form note attached under the currently open phase.
+        inline void Note(const wchar_t * fmt, ...)
+        {
+            va_list args;
+            va_start(args, fmt);
+            const int need = _vscwprintf(fmt, args);
+            va_end(args);
+            if (need <= 0)
+            {
+                return;
+            }
+            std::vector<wchar_t> buffer(static_cast<size_t>(need) + 1);
+            va_start(args, fmt);
+            vswprintf_s(buffer.data(), buffer.size(), fmt, args);
+            va_end(args);
+            wprintf(L"       %ls%s%ls\n", kDim, buffer.data(), kReset);
+        }
+
+        // Emitted once at the end of the attempt: every phase, its cost, and its share of the run.
+        inline void Summary(const wchar_t * outcome)
+        {
+            PhaseRecord (& phases)[kMaxPhases] = Phases();
+            const size_t count = PhaseCount();
+            const ULONGLONG total = NowMs() - T0();
+
+            wprintf(L"\n====================================================================================================\n");
+            wprintf(L" [PHASE SUMMARY] %ls\n", outcome ? outcome : L"completed");
+            wprintf(L"====================================================================================================\n");
+            wprintf(L"  %-3s %-46s %10s %8s %12s\n", L"#", L"PHASE", L"ELAPSED", L"SHARE", L"START");
+
+            for (size_t i = 0; i < count; ++i)
+            {
+                const double share = total ? (static_cast<double>(phases[i].elapsed_ms) * 100.0 / static_cast<double>(total)) : 0.0;
+                const wchar_t * tint = phases[i].open ? kYellow : kGreen;
+                wprintf(L"  %ls%02zu%ls %-46s %ls%8llu ms%s %7.1f%% %10llu ms\n",
+                    kDim, i + 1, kReset, phases[i].name, tint, phases[i].elapsed_ms, kReset,
+                    share, phases[i].start_ms);
+            }
+
+            wprintf(L"  %-50s %ls%8llu ms%s\n", L"TOTAL WALL TIME", kGreen, total, kReset);
+            wprintf(L"====================================================================================================\n");
+        }
     }
 
     bool EnableSeDebugPrivilege()
@@ -2862,6 +3075,8 @@ LUID luid{};
                 runtime.get_last_string_stats = reinterpret_cast<f_GetLastStringStats>(resolve_export(exp_str.get()));
                 auto exp_tec = XOR_STR_A("CoreExecStats");
                 runtime.get_last_thread_exec_stats = reinterpret_cast<f_GetLastThreadExecStats>(resolve_export(exp_tec.get()));
+                auto exp_exec = XOR_STR_A("CoreExecTelemetry");
+                runtime.get_last_exec_telemetry = reinterpret_cast<f_GetLastExecTelemetry>(resolve_optional_export(exp_exec.get()));
 
                 auto exp_err = XOR_STR_A("CoreLastError");
                 runtime.get_last_error_info = reinterpret_cast<f_GetLastErrorInfo>(resolve_export(exp_err.get()));
@@ -2874,7 +3089,7 @@ LUID luid{};
 
                 if (runtime.set_raw_print_callback)
                 {
-                    runtime.set_raw_print_callback(QuietPrint);
+                    runtime.set_raw_print_callback(VerboseOutputEnabled() ? VerbosePrint : QuietPrint);
                 }
             }
         }
@@ -2932,14 +3147,35 @@ LUID luid{};
         runtime.start_download();
         symbol_state = runtime.get_symbol_state();
         ULONGLONG deadline = GetTickCount64() + timeout;
-        while (symbol_state == INJ_ERR_SYMBOL_INIT_NOT_DONE)
         {
-            if (GetTickCount64() >= deadline)
+            // Heartbeat: a silent 119-second wait is indistinguishable from a hung process, so the
+            // elapsed time and poll count are reported on a fixed cadence.
+            const ULONGLONG poll_start = GetTickCount64();
+            ULONGLONG last_report = poll_start;
+            DWORD polls = 0;
+            while (symbol_state == INJ_ERR_SYMBOL_INIT_NOT_DONE)
             {
-                return false;
+                const ULONGLONG now = GetTickCount64();
+                if (now >= deadline)
+                {
+                    Trace::Note(L"symbol poll TIMED OUT after %llu ms (%u polls), state=0x%08lX",
+                        static_cast<unsigned long long>(now - poll_start), polls,
+                        static_cast<unsigned long>(symbol_state));
+                    return false;
+                }
+                if (now - last_report >= 2000)
+                {
+                    last_report = now;
+                    Trace::Note(L"waiting for ntdll symbols... %llu ms elapsed, %u polls",
+                        static_cast<unsigned long long>(now - poll_start), polls);
+                }
+                Sleep(10);
+                ++polls;
+                symbol_state = runtime.get_symbol_state();
             }
-            Sleep(10);
-            symbol_state = runtime.get_symbol_state();
+            Trace::Note(L"symbols ready in %llu ms (%u polls), state=0x%08lX",
+                static_cast<unsigned long long>(GetTickCount64() - poll_start), polls,
+                static_cast<unsigned long>(symbol_state));
         }
         if (symbol_state != INJ_ERR_SUCCESS)
         {
@@ -2948,14 +3184,33 @@ LUID luid{};
 
         import_state = runtime.get_import_state();
         deadline = GetTickCount64() + timeout;
-        while (import_state == INJ_ERR_IMPORT_HANDLER_NOT_DONE)
         {
-            if (GetTickCount64() >= deadline)
+            const ULONGLONG poll_start = GetTickCount64();
+            ULONGLONG last_report = poll_start;
+            DWORD polls = 0;
+            while (import_state == INJ_ERR_IMPORT_HANDLER_NOT_DONE)
             {
-                return false;
+                const ULONGLONG now = GetTickCount64();
+                if (now >= deadline)
+                {
+                    Trace::Note(L"import poll TIMED OUT after %llu ms (%u polls), state=0x%08lX",
+                        static_cast<unsigned long long>(now - poll_start), polls,
+                        static_cast<unsigned long>(import_state));
+                    return false;
+                }
+                if (now - last_report >= 2000)
+                {
+                    last_report = now;
+                    Trace::Note(L"waiting for import resolution... %llu ms elapsed, %u polls",
+                        static_cast<unsigned long long>(now - poll_start), polls);
+                }
+                Sleep(10);
+                ++polls;
+                import_state = runtime.get_import_state();
             }
-            Sleep(10);
-            import_state = runtime.get_import_state();
+            Trace::Note(L"imports ready in %llu ms (%u polls), state=0x%08lX",
+                static_cast<unsigned long long>(GetTickCount64() - poll_start), polls,
+                static_cast<unsigned long>(import_state));
         }
         return import_state == INJ_ERR_SUCCESS;
     }
@@ -3475,6 +3730,48 @@ LUID luid{};
         }
     }
 
+    // Decodes the assembled flag word into named bits. The runtime only ever sees the raw
+    // DWORD, so this is the one place a reader can confirm which behaviour was requested.
+    void DescribeFlags(DWORD flags)
+    {
+        struct FlagBit { DWORD bit; const wchar_t * name; };
+        static const FlagBit kBits[] =
+        {
+            { INJ_ERASE_HEADER,                L"INJ_ERASE_HEADER" },
+            { INJ_HANDLE_HIJACKING,            L"INJ_HANDLE_HIJACKING" },
+            { INJ_NO_DONOR_SCAN,               L"INJ_NO_DONOR_SCAN" },
+            { INJ_SKIP_SPONSOR_ROUNDTRIP,      L"INJ_SKIP_SPONSOR_ROUNDTRIP" },
+            { INJ_MM_CLEAN_DATA_DIR,           L"INJ_MM_CLEAN_DATA_DIR" },
+            { INJ_MM_RESOLVE_IMPORTS,          L"INJ_MM_RESOLVE_IMPORTS" },
+            { INJ_MM_RESOLVE_DELAY_IMPORTS,    L"INJ_MM_RESOLVE_DELAY_IMPORTS" },
+            { INJ_MM_EXECUTE_TLS,              L"INJ_MM_EXECUTE_TLS" },
+            { INJ_MM_ENABLE_EXCEPTIONS,        L"INJ_MM_ENABLE_EXCEPTIONS" },
+            { INJ_MM_SET_PAGE_PROTECTIONS,     L"INJ_MM_SET_PAGE_PROTECTIONS" },
+            { INJ_MM_INIT_SECURITY_COOKIE,     L"INJ_MM_INIT_SECURITY_COOKIE" },
+            { INJ_MM_RUN_DLL_MAIN,             L"INJ_MM_RUN_DLL_MAIN" },
+            { INJ_MM_RUN_UNDER_LDR_LOCK,       L"INJ_MM_RUN_UNDER_LDR_LOCK" },
+        };
+
+        wprintf(L"  %ls[*]%ls Decoded load flags: 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
+        for (const FlagBit & fb : kBits)
+        {
+            const bool set = (flags & fb.bit) != 0;
+            wprintf(L"      %ls%s%ls 0x%08X  %ls\n",
+                set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
+                fb.bit, fb.name);
+        }
+        const DWORD known = 0;
+        (void)known;
+        const DWORD accounted = 0x0001 | 0x0040 | 0x0004 | 0x0080 | 0x00010000 | 0x00020000 |
+            0x00040000 | 0x00080000 | 0x00100000 | 0x00200000 | 0x00400000 | 0x00800000 | 0x01000000;
+        const DWORD unexplained = flags & ~accounted;
+        if (unexplained)
+        {
+            wprintf(L"      %ls[!]%ls 0x%08lX  undecoded bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
+        }
+        (void)INJ_MM_MAP_FROM_MEMORY;
+    }
+
     DWORD BuildFlags(const WizardConfig & config)
     {
         DWORD flags = 0;
@@ -3676,6 +3973,9 @@ LUID luid{};
                 kGreen, Stats->Examined, kReset, kGreen, Stats->TotalHandles, kReset,
                 kGreen, Stats->OwnersOpened, kReset, kGreen, Stats->DupDenied, kReset,
                 kGreen, Stats->VerifyRejected, kReset, kGreen, Stats->BudgetSkipped, kReset);
+            wprintf(L"    %ls %ls snapshot %ls%u%ls bytes | probe method %ls%u%ls (0=none,1=reserve,2=protect,3=roundtrip)\n",
+                StageTag(++Stage).c_str(), StageLabel(L"Snapshot").c_str(),
+                kGreen, Stats->SnapshotBytes, kReset, kGreen, Stats->ProbeMethod, kReset);
         }
 
         if (Stats->Success && Stats->DonorPid)
@@ -4616,9 +4916,9 @@ LUID luid{};
                 L"(process-internal; not externally observable)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
     }
 
-    // "Verify exception handling" step. Split out of DebugAndVerifyStealth verbatim; the flags gate
-    // mirrors the caller's INJ_MM_ENABLE_EXCEPTIONS check.
-    void StealthVerifyExceptionHandling(DWORD flags, bool have_local_nt, StealthVerifierBuffers & buffers,
+    // "Verify exception handling" — ground truth from in-shell telemetry.
+    void StealthVerifyExceptionHandling(DWORD flags, bool have_local_nt, const VERIFIABLE_EXEC_TELEMETRY * exec,
+        StealthVerifierBuffers & buffers,
         f_GetLastStringStats get_string_stats, int & step, int total)
     {
         ++step;
@@ -4682,12 +4982,33 @@ LUID luid{};
                     kYellow, kReset);
             }
         }
+        if (exec)
+        {
+            const bool any_table = exec->DynamicTableInstalled || exec->InvertedTableInstalled;
+            if (any_table)
+            {
+                wprintf(L"  %ls[+]%ls Structured Exceptions: Dynamic=%ls%s%ls Inverted=%ls%s%ls Entry=%p (verified in-shell)\n",
+                    kGreen, kReset, kGreen, exec->DynamicTableInstalled ? L"YES" : L"NO", kReset,
+                    kGreen, exec->InvertedTableInstalled ? L"YES" : L"NO", kReset, exec->InvertedTableEntryBase);
+            }
+            else
+            {
+                // Nothing was installed. This must not carry a [+] marker: it is an absent
+                // capability, not a verified one, and the caller decides whether that is acceptable.
+                wprintf(L"  %ls[*]%ls Structured Exceptions: none installed (Dynamic=NO Inverted=NO) - payload exceptions are not covered\n",
+                    kDim, kReset);
+            }
+        }
+        else
+        {
+            wprintf(L"  %ls[x]%ls Exception telemetry unavailable (host read-back failed).\n", kRed, kReset);
+        }
     }
 
     // "Execute TLS" step. Split out of DebugAndVerifyStealth verbatim; it only surveys the payload's
     // TLS callback table from the local image.
     void StealthExecuteTls(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
-        StealthVerifierBuffers & buffers, int & step, int total)
+        const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute TLS...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -4729,31 +5050,77 @@ LUID luid{};
                 }
             }
         }
-        if (tls_callbacks > 0)
-            wprintf(L"  %ls[+]%ls %ls%d%ls TLS callback(s) declared; driver completed successfully (all ran before the header erase).\n",
-                kGreen, kReset, kGreen, tls_callbacks, kReset);
+        if (exec)
+        {
+            wprintf(L"  %ls[+]%ls TLS Initialized: %u configured -> %u executed, %u failed (verified in-shell)\n",
+                kGreen, kReset, exec->TlsCallbacksConfigured, exec->TlsCallbacksExecuted, exec->TlsCallbacksFailed);
+            if (exec->TlsLastExecutedAddress)
+            {
+                wprintf(L"  %ls[*]%ls Last executed TLS callback: %p (queried address)\n", kDim, kReset, exec->TlsLastExecutedAddress);
+            }
+            if (exec->TlsCallbacksFailed)
+            {
+                wprintf(L"  %ls[x]%ls TLS callback failure: %u callback(s) rejected (verified ground truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
+            }
+        }
+        else if (tls_callbacks > 0)
+            wprintf(L"  %ls[!]%ls %ls%d%ls TLS callback(s) declared; in-shell telemetry unavailable (advisory only).\n",
+                kYellow, kReset, kYellow, tls_callbacks, kReset);
         else
 
             wprintf(L"  %ls[+]%ls No TLS callbacks present (callback array empty or absent).\n",
                 kGreen, kReset);
     }
 
-    // "Execute DllMain" step. Split out of DebugAndVerifyStealth verbatim.
-    void StealthExecuteDllMain(int & step, int total)
+    // "Execute DllMain" — ground truth only: exact return, cycles, Win32 from in-shell telemetry.
+    void StealthExecuteDllMain(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(L"  %ls[+]%ls %lsDllMain(DLL_PROCESS_ATTACH)%ls invocation by design; success inferred from the operation result.\n", kGreen, kReset, kGreen, kReset);
-        wprintf(L"  %ls[+]%ls DllMain return value: %lsTRUE%ls (inferred: shell completed; a FALSE return aborts with INJ_MM_ERR_DLLMAIN_FAILED)\n", kGreen, kReset, kGreen, kReset);
+        if ((flags & INJ_MM_RUN_DLL_MAIN) == 0)
+        {
+            wprintf(L"  %ls[*]%ls DllMain skipped: INJ_MM_RUN_DLL_MAIN not set (no payload entry invoked).\n", kDim, kReset);
+            return;
+        }
+        if (!exec)
+        {
+            wprintf(L"  %ls[x]%ls DllMain unverified: no execution telemetry (host read-back failed).\n", kRed, kReset);
+            return;
+        }
+        const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
+        wprintf(L"  %ls[+]%ls DllMain Execution: RETURN=%ls%s%ls | LastError=0x%08X | Cycles=%llu (~%.2f ms)\n",
+            kGreen, kReset, kGreen, exec->DllMainResult ? L"TRUE" : L"FALSE", kReset,
+            exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms);
+        if (!exec->DllMainResult)
+        {
+            wprintf(L"  %ls[x]%ls DllMain returned FALSE (verified failure; shell aborts with INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
+        }
     }
 
-    // "Run under loader lock" step. Split out of DebugAndVerifyStealth verbatim.
-    void StealthRunUnderLoaderLock(int & step, int total)
+    // "Run under loader lock" — ground truth: explicit Ldr NTSTATUS + cookie/state.
+    void StealthRunUnderLoaderLock(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run under loader lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrLockLoaderLock acquired (inferred: shell completed; a failed acquire aborts with INJ_MM_ERR_LOADER_LOCK_FAILED).\n").get(), kGreen, kReset);
-        wprintf(XOR_STR_W(L"  %ls[+]%ls LdrUnlockLoaderLock released (paired with the acquire above; a failed release aborts the shell).\n").get(), kGreen, kReset);
+        if ((flags & INJ_MM_RUN_UNDER_LDR_LOCK) == 0)
+        {
+            wprintf(L"  %ls[*]%ls Loader lock not requested (INJ_MM_RUN_UNDER_LDR_LOCK clear).\n", kDim, kReset);
+            return;
+        }
+        if (!exec)
+        {
+            wprintf(L"  %ls[x]%ls Loader-lock unverified: no execution telemetry.\n", kRed, kReset);
+            return;
+        }
+        wprintf(L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus=0x%08X | Cookie=0x%llX | State=%u\n",
+            kGreen, kReset, (unsigned)exec->LdrLockStatus,
+            (unsigned long long)exec->LoaderLockCookie, exec->LoaderLockState);
+        wprintf(L"  %ls[+]%ls Loader Lock Released: LdrUnlockStatus=0x%08X\n",
+            kGreen, kReset, (unsigned)exec->LdrUnlockStatus);
+        if (exec->LdrLockStatus != 0 || exec->LdrUnlockStatus != 0)
+        {
+            wprintf(L"  %ls[x]%ls Loader-lock NTSTATUS non-zero (verified failure path).\n", kRed, kReset);
+        }
     }
 
     // "Clean data directories" step. Split out of DebugAndVerifyStealth verbatim.
@@ -4848,66 +5215,95 @@ LUID luid{};
         }
     }
 
-    // "Set page protections" step. Split out of DebugAndVerifyStealth verbatim; it tallies the remote
-    // image's page protections.
+    // "Set page protections" — two-pass verification: Declared PE vs Queried target memory.
     void StealthSetPageProtections(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        StealthVerifierBuffers & buffers, int & step, int total)
+        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set page protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        MEMORY_BASIC_INFORMATION mbi = { 0 };
+        // Declared layout from local PE.
+        WORD sec_count = 0;
+        const IMAGE_SECTION_HEADER * secs = nullptr;
+        if (local_pe && local_pe_size >= sizeof(IMAGE_DOS_HEADER))
+        {
+            auto dos = ReCa<const IMAGE_DOS_HEADER *>(local_pe);
+            if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 &&
+                static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) <= local_pe_size)
+            {
+                auto nt = ReCa<const IMAGE_NT_HEADERS64 *>(local_pe + dos->e_lfanew);
+                if (nt->Signature == IMAGE_NT_SIGNATURE)
+                {
+                    const size_t sec_off = static_cast<size_t>(dos->e_lfanew) + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + nt->FileHeader.SizeOfOptionalHeader;
+                    if (nt->FileHeader.NumberOfSections && sec_off + static_cast<size_t>(nt->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER) <= local_pe_size)
+                    {
+                        sec_count = nt->FileHeader.NumberOfSections;
+                        secs = ReCa<const IMAGE_SECTION_HEADER *>(local_pe + sec_off);
+                    }
+                }
+            }
+        }
+        wprintf(L"  %ls[=]%ls Target Section Layout & Verification:\n", kGreen, kReset);
+        wprintf(L"  %-8s %-11s %-11s %-11s %-13s %-13s %s\n", L"NAME", L"VIRT-ADDR", L"VIRT-SIZE", L"RAW-SIZE", L"DECLARED", L"QUERIED", L"VERIFICATION");
+        int rwx_count = 0;
+        int mismatch = 0;
+        if (secs && process)
+        {
+            for (WORD s = 0; s < sec_count; ++s)
+            {
+                char name[9]{}; memcpy(name, secs[s].Name, 8);
+                wchar_t wname[9]{}; for (int k = 0; k < 8 && name[k]; ++k) wname[k] = static_cast<wchar_t>(name[k]);
+                ULONG declared = PAGE_NOACCESS;
+                if (secs[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) declared = (secs[s].Characteristics & IMAGE_SCN_MEM_READ) ? PAGE_EXECUTE_READ : PAGE_EXECUTE;
+                else if (secs[s].Characteristics & IMAGE_SCN_MEM_WRITE) declared = PAGE_READWRITE;
+                else if (secs[s].Characteristics & IMAGE_SCN_MEM_READ) declared = PAGE_READONLY;
+                void * sec_addr = ReCa<BYTE *>(hRemoteBase) + secs[s].VirtualAddress;
+                MEMORY_BASIC_INFORMATION smbi{};
+                DWORD queried = 0; bool qok = VirtualQueryEx(process, sec_addr, &smbi, sizeof(smbi)) != 0;
+                if (qok) queried = smbi.Protect & 0xFF;
+                if (queried == PAGE_EXECUTE_READWRITE) ++rwx_count;
+                const bool match = qok && (queried == declared || (declared == PAGE_EXECUTE && (queried == PAGE_EXECUTE || queried == PAGE_EXECUTE_READ)));
+                if (!match) ++mismatch;
+                wprintf(L"  %-8s 0x%08X  0x%08X  0x%08X  %-13s %-13s %ls\n",
+                    wname, secs[s].VirtualAddress,
+                    secs[s].Misc.VirtualSize, secs[s].SizeOfRawData,
+                    StealthPageDesc(declared), qok ? StealthPageDesc(queried) : L"UNQUERYABLE",
+                    match ? L"[MATCH / [+]]" : L"[MISMATCH / [x]]");
+            }
+        }
+        // Full-span W^X tally (two-pass: pre Dim, post assert).
+        MEMORY_BASIC_INFORMATION mbi{};
+        int ro_count = 0, rw_count = 0, rx_count = 0, priv_exec_count = 0;
+        SIZE_T total_image_size = 0;
+        if (have_local_nt) total_image_size = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data())->OptionalHeader.SizeOfImage;
         if (process && VirtualQueryEx(process, hRemoteBase, &mbi, sizeof(mbi)))
         {
-            int rwx_count = 0;
-            int ro_count = 0;
-            int rw_count = 0;
-            int rx_count = 0;
-            int priv_exec_count = 0;
-
-            SIZE_T total_image_size = 0;
-            if (have_local_nt)
-            {
-                auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
-                total_image_size = nt->OptionalHeader.SizeOfImage;
-            }
-
             BYTE * current = ReCa<BYTE *>(hRemoteBase);
             while (true)
             {
-                if (!VirtualQueryEx(process, current, &mbi, sizeof(mbi)) || !mbi.RegionSize)
-                    break;
-                if (total_image_size > 0 &&
-                    (ReCa<ULONG_PTR>(mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= total_image_size)
-                    break;
+                if (!VirtualQueryEx(process, current, &mbi, sizeof(mbi)) || !mbi.RegionSize) break;
+                if (total_image_size > 0 && (ReCa<ULONG_PTR>(mbi.BaseAddress) - ReCa<ULONG_PTR>(hRemoteBase)) >= total_image_size) break;
                 if (mbi.Protect != PAGE_NOACCESS && mbi.Protect != 0)
                 {
                     if (mbi.Protect == PAGE_EXECUTE_READWRITE) ++rwx_count;
-                    else if (mbi.Protect == PAGE_READONLY)      ++ro_count;
-                    else if (mbi.Protect == PAGE_READWRITE)     ++rw_count;
+                    else if (mbi.Protect == PAGE_READONLY) ++ro_count;
+                    else if (mbi.Protect == PAGE_READWRITE) ++rw_count;
                     else if (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE) ++rx_count;
-                    if (mbi.Type == MEM_PRIVATE &&
-                        (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE ||
-                         mbi.Protect == PAGE_EXECUTE_READWRITE || mbi.Protect == PAGE_EXECUTE_WRITECOPY)) ++priv_exec_count;
+                    if (mbi.Type == MEM_PRIVATE && (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE || mbi.Protect == PAGE_EXECUTE_READWRITE || mbi.Protect == PAGE_EXECUTE_WRITECOPY)) ++priv_exec_count;
                 }
-
                 BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
-                if (next <= current)
-                    break;
+                if (next <= current) break;
                 current = next;
             }
-            wprintf(L"  %ls[+]%ls %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls  %ls = %ls%d%ls\n",
-                kGreen, kReset,
-                StealthPageDesc(PAGE_EXECUTE_READWRITE), kGreen, rwx_count, kReset,
-                StealthPageDesc(PAGE_READONLY), kGreen, ro_count, kReset,
-                StealthPageDesc(PAGE_READWRITE), kGreen, rw_count, kReset,
-                StealthPageDesc(PAGE_EXECUTE_READ), kGreen, rx_count, kReset);
-            wprintf(L"  %ls[+]%ls Private executable regions: %ls%d%ls\n",
-                kGreen, kReset, kGreen, priv_exec_count, kReset);
+            wprintf(L"  %ls[+]%ls RWX=%ls%d%ls RO=%ls%d%ls RW=%ls%d%ls RX=%ls%d%ls PrivateExec=%ls%d%ls Mismatch=%ls%d%ls\n",
+                kGreen, kReset, rwx_count ? kRed : kGreen, rwx_count, kReset,
+                kGreen, ro_count, kReset, kGreen, rw_count, kReset, kGreen, rx_count, kReset,
+                kGreen, priv_exec_count, kReset, mismatch ? kRed : kGreen, mismatch, kReset);
+            if (rwx_count == 0) wprintf(L"  %ls[+]%ls Strict W^X posture enforced (RWX==0 verified by VirtualQueryEx walk).\n", kGreen, kReset);
+            else wprintf(L"  %ls[x]%ls W^X VIOLATION: %d RWX region(s) (verified ground truth).\n", kRed, kReset, rwx_count);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Section permissions applied; remote pages not queryable, "
-                    L"so the resulting protections are unverified this run.\n", kYellow, kReset);
+            wprintf(L"  %ls[x]%ls Section protections UNVERIFIED: remote pages not queryable (hard gate failure).\n", kRed, kReset);
         }
     }
 
@@ -5188,9 +5584,9 @@ LUID luid{};
         }
     }
 
-    // "Erase PE header" step. Split out of DebugAndVerifyStealth verbatim.
+    // "Erase PE header" — two-pass: pre-state declared, post-state VirtualQueryEx assert.
     void StealthEraseHeader(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        const MAP_STATS * MapStats, StealthVerifierBuffers & buffers, int & step, int total)
+        const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -5215,6 +5611,15 @@ LUID luid{};
         const unsigned long long scan_pe = MapStats ? static_cast<unsigned long long>(MapStats->HeaderScanPE) : 0;
         const ULONGLONG retained_base = MapStats ? static_cast<ULONGLONG>(MapStats->RetainedAllocBase) : 0;
         const unsigned long long retained_size = MapStats ? static_cast<unsigned long long>(MapStats->RetainedAllocSize) : 0;
+
+        // The same wipe is measured twice by two independent field sets written by the shell
+        // (MapStats.* and ExecTelemetry.*). Both are read back, so agreement between them is a real
+        // integrity signal rather than a restatement of one value: a mismatch means the shell's
+        // record was altered or truncated between the write and the read-back.
+        const unsigned long long exec_span = exec ? static_cast<unsigned long long>(exec->PreSectionSpanWiped) : 0;
+        const unsigned long long exec_mz = exec ? static_cast<unsigned long long>(exec->MZRemnantsFound) : 0;
+        const unsigned long long exec_pe = exec ? static_cast<unsigned long long>(exec->PERemnantsFound) : 0;
+        const unsigned long long exec_prot = exec ? static_cast<unsigned long long>(exec->PostWipeProtection) : 0;
 
         SYSTEM_INFO si{};
         GetSystemInfo(&si);
@@ -5251,32 +5656,39 @@ LUID luid{};
                 kGreen, kReset, kGreen, base, kReset);
         }
 
-        // The header region is wiped and then set to PAGE_NOACCESS (maximum
-        // stealth): it can no longer be read, written, or executed. A memory
-        // read-back is therefore intentionally not performed; we only confirm
-        // the resulting page protection via a virtual-query, which does not read
-        // the memory itself.
+        // Two-pass: pre-state (declared + in-shell wipe span) -> post-state VirtualQueryEx assert.
         if (process && base)
         {
             MEMORY_BASIC_INFORMATION mbi = { 0 };
             if (VirtualQueryEx(process, ReCa<LPCVOID>(hRemoteBase), &mbi, sizeof(mbi)))
             {
-                const wchar_t * protection = L"unknown";
+                const bool commit_ok = (mbi.State == MEM_COMMIT);
+                const bool noaccess_ok = ((mbi.Protect & 0xFF) == PAGE_NOACCESS);
+                const wchar_t * protection = L"other";
                 switch (mbi.Protect & 0xFF)
                 {
-                case PAGE_READONLY:    protection = L"READONLY"; break;
-                case PAGE_NOACCESS:    protection = L"NOACCESS"; break;
-                case PAGE_READWRITE:   protection = L"READWRITE (still writable)"; break;
+                case PAGE_READONLY: protection = L"READONLY"; break;
+                case PAGE_NOACCESS: protection = L"NOACCESS"; break;
+                case PAGE_READWRITE: protection = L"READWRITE (still writable)"; break;
                 case PAGE_EXECUTE_READ: protection = L"EXECUTE_READ"; break;
-                default:               protection = L"other"; break;
+                default: break;
                 }
-
-                wprintf(L"  %ls[+]%ls Header page prot: %ls%s%ls (0x%08X)\n",
-                    kGreen, kReset, kGreen, protection, kReset, mbi.Protect);
+                if (commit_ok && noaccess_ok)
+                {
+                    wprintf(L"  %ls[+]%ls Page Protection Assertion: VirtualQueryEx verified 0x%llX [PAGE_NOACCESS] State=MEM_COMMIT\n",
+                        kGreen, kReset, base);
+                }
+                else
+                {
+                    wprintf(L"  %ls[x]%ls Page Protection MISMATCH: State=0x%X Protect=%ls (0x%08X) (required MEM_COMMIT+PAGE_NOACCESS)\n",
+                        kRed, kReset, mbi.State, protection, mbi.Protect);
+                }
+                wprintf(L"  %ls[*]%ls Pre-Section Span Bound: Span=[0x00000000-0x%llX) Wiped=%llu bytes\n",
+                    kDim, kReset, wiped, wiped);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Header page protection unreadable.\n", kYellow, kReset);
+                wprintf(L"  %ls[x]%ls Header page protection UNREADABLE: VirtualQueryEx failed (hard gate failure).\n", kRed, kReset);
             }
 
             if (declared_headers)
@@ -5301,6 +5713,26 @@ LUID luid{};
                 // authoritative proof for the image allocation.
                 wprintf(L"  %ls[+]%ls MZ/PE scan (image)     : %ls%llu%ls hit(s) for MZ (0x4D5A) and %ls%llu%ls hit(s) for PE\\0\\0 (0x50450000) in the first %ls0x%llX%ls byte(s) of the mapped image (in-shell, pre-NOACCESS)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
+
+                if (exec)
+                {
+                    const bool agree = (exec_span == wiped) && (exec_mz == scan_mz) && (exec_pe == scan_pe) && (exec_prot == wipe_protect);
+                    if (agree)
+                    {
+                        wprintf(L"  %ls[+]%ls Exec Telemetry Cross-Check: span=%llu MZ=%llu PE=%llu prot=0x%08X - agrees with MapStats\n",
+                            kGreen, kReset, exec_span, exec_mz, exec_pe, exec_prot);
+                    }
+                    else
+                    {
+                        wprintf(L"  %ls[x]%ls Exec Telemetry MISMATCH: span=%llu/0x%llX MZ=%llu/%llu PE=%llu/%llu prot=0x%08X/0x%08X\n",
+                            kRed, kReset,
+                            exec_span, wiped, exec_mz, scan_mz, exec_pe, scan_pe, exec_prot, wipe_protect);
+                    }
+                }
+                else
+                {
+                    wprintf(L"  %ls[!]%ls Exec Telemetry unavailable: cloak cross-check skipped, host read-back failed.\n", kYellow, kReset);
+                }
             }
             else
             {
@@ -5356,7 +5788,8 @@ LUID luid{};
 
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
-        const HijackContext * Context, const MAP_STATS * MapStats, f_GetLastStringStats get_string_stats,
+        const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
+        const THREAD_EXEC_STATS * ThreadExec, f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
@@ -5367,6 +5800,40 @@ LUID luid{};
 
         if (!hRemoteBase)
             return false;
+
+        wprintf(L"====================================================================================================\n");
+        wprintf(L" [AMEGER INJECTOR] -- TARGET ACQUISITION & EXECUTION TELEMETRY\n");
+        wprintf(L"====================================================================================================\n");
+        if (ProcessHijack)
+        {
+            const bool via_scan = ProcessHijack->Source == static_cast<DWORD>(HijackSource::Scan);
+            if (!via_scan)
+            {
+                // Sponsor path: the donor table is never walked, so census counters are legitimately
+                // zero. Reporting them as zeros would read as a failed scan rather than "not needed".
+                wprintf(L"[HANDLE]  [*] Handle Table Census: not applicable (sponsor handle satisfied acquisition)\n");
+                wprintf(L"[HANDLE]  [*] Dynamic Object Types: not calibrated (scan bypassed)\n");
+            }
+            else
+            {
+                wprintf(L"[HANDLE]  [*] Handle Table Census: %u total handles | %u examined | snap=%u bytes\n",
+                    ProcessHijack->TotalHandles, ProcessHijack->Examined, ProcessHijack->SnapshotBytes);
+                wprintf(L"[HANDLE]  [+] Dynamic Object Types: Calibrated=%u (self-calibrated filtered scan)\n",
+                    ProcessHijack->Calibrated);
+            }
+            if (ProcessHijack->Success)
+            {
+                wprintf(L"[HANDLE]  [+] Donor Handle Acquired: donor pid=%u handle=0x%08X local=0x%08X access=0x%08X\n",
+                    ProcessHijack->DonorPid, ProcessHijack->DonorHandle, ProcessHijack->NewHandle, ProcessHijack->GrantedAccess);
+            }
+        }
+        if (ThreadExec && ThreadExec->Attempted)
+        {
+            wprintf(L"[HIJACK]  [*] Polling Execution: iters=%u elapsed=%u ms ret=0x%08X tid=0x%04X\n",
+                ThreadExec->PollIterations, ThreadExec->ExecMs, ThreadExec->RoutineRet, ThreadExec->HijackedTid);
+            wprintf(L"[HIJACK]  [+] Stack Sanitization: %llu bytes zeroed | cycles=%llu\n",
+                (unsigned long long)ThreadExec->StackScrubbedBytes, (unsigned long long)ThreadExec->RoutineCyclesDelta);
+        }
 
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
@@ -5480,22 +5947,22 @@ LUID luid{};
 
         if (step_enabled[kStealthVerifyExceptionHandling])
         {
-            StealthVerifyExceptionHandling(flags, have_local_nt, buffers, get_string_stats, step, total);
+            StealthVerifyExceptionHandling(flags, have_local_nt, ExecTelemetry, buffers, get_string_stats, step, total);
         }
 
         if (step_enabled[kStealthExecuteTls])
         {
-            StealthExecuteTls(have_local_nt, local_pe, local_pe_size, buffers, step, total);
+            StealthExecuteTls(have_local_nt, local_pe, local_pe_size, ExecTelemetry, buffers, step, total);
         }
 
         if (step_enabled[kStealthExecuteDllMain])
         {
-            StealthExecuteDllMain(step, total);
+            StealthExecuteDllMain(ExecTelemetry, flags, step, total);
         }
 
         if (step_enabled[kStealthRunUnderLoaderLock])
         {
-            StealthRunUnderLoaderLock(step, total);
+            StealthRunUnderLoaderLock(ExecTelemetry, flags, step, total);
         }
 
         if (step_enabled[kStealthCleanDataDirectories])
@@ -5505,7 +5972,7 @@ LUID luid{};
 
         if (step_enabled[kStealthSetPageProtections])
         {
-            StealthSetPageProtections(process, hRemoteBase, have_local_nt, buffers, step, total);
+            StealthSetPageProtections(process, hRemoteBase, have_local_nt, local_pe, local_pe_size, buffers, step, total);
         }
         if (step_enabled[kStealthVerifyWx])
         {
@@ -5524,7 +5991,7 @@ LUID luid{};
 
         if (step_enabled[kStealthEraseHeader])
         {
-            StealthEraseHeader(process, hRemoteBase, have_local_nt, MapStats, buffers, step, total);
+            StealthEraseHeader(process, hRemoteBase, have_local_nt, MapStats, ExecTelemetry, buffers, step, total);
         }
         if (step_enabled[kStealthSurveyTraps])
         {
@@ -5536,13 +6003,14 @@ LUID luid{};
 
     bool SafeDebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
-        const HijackContext * Context, const MAP_STATS * MapStats, f_GetLastStringStats get_string_stats,
+        const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
+        const THREAD_EXEC_STATS * ThreadExec, f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
         __try
         {
-            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers);
+            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, ExecTelemetry, ThreadExec, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -6674,7 +7142,30 @@ LUID luid{};
         WizardConfig config;
         std::wstring config_path;
         bool config_invalid = false;
+        Trace::BeginSession();
+
+        Trace::Begin(L"Load + decrypt configuration");
         const bool config_loaded = LoadWizardConfig(config, config_path, config_invalid);
+        if (!config_path.empty())
+        {
+            Trace::Note(L"config path   : %ls", config_path.c_str());
+        }
+        if (config_loaded)
+        {
+            Trace::Note(L"schema=%d target=%ls timeout=%d ms", config.schema_version,
+                config.target_name.c_str(), config.timeout);
+            Trace::Note(L"payload=%ls runtime=%ls dll_dir=%ls", config.payload_name.c_str(),
+                config.runtime_name.c_str(), config.dll_dir.c_str());
+            Trace::Note(L"payload pin=%ls", config.expected_payload_sha256.c_str());
+            Trace::Note(L"export map   : %zu entrie(s)", config.export_map.size());
+            for (const ExportNameMap & e : config.export_map)
+            {
+                // The map is held as narrow std::string; printing it straight into a wide
+                // format produced mojibake, so widen it explicitly.
+                Trace::Note(L"  %ls -> %ls", Trace::Widen(e.old_name.c_str()), Trace::Widen(e.new_name.c_str()));
+            }
+        }
+        Trace::End();
         if (config_invalid || !config_loaded)
         {
             if (config_path.empty())
@@ -6685,15 +7176,21 @@ LUID luid{};
             {
                 PrintError(XOR_STR_W(L"The deployed configuration is invalid; fix the schema, target or per-build deployment keys, or restore the file.").get());
             }
+            Trace::Summary(L"FAILED at configuration");
             PauseBeforeExit();
             return 1;
         }
 
+        Trace::Begin(L"Load runtime DLL + resolve exports");
         if (!LoadRuntime(runtime, config))
         {
+            Trace::End();
+            Trace::Summary(L"FAILED at runtime load");
             PauseBeforeExit();
             return 1;
         }
+        Trace::Note(L"module base   : %p", reinterpret_cast<void *>(runtime.module));
+        Trace::End();
 
         if (VerboseOutputEnabled())
         {
@@ -6710,57 +7207,85 @@ LUID luid{};
         wprintf(L"\n");
         wprintf(L"Target: %ls%ls%ls | Timeout: %ls%d%ls ms\n",
             kGreen, config.target_name.c_str(), kReset, kGreen, config.timeout, kReset);
-        if (VerboseOutputEnabled()) { wprintf(L"Load flags: %ls0x%08X%ls\n", kGreen, BuildFlags(config), kReset); }
 
-        wprintf(L"\n");
+        Trace::Begin(L"Decode load flags");
+        const DWORD preflight_flags = BuildFlags(config);
+        DescribeFlags(preflight_flags);
+        Trace::End();
+
+        Trace::Begin(L"Resolve + hash payload");
         std::vector<BYTE> raw_data;
         FileInformation fileInformation;
-        const DWORD preflight_flags = BuildFlags(config);
         if (!ResolveConfiguredPayload(config.dll_dir, config.payload_name, config.expected_payload_sha256,
             preflight_flags, fileInformation, raw_data))
         {
+            Trace::End();
+            Trace::Summary(L"FAILED at payload resolution");
             PauseBeforeExit();
             return 1;
         }
+        Trace::Note(L"payload size  : %zu bytes", raw_data.size());
+        Trace::Note(L"architecture  : %ls", ArchitectureName(fileInformation.architecture));
+        Trace::Note(L"managed (.NET): %ls", fileInformation.dotnet ? L"yes" : L"no");
+        Trace::End();
 
         ReportPayloadCapabilities(raw_data, preflight_flags);
 
+        Trace::Begin(L"Runtime init: symbols + imports");
         wprintf(L"\n%ls[+]%ls Downloading Windows symbols...\n", kGreen, kReset);
         DWORD symbol_state = INJ_ERR_SYMBOL_INIT_NOT_DONE;
         DWORD import_state = INJ_ERR_IMPORT_HANDLER_NOT_DONE;
         DWORD init_state = INJ_ERR_SUCCESS;
         if (!WaitForRuntime(runtime, symbol_state, import_state, init_state))
         {
+            Trace::End();
             PrintRuntimeFailure(symbol_state, import_state, init_state);
+            Trace::Summary(L"FAILED at runtime initialisation");
             PauseBeforeExit();
             // Transient (network/symbol timeout): fresh-process retryable.
             return kResultRetryable;
         }
+        Trace::Note(L"symbol state  : 0x%08lX", static_cast<unsigned long>(symbol_state));
+        Trace::Note(L"import state  : 0x%08lX", static_cast<unsigned long>(import_state));
+        Trace::End();
         wprintf(L"%ls[+]%ls Download completed.\n\n", kGreen, kReset);
 
+        Trace::Begin(L"Operator confirmation");
         const ConfirmationResult confirmation = ConfirmBeforeDetection();
         if (confirmation == ConfirmationResult::Cancelled)
         {
+            Trace::End();
             wprintf(L"Cancelled.\n");
+            Trace::Summary(L"cancelled by operator");
             return 0;
         }
         if (confirmation == ConfirmationResult::Unavailable)
         {
-
+            Trace::End();
+            Trace::Summary(L"FAILED at operator confirmation");
             return 1;
         }
+        Trace::End();
 
+        Trace::Begin(L"Select target process");
         TargetSelection target;
         bool cancelled = false;
         if (!SelectTarget(config.target_name, target, cancelled))
         {
+            Trace::End();
             if (cancelled)
             {
                 wprintf(L"Cancelled.\n");
+                Trace::Summary(L"cancelled by operator");
                 return 0;
             }
+            Trace::Summary(L"FAILED at target selection");
             return 2;
         }
+        Trace::Note(L"pid           : %lu", target.pid);
+        Trace::Note(L"name          : %ls", target.name.c_str());
+        Trace::Note(L"architecture  : %ls", ArchitectureName(target.architecture));
+        Trace::End();
 
         if (target.architecture == Architecture::X86)
         {
@@ -6899,6 +7424,29 @@ LUID luid{};
         }
         FileHandleGuard threadSponsorGuard(threadSponsorRaw);
 
+        Trace::Begin(L"Pre-open donor handles (sponsor)");
+        if (sponsorRaw)
+        {
+            Trace::Note(L"process sponsor handle : 0x%08X (access 0x%08lX)",
+                static_cast<unsigned>(ReCa<ULONG_PTR>(sponsorRaw)),
+                static_cast<unsigned long>(Context.SponsorAccess));
+        }
+        else
+        {
+            Trace::Note(L"process sponsor handle : not obtained (runtime acquisition only)");
+        }
+        if (threadSponsorRaw)
+        {
+            Trace::Note(L"thread sponsor handle  : 0x%08X (TID 0x%04lX)",
+                static_cast<unsigned>(ReCa<ULONG_PTR>(threadSponsorRaw)),
+                static_cast<unsigned long>(Context.SponsorTid));
+        }
+        else
+        {
+            Trace::Note(L"thread sponsor handle  : not obtained (runtime will search)");
+        }
+        Trace::End();
+
         HANDLE targetHandle = sponsorRaw;
         FileHandleGuard targetHandleGuard;
         if (!targetHandle)
@@ -6959,6 +7507,16 @@ LUID luid{};
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
 
+        Trace::Begin(L"Memory injection (manual map + thread hijack)");
+        Trace::Note(L"target pid    : %lu", static_cast<unsigned long>(data.ProcessID));
+        Trace::Note(L"payload bytes : %lu", static_cast<unsigned long>(data.RawSize));
+        Trace::Note(L"flags         : 0x%08lX", static_cast<unsigned long>(data.Flags));
+        Trace::Note(L"timeout       : %lu ms", static_cast<unsigned long>(data.Timeout));
+        Trace::Note(L"sponsor proc  : 0x%08X", static_cast<unsigned>(data.hHandleValue));
+        Trace::Note(L"sponsor tid   : 0x%08X (handle 0x%08X)",
+            static_cast<unsigned>(data.TargetTid),
+            static_cast<unsigned>(data.hThreadHandleValue));
+
         const ULONGLONG inject_begin_ms = GetTickCount64();
 
         // The diagnostic ring lives in the host process, so a record from an earlier attempt would be
@@ -6966,14 +7524,19 @@ LUID luid{};
         if (runtime.clear_last_error_info)
         {
             runtime.clear_last_error_info();
+            Trace::Note(L"diagnostic ring cleared");
         }
 
         const DWORD result = runtime.memory_inject(&data);
         const ULONGLONG inject_window_ms = GetTickCount64() - inject_begin_ms;
 
+        Trace::Note(L"inject returned 0x%08lX after %llu ms", static_cast<unsigned long>(result),
+            static_cast<unsigned long long>(inject_window_ms));
+        Trace::End();
+
         if (result != INJ_ERR_SUCCESS)
         {
-            fwprintf(stderr, L"%lsOperation failed with code %08X%ls\n", kRed, result, kReset);
+            wprintf(L"%ls[x]%ls Operation failed with code %08X%ls\n", kRed, kReset, result);
             PrintFailureHint(result);
 
             if (runtime.get_last_error_info)
@@ -7011,6 +7574,7 @@ LUID luid{};
             targetHandleGuard.reset();
             threadSponsorGuard.reset();
             sponsorGuard.reset();
+            Trace::Summary(L"FAILED during injection");
             PauseBeforeExit();
             // Only retry genuine pre-mapping misses. If the payload already
             // reached the target, retrying would load it a second time without
@@ -7037,27 +7601,51 @@ LUID luid{};
             }
         }
 
+        Trace::Begin(L"Fetch runtime telemetry");
         HijackStats ProcessHijackStats{};
         HijackStats ThreadHijackStats{};
         if (runtime.get_last_hijack_stats)
         {
             runtime.get_last_hijack_stats(&ProcessHijackStats, &ThreadHijackStats);
+            Trace::Note(L"process hijack: attempted=%u success=%u source=%u donor=%u",
+                ProcessHijackStats.Attempted, ProcessHijackStats.Success, ProcessHijackStats.Source,
+                ProcessHijackStats.DonorPid);
         }
         MAP_STATS MapStats{};
         if (runtime.get_last_map_stats)
         {
             runtime.get_last_map_stats(&MapStats);
+            Trace::Note(L"map stats     : cleaned=0x%08X residual=0x%08X verified=%u",
+                MapStats.CleanedMask, MapStats.ResidualMask, MapStats.Verified);
         }
 
         THREAD_EXEC_STATS ThreadExec{};
         if (runtime.get_last_thread_exec_stats)
         {
             runtime.get_last_thread_exec_stats(&ThreadExec);
+            Trace::Note(L"thread exec   : tid=0x%04X success=%u ret=0x%08X iters=%u elapsed=%u ms",
+                ThreadExec.HijackedTid, ThreadExec.Success, ThreadExec.RoutineRet,
+                ThreadExec.PollIterations, ThreadExec.ExecMs);
+            Trace::Note(L"scrubbed=%llu bytes cycles=%llu",
+                static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
+                static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
         }
+        VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
+        if (runtime.get_last_exec_telemetry)
+        {
+            runtime.get_last_exec_telemetry(&ExecTelemetry);
+            Trace::Note(L"exec telemetry: dllmain=%d lock=0x%08X unlock=0x%08X tls=%u/%u/%u",
+                (int)ExecTelemetry.DllMainResult,
+                (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus,
+                ExecTelemetry.TlsCallbacksConfigured, ExecTelemetry.TlsCallbacksExecuted,
+                ExecTelemetry.TlsCallbacksFailed);
+        }
+        Trace::End();
         Context.UsedTid = ThreadExec.HijackedTid;
 
         bool stealth_gate_ok = false;
         bool wx_violated = false;
+        Trace::Begin(L"Stealth verification suite");
         if (targetHandle)
         {
 
@@ -7069,13 +7657,16 @@ LUID luid{};
             }
 
             stealth_gate_ok = SafeDebugAndVerifyStealth(targetHandle, data.hDllOut, flags, raw_data.data(), raw_data.size(),
-                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
+                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, &ThreadExec, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
         }
         else
         {
             wprintf(L"%ls[x]%ls Verification could not run (no target handle); the result is unproven.\n",
                 kRed, kReset);
         }
+        Trace::Note(L"verification gate: %s | wx_violated: %s",
+            stealth_gate_ok ? L"PASS" : L"FAIL", wx_violated ? L"YES" : L"NO");
+        Trace::End();
 
         if (!runtime.get_last_thread_exec_stats || !ThreadExec.Attempted)
         {
@@ -7149,6 +7740,7 @@ LUID luid{};
                 wprintf(L"    scannable, and shipping it defeats the point of the string tiers.\n");
                 wprintf(L"    Fix the leak and rebuild before using this build.\n");
             }
+            Trace::Summary(had_target ? L"FAILED at verification gate" : L"VERIFICATION NOT PERFORMED");
             PauseBeforeExit();
             return 1;
         }
@@ -7165,6 +7757,12 @@ LUID luid{};
             kGreen, kReset,
             kGreen, static_cast<unsigned long>(inject_window_ms), kReset,
             kGreen, static_cast<unsigned long>(data.Timeout), kReset);
+        wprintf(L"[VERIFY]  [+] W^X Security Audit: RWX Regions Found: %ls%d%ls (Strict W^X %ls)\n",
+            kGreen, wx_violated ? 1 : 0, kReset, wx_violated ? L"VIOLATED" : L"Enforced");
+        wprintf(L"====================================================================================================\n");
+        wprintf(L"[RESULT]  [+] INJECTION CONFIRMED: Module Mapped at %p (Target: %ls)\n", data.hDllOut, target.name.c_str());
+        wprintf(L"====================================================================================================\n");
+        Trace::Summary(L"SUCCESS");
         PauseBeforeExit();
         return 0;
     }

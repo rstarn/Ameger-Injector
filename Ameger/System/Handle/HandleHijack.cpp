@@ -354,7 +354,7 @@ namespace
 
 			if (value != L"reserve")
 			{
-				LOG(1, "HandleAcq: unknown AMEGER_VM_PROBE value, using the default (reserve)\n");
+				LOG(1, XOR_STR_A("HandleAcq: unknown AMEGER_VM_PROBE value, using the default (reserve)\n").get());
 			}
 
 			return VM_PROBE_POLICY::Reserve;
@@ -756,6 +756,12 @@ namespace
 					Detail.BudgetSkipped = static_cast<DWORD>(BudgetSkipped);
 					Detail.Success = 1;
 					Detail.FailCode = INJ_ERR_SUCCESS;
+					Detail.SnapshotBytes = static_cast<DWORD>(Snapshot.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snapshot.Buffer.size());
+					Detail.ProbeMethod = 1;
+					LOG(1, "[HANDLE] [+] Donor Handle Acquired: donor pid=%u donor handle=0x%08X\n", FoundDonorPid, FoundDonorHandle);
+					LOG(1, "[HANDLE] [+] Duplicated Handle: local=0x%08X granted=0x%08X\n", FoundNewHandle, FoundGranted);
+					LOG(1, "[HANDLE] [*] Census: total=%u examined=%llu dupDenied=%llu verifyRejected=%llu owners=%llu budgetSkipped=%llu\n",
+						Detail.TotalHandles, (unsigned long long)Examined, (unsigned long long)DupDenied, (unsigned long long)VerifyRejected, (unsigned long long)Owners.size(), (unsigned long long)BudgetSkipped);
 					return INJ_ERR_SUCCESS;
 				}
 
@@ -766,7 +772,7 @@ namespace
 			}
 		}
 
-		LOG(1, "HandleAcq: no donor (examined %llu, duplicated %llu, filtered %d, budget_hit %d)\n",
+		LOG(1, XOR_STR_A("HandleAcq: no donor (examined %llu, duplicated %llu, filtered %d, budget_hit %d)\n").get(),
 			static_cast<unsigned long long>(Examined),
 			static_cast<unsigned long long>(Duplicated),
 			HaveType ? 1 : 0,
@@ -873,10 +879,13 @@ namespace
 		}
 		else
 		{
-			LOG(1, "HandleAcq: type calibration failed, falling back to unfiltered scan\n");
+			LOG(1, XOR_STR_A("HandleAcq: type calibration failed, falling back to unfiltered scan\n").get());
 		}
 
 		Local.Calibrated = HaveType ? 1 : 0;
+		Local.SnapshotBytes = static_cast<DWORD>(Snap.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snap.Buffer.size());
+		LOG(1, "[HANDLE] [*] Handle Table Census: %llu bytes, calibrated=%d type=%u\n",
+			(unsigned long long)Snap.Buffer.size(), HaveType ? 1 : 0, (unsigned)WantedType);
 
 		const DWORD ScanRet = ScanSnapshot(Ntdll, Snap, SelfPid, TargetPid, TargetTid, ThreadScan, WantedType, HaveType, DesiredAccess, TargetOwnerHandle, Out, Local);
 		if (Detail)
@@ -1035,7 +1044,7 @@ DWORD HijackProcessHandle(DWORD TargetPid, DWORD DesiredAccess, HANDLE & OutHand
 		Result = HijackImpl(TargetPid, 0, false, DesiredAccess, TargetOwnerHandle, OutHandle, Detail);
 		if (Result == INJ_ERR_SUCCESS)
 		{
-			LOG(0, "HandleAcq: acquired process handle for PID %lu\n", TargetPid);
+			LOG(0, XOR_STR_A("HandleAcq: acquired process handle for PID %lu\n").get(), TargetPid);
 		}
 	}
 	catch (...)
@@ -1056,7 +1065,7 @@ DWORD HijackThreadHandle(DWORD TargetPid, DWORD TargetTid, DWORD DesiredAccess, 
 		Result = HijackImpl(TargetPid, TargetTid, true, DesiredAccess, TargetOwnerHandle, OutHandle, Detail);
 		if (Result == INJ_ERR_SUCCESS)
 		{
-			LOG(0, "HandleAcq: acquired thread handle %lu in PID %lu\n", TargetTid, TargetPid);
+			LOG(0, XOR_STR_A("HandleAcq: acquired thread handle %lu in PID %lu\n").get(), TargetTid, TargetPid);
 		}
 	}
 	catch (...)

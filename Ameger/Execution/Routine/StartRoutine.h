@@ -15,22 +15,30 @@ using f_Routine			= DWORD(__fastcall *)(void * pArg);
 #define SR_FP_FLAG_XSAVE 0x00000001
 #define SR_FP_AREA 128
 #define SR_FP_AREA_SIZE 864
+#define SR_SAVED_RSP 96
+#define SR_CYCLES_DELTA 80
+#define SR_SCRUB_BYTES 88
 
 ALIGN struct SR_REMOTE_DATA
 {
-	ALIGN SR_REMOTE_STATE	State			= SR_REMOTE_STATE::SR_RS_ExecutionPending;
-	ALIGN DWORD				Ret				= 0;
-	ALIGN DWORD				LastWin32Error	= 0;
-	ALIGN void *			pArg			= nullptr;
-	ALIGN f_Routine			pRoutine		= nullptr;
-	ALIGN UINT_PTR			Buffer			= 0;
-	ALIGN DWORD				FpFlags			= 0;
-	ALIGN DWORD				FpMask			= 0;
-	ALIGN WORD				ShellCw			= 0x037F;
-	ALIGN DWORD				ShellMxcsr		= 0x01F80;
+	ALIGN SR_REMOTE_STATE	State				= SR_REMOTE_STATE::SR_RS_ExecutionPending;
+	ALIGN DWORD				Ret					= 0;
+	ALIGN DWORD				LastWin32Error		= 0;
+	ALIGN void *			pArg				= nullptr;
+	ALIGN f_Routine			pRoutine			= nullptr;
+	ALIGN UINT_PTR			Buffer				= 0;
+	ALIGN DWORD				FpFlags				= 0;
+	ALIGN DWORD				FpMask				= 0;
+	ALIGN WORD				ShellCw				= 0x037F;
+	ALIGN DWORD				ShellMxcsr			= 0x01F80;
+	// Forensic stub telemetry written by RemoteThreadHijack.asm.
+	// RoutineCyclesDelta: __rdtsc delta across `call rax`.
+	// StackScrubbedBytes: (saved_rsp - TEB.StackLimit) zeroed by the scrub loop.
+	ALIGN unsigned __int64	RoutineCyclesDelta	= 0;
+	ALIGN SIZE_T			StackScrubbedBytes	= 0;
 };
 
-static_assert(sizeof(SR_REMOTE_DATA) == 80);
+static_assert(sizeof(SR_REMOTE_DATA) == 96);
 static_assert(offsetof(SR_REMOTE_DATA, Ret) == 8);
 static_assert(offsetof(SR_REMOTE_DATA, LastWin32Error) == 16);
 static_assert(offsetof(SR_REMOTE_DATA, pArg) == 24);
@@ -40,6 +48,8 @@ static_assert(offsetof(SR_REMOTE_DATA, FpFlags) == 48);
 static_assert(offsetof(SR_REMOTE_DATA, FpMask) == 56);
 static_assert(offsetof(SR_REMOTE_DATA, ShellCw) == 64);
 static_assert(offsetof(SR_REMOTE_DATA, ShellMxcsr) == 72);
+static_assert(offsetof(SR_REMOTE_DATA, RoutineCyclesDelta) == 80);
+static_assert(offsetof(SR_REMOTE_DATA, StackScrubbedBytes) == 88);
 
 extern "C" BYTE RemoteThreadHijackBegin[];
 extern "C" BYTE RemoteThreadHijackEnd[];

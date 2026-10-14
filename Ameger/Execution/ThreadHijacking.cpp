@@ -95,6 +95,77 @@ namespace
 		return std::find(excluded.begin(), excluded.end(), tid) != excluded.end();
 	}
 
+	void LogThreadCensus(HANDLE hTargetProc, ProcessInformation & pi, const std::vector<DWORD> & excluded, DWORD selected_tid)
+	{
+		LOG(1, "[HIJACK] [*] Candidate Thread Census:\n");
+		LOG(1, "  TID      STATE    WAIT REASON   TEB ADDRESS         LOADER WORKER?  DECISION\n");
+		if (!pi.SetProcess(hTargetProc))
+		{
+			LOG(1, "[HIJACK] [!] Census unavailable: SetProcess failed\n");
+			return;
+		}
+		do
+		{
+			const DWORD tid = pi.GetThreadId();
+			if (!tid)
+			{
+				continue;
+			}
+			KTHREAD_STATE st{};
+			KWAIT_REASON wr{};
+			const bool have_state = pi.GetThreadState(st, wr);
+			void * teb = nullptr;
+			{
+				THREAD_BASIC_INFORMATION tbi{};
+				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+				if (ht && NT_SUCCESS(ScNtQueryInformationThread(ht.get(), THREADINFOCLASS::ThreadBasicInformation, &tbi, sizeof(tbi), nullptr)))
+				{
+					teb = tbi.TebBaseAddress;
+				}
+			}
+			USHORT flags = 0;
+			bool is_worker = true;
+			if (teb && g_DynamicOffsetsReady.load(std::memory_order_acquire) && g_DynamicOffsets.TebSameTebFlags)
+			{
+				if (ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(teb) + g_DynamicOffsets.TebSameTebFlags, &flags, sizeof(flags), nullptr))
+				{
+					is_worker = (flags & g_DynamicOffsets.SameTebFlagsLoaderWorkerMask) != 0;
+				}
+			}
+			const char * state_name = "Unknown";
+			if (have_state)
+			{
+				switch (static_cast<int>(st))
+				{
+				case 0: state_name = "Init"; break;
+				case 1: state_name = "Ready"; break;
+				case 2: state_name = "Running"; break;
+				case 3: state_name = "Standby"; break;
+				case 4: state_name = "Term"; break;
+				case 5: state_name = "Waiting"; break;
+				case 6: state_name = "Transition"; break;
+				default: state_name = "Other"; break;
+				}
+			}
+			const char * verdict = "SKIPPED";
+			if (tid == selected_tid)
+			{
+				verdict = "SELECTED";
+			}
+			else if (tid == GetCurrentThreadId() || IsExcluded(excluded, tid))
+			{
+				verdict = "EXCLUDED";
+			}
+			else if (is_worker)
+			{
+				verdict = "EXCLUDED (Worker)";
+			}
+			LOG(1, "  0x%04X   %-8s %-11d %p   %s (0x%04X)  %s\n",
+				tid, state_name, have_state ? static_cast<int>(wr) : -1, teb,
+				is_worker ? "Yes" : "No", flags, verdict);
+		} while (pi.NextThread());
+	}
+
 	DWORD FindHijackThreadToolhelp(HANDLE hTargetProc, const std::vector<DWORD> & excluded)
 	{
 		if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE)
@@ -546,6 +617,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	}
 
 	LOG(2, "Target thread %06X\n", ThreadID);
+	{
+		ProcessInformation census_pi;
+		LogThreadCensus(hTargetProc, census_pi, excluded, ThreadID);
+		processInformation.SetProcess(hTargetProc);
+	}
 
 	if (!hThread)
 	{
@@ -848,10 +924,19 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	ProbeFpCaps(remote_data->FpFlags, remote_data->FpMask, pState);
 	remote_data->ShellCw = 0x037F;
 	remote_data->ShellMxcsr = 0x01F80;
+	remote_data->RoutineCyclesDelta = 0;
+	remote_data->StackScrubbedBytes = 0;
 
 	void * pRemoteFunc = pCode;
 	OldContext.Rip = reinterpret_cast<ULONG_PTR>(pRemoteFunc);
 
+	InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.OldRip), static_cast<LONG64>(OldRIP));
+	StoreThreadExecStat(g_ThreadExecStats.FpMode, remote_data->FpFlags);
+	StoreThreadExecStat(g_ThreadExecStats.FpMask, remote_data->FpMask);
+	LOG(1, "[HIJACK] [*] Context Captured: Target RIP=0x%llX RSP=0x%llX\n", (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
+	LOG(1, "[HIJACK] [*] Floating-Point State: Mode=%s Mask=0x%X Area=%u bytes\n", remote_data->FpFlags ? "XSAVE" : "FXSAVE", remote_data->FpMask, SR_FP_AREA_SIZE);
+	LOG(1, "[HIJACK] [*] Staging: VA=%p RX=0x1000 RW=0x%llX\n", pMem, (unsigned long long)(kWxAllocSize - kWxCodePage));
+	LOG(1, "[HIJACK] [*] RIP Redirection: 0x%llX -> %p\n", (unsigned long long)OldRIP, pRemoteFunc);
 	LOG(2, "Remote thread shell prepared (W^X split: code RX 0x1000, state RW)\n");
 
 	LOG(2, "Acquiring thread with:\n");
@@ -1059,6 +1144,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	auto Timer = GetTickCount64();
 	DWORD consecutive_read_failures = 0;
+	DWORD poll_iterations = 0;
 
 	DWORD poll_wait_ms = 1;
 
@@ -1073,6 +1159,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		auto dwWaitRet = WaitForSingleObject(g_hInterruptEvent, poll_wait_ms);
 		poll_wait_ms = poll_wait_ms < 5 ? 5 : 25;
+		++poll_iterations;
 
 		BOOL bRet = ScReadProcessMemory(hTargetProc, pState, &data, sizeof(data), nullptr);
 		if (bRet)
@@ -1082,6 +1169,26 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionFinished)
 			{
 				LOG(2, "Shelldata retrieved\n");
+				const DWORD exec_ms = static_cast<DWORD>(GetTickCount64() - Timer);
+				StoreThreadExecStat(g_ThreadExecStats.PollIterations, poll_iterations);
+				StoreThreadExecStat(g_ThreadExecStats.ExecMs, exec_ms);
+				StoreThreadExecStat(g_ThreadExecStats.RoutineRet, data.Ret);
+				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.RoutineCyclesDelta), static_cast<LONG64>(data.RoutineCyclesDelta));
+				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackScrubbedBytes), static_cast<LONG64>(data.StackScrubbedBytes));
+				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.SavedRsp), 0);
+				{
+					ULONG_PTR saved_rsp = 0;
+					if (ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(pState) + SR_SAVED_RSP, &saved_rsp, sizeof(saved_rsp), nullptr) && saved_rsp)
+					{
+						InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.SavedRsp), static_cast<LONG64>(saved_rsp));
+						if (data.StackScrubbedBytes && saved_rsp >= data.StackScrubbedBytes)
+						{
+							InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackLimit), static_cast<LONG64>(saved_rsp - data.StackScrubbedBytes));
+						}
+					}
+				}
+				LOG(1, "[HIJACK] [*] Polling Execution: state=Finished iters=%u elapsed=%u ms ret=0x%08X\n", poll_iterations, exec_ms, data.Ret);
+				LOG(1, "[HIJACK] [+] Stack Sanitization: scrubbed=%llu bytes cycles=%llu\n", (unsigned long long)data.StackScrubbedBytes, (unsigned long long)data.RoutineCyclesDelta);
 
 				break;
 			}
@@ -1260,6 +1367,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	if (context_restored)
 	{
 		LOG(2, "Thread context restored automatically\n");
+		LOG(1, "[HIJACK] [+] Context Verification: restored RIP=0x%llX thread resumed\n", (unsigned long long)OldRIP);
+	}
+	else
+	{
+		LOG(1, "[HIJACK] [x] Context Verification FAILED: RIP=0x%llX not restored\n", (unsigned long long)OldRIP);
 	}
 
 	ReclaimOrRetainTrampoline(context_restored);
