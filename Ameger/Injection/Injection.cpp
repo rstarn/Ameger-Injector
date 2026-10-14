@@ -174,7 +174,14 @@ DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD Err
 
 static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 {
-	LOG(0, "CoreExecute called with pData = %p\n", pData);
+	// The export name is hoisted out of the macro argument list: nesting one function-like macro
+	// inside another's argument list is fragile to preprocess, and the decrypted buffer has to
+	// outlive the call anyway. tag.get() must stay the FORMAT argument, otherwise its own %p
+	// would never be interpreted.
+	{
+		auto tag = XOR_STR_A("CoreExecute called with pData = %p\n");
+		LOG(0, tag.get(), pData);
+	}
 
 	if (!pData)
 	{
@@ -356,7 +363,10 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 		pData->hDllOut = NULL;
 	}
 
-	LOG(0, "CoreExecute failed with an unhandled exception\n");
+	{
+		auto tag = XOR_STR_A("CoreExecute failed with an unhandled exception\n");
+		LOG(0, tag.get());
+	}
 
 	if (pData && pData->GenerateErrorLog)
 	{
@@ -402,6 +412,12 @@ DWORD __stdcall GetSymbolState()
 			return INJ_ERR_SYMBOL_INIT_NOT_DONE;
 		}
 
+		// Done is signalled before the worker has finished emitting its trailing telemetry: the
+		// SYMBOL_LOADER::Initialize marker and the whole SYMBOL_PARSER RVA dump are logged after it.
+		// Waiting on the thread (without consuming the handles, which GetSymbolState still polls)
+		// guarantees that output lands before completion is reported to the launcher.
+		WaitAsyncWorkerThread(sym_ntdll_native_ret);
+
 		DWORD sym_ret = sym_ntdll_native_ret.Result;
 		if (sym_ret != SYMBOL_ERR_SUCCESS)
 		{
@@ -438,6 +454,9 @@ DWORD __stdcall GetImportState()
 		{
 			return INJ_ERR_IMPORT_HANDLER_NOT_DONE;
 		}
+
+		// Same ordering guarantee as the symbol worker above.
+		WaitAsyncWorkerThread(import_handler_ret);
 
 		DWORD imp_ret = import_handler_ret.Result;
 		if (imp_ret != INJ_ERR_SUCCESS)

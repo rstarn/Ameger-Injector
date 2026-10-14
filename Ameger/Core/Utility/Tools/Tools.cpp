@@ -868,6 +868,16 @@ void JoinAsyncWorker(ASYNC_WORKER_SLOT & slot)
 	}
 }
 
+bool WaitAsyncWorkerThread(const ASYNC_WORKER_SLOT & slot)
+{
+	if (!slot.Thread)
+	{
+		return true;
+	}
+
+	return WaitForSingleObject(slot.Thread, INFINITE) == WAIT_OBJECT_0;
+}
+
 std::wstring CharArrayToStdWstring(const char * szString)
 {
 	std::wstring out;

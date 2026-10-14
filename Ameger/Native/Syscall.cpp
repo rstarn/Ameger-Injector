@@ -64,10 +64,13 @@ void SyscallLog(int level, const char * fmt, ...)
     }
 }
 
-#define SC_LOG_OK(...)    SyscallLog(1, "\x1b[92m[+]\x1b[0m " __VA_ARGS__)
-#define SC_LOG_WARN(...)  SyscallLog(1, "\x1b[93m[!]\x1b[0m " __VA_ARGS__)
-#define SC_LOG_ERR(...)   SyscallLog(1, "\x1b[91m[x]\x1b[0m " __VA_ARGS__)
-#define SC_LOG_INFO(...)  SyscallLog(1, "\x1b[90m[*]\x1b[0m " __VA_ARGS__)
+// No colour codes. The runtime's primary output sink is the launcher's clipboard log, where ANSI is
+// inert, so these SGR sequences only added bytes that had to be stripped again downstream. The
+// bracketed markers carry the meaning and remain.
+#define SC_LOG_OK(...)    SyscallLog(1, "[+] " __VA_ARGS__)
+#define SC_LOG_WARN(...)  SyscallLog(1, "[!] " __VA_ARGS__)
+#define SC_LOG_ERR(...)   SyscallLog(1, "[x] " __VA_ARGS__)
+#define SC_LOG_INFO(...)  SyscallLog(1, "[*] " __VA_ARGS__)
 
 // ------------------------------------------------------------------------------------------------
 // Service number extraction, stub generation, and the single stub pool the host side calls through.
@@ -714,7 +717,11 @@ DWORD SyscallResolveAll()
 			if (is_rx)
 			{
 				SC_LOG_OK("[SYSCALL] [+] Stub Pool Staging: VA=%p Size=0x%X bytes\n", pool, kStubAreaSize);
-				SC_LOG_OK("[SYSCALL] [+] Memory Protection Query: Verified PAGE_EXECUTE_READ (RX) | RWX Count: 0\n");
+				// rwx_count is printed from the query result rather than hardcoded: in this branch it is
+				// necessarily 0 (it is only raised for PAGE_EXECUTE_READWRITE, which is the else),
+				// but a literal here would still be a claim rather than a reported value.
+				SC_LOG_OK("[SYSCALL] [+] Memory Protection Query: protect=0x%08X (%s) | RWX Count: %u\n",
+					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
 			}
 			else
 			{
@@ -727,7 +734,16 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	SC_LOG_OK("Syscall layer ready: %u/%zu stubs built", Ready, kSyscallTableCount);
+	// "ready" is only true when every table entry resolved. A partial pool must not read as ready.
+	if (Ready == kSyscallTableCount)
+	{
+		SC_LOG_OK("Syscall layer ready: %u/%zu stubs built\n", Ready, kSyscallTableCount);
+	}
+	else
+	{
+		SC_LOG_WARN("Syscall layer INCOMPLETE: %u/%zu stubs built - %zu unresolved\n",
+			Ready, kSyscallTableCount, static_cast<size_t>(kSyscallTableCount - Ready));
+	}
 	return Ready;
 }
 

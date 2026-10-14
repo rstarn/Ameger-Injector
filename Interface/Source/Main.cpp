@@ -1,3 +1,4 @@
+
 #include "PCH.h"
 
 #include <cstdarg>
@@ -45,12 +46,24 @@
 namespace
 {
 
-    constexpr wchar_t kReset[] = L"\x1b[0m";
-    constexpr wchar_t kGreen[] = L"\x1b[92m";
-    constexpr wchar_t kRed[] = L"\x1b[91m";
-    constexpr wchar_t kYellow[] = L"\x1b[93m";
+    // Colour is intentionally absent from every CLI print.
+    //
+    // These were ANSI SGR sequences and were removed deliberately, not left as a styling choice:
+    // the primary sink for this log is the clipboard, where ANSI is inert and produced nothing but
+    // escape noise that the clipboard writer had to strip on every single line. The markers below
+    // ([+] [x] [*] [!] [=]) carry the pass/fail/not-checked semantics and survive as plain text, so
+    // removing colour loses no information - it only removes bytes that were never displayed.
+    //
+    // The names are kept so the several hundred format strings that already reference them continue
+    // to compile unchanged; each is an empty string.
+    constexpr wchar_t kReset[] = L"";
+    constexpr wchar_t kGreen[] = L"";
+    constexpr wchar_t kRed[] = L"";
+    constexpr wchar_t kYellow[] = L"";
 
-    constexpr wchar_t kDim[] = L"\x1b[2m";
+    constexpr wchar_t kDim[] = L"";
+
+    constexpr wchar_t kCyan[] = L"";
 
     constexpr size_t kConfigBlobMagicSize = 8;
 
@@ -1542,16 +1555,38 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     {
     }
 
-    // Forwards the runtime's narrow diagnostics into the launcher's normal log pipeline, so the
-    // in-shell telemetry (syscall resolution table, thread census, MMAP/CLOAK ground truth) reaches
-    // the console and the clipboard. Installed only when AMEGER_VERBOSE=1; otherwise QuietPrint keeps
-    // the runtime completely silent, which is the default posture for a headless launcher.
+    // Tracks which runtime category is currently open, so a category header prints only on change.
+    const void * g_RuntimeCategory = nullptr;
+
+    // Defined below alongside VerboseOutputEnabled; declared here because VerbosePrint reads it.
+    bool FullThreadCensusEnabled();
+
+    // Forwards the runtime's narrow diagnostics into the launcher's log pipeline, grouped into named
+    // sections so the raw trace reads as a structured sub-report under the phase that produced it
+    // instead of an undifferentiated dump. Installed only when AMEGER_VERBOSE=1; QuietPrint keeps the
+    // runtime silent otherwise, which is the default posture for a headless launcher.
     void __stdcall VerbosePrint(const char * text)
     {
         if (!text || !*text)
         {
             return;
         }
+
+        // Expected symbol-probe misses. The resolver walks a list of alias spellings per field, so
+        // each "not found" is followed by the spelling that did resolve; reporting the misses buries
+        // the one line that matters and made up roughly half the trace.
+        //
+        // The struct-size confirmations are matched by their full prefix, not by a leading "size ".
+        // The real line is "        SYMBOL_PARSER: size _PEB = 2008" - indented and prefixed - so a
+        // prefix test on "size " alone never matched and all 24 of them were printed.
+        if (strstr(text, "type not found:") || strstr(text, "not found in ") ||
+            strstr(text, "resolved via") || strstr(text, "size ") == text ||
+            strstr(text, "SYMBOL_PARSER: size ") ||
+            strstr(text, "-> id "))
+        {
+            return;
+        }
+
         const int need = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
         if (need <= 1)
         {
@@ -1562,7 +1597,301 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         {
             return;
         }
-        wprintf(L"%ls", wide.data());
+
+        // The buffer carries its own terminating NUL and, when the runtime routes through a print
+        // callback, its own trailing newline as well. Drop the NUL FIRST, then the newline: trimming
+        // only newlines stops at the NUL and leaves the newline in place, which renders as a blank
+        // row after every single line.
+        size_t len = wide.size();
+        while (len > 0 && wide[len - 1] == L'\0')
+        {
+            --len;
+        }
+        while (len > 0 && (wide[len - 1] == L'\n' || wide[len - 1] == L'\r'))
+        {
+            --len;
+        }
+        if (!len)
+        {
+            return;
+        }
+
+        // Strip ANSI before classifying and printing. The runtime emits colour codes inline, which
+        // breaks substring probes (the literal "[*]   [" is really "[*]<ESC>[0m   [") and left the
+        // block visually ragged. The whole runtime sub-report is rendered dim below, so the source
+        // colouring carries no information worth keeping.
+        std::vector<wchar_t> clean;
+        clean.reserve(len);
+        for (size_t i = 0; i < len; ++i)
+        {
+            if (wide[i] != L'\x1b')
+            {
+                clean.push_back(wide[i]);
+                continue;
+            }
+            if (i + 1 < len && wide[i + 1] == L'[')
+            {
+                size_t j = i + 2;
+                while (j < len && wide[j] >= L' ' && wide[j] <= L'?')
+                {
+                    ++j;
+                }
+                if (j < len && wide[j] >= L'@' && wide[j] <= L'~')
+                {
+                    ++j;
+                }
+                i = j - 1;
+                continue;
+            }
+            if (i + 1 < len)
+            {
+                ++i;
+            }
+        }
+        while (!clean.empty() && (clean.back() == L'\n' || clean.back() == L'\r'))
+        {
+            clean.pop_back();
+        }
+        if (clean.empty())
+        {
+            return;
+        }
+
+        const std::wstring line(clean.begin(), clean.end());
+        // Explicit narrowing: the runtime's log text is ASCII in practice, but wchar_t -> char
+        // needs a cast to satisfy C4244 under /WX.
+        std::string plain;
+        plain.reserve(line.size());
+        for (const wchar_t ch : line)
+        {
+            plain.push_back(static_cast<char>(ch & 0xFF));
+        }
+
+        struct Category
+        {
+            const char * probe;
+            const wchar_t * title;
+        };
+
+        // --- Thread census capture -------------------------------------------------------
+        // The census is a multi-row table arriving as independent print records, so it is
+        // accumulated and rendered once the block ends (the first non-row line) rather than
+        // streamed. Streaming would print all ~110 rows, which is what makes the log unreadable.
+        struct CensusBlock
+        {
+            std::wstring start;
+            std::vector<std::wstring> rows;
+            bool open = false;
+        };
+        static CensusBlock g_census;
+
+        const bool is_census_start = plain.find("Candidate Thread Census") != std::string::npos;
+        const bool is_census_row = plain.find("SELECTED") != std::string::npos ||
+            plain.find("SKIPPED") != std::string::npos ||
+            plain.find("EXCLUDED") != std::string::npos ||
+            plain.find("WAIT REASON") != std::string::npos;
+
+        const auto flush_census = []()
+        {
+            if (!g_census.open)
+            {
+                return;
+            }
+
+            g_census.open = false;
+
+            std::vector<const std::wstring *> selected, excluded, skipped;
+
+            for (const std::wstring & row : g_census.rows)
+            {
+                if (row.find(L"SELECTED") != std::wstring::npos)
+                {
+                    selected.push_back(&row);
+                }
+                else if (row.find(L"EXCLUDED") != std::wstring::npos)
+                {
+                    excluded.push_back(&row);
+                }
+                else if (row.find(L"SKIPPED") != std::wstring::npos)
+                {
+                    skipped.push_back(&row);
+                }
+            }
+
+            // The opening "[HIJACK] [*] Candidate Thread Census:" line is withheld until flush so it
+            // can head the condensed block; without it the table appears with no context at all.
+            if (!g_census.start.empty())
+            {
+                wprintf(L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
+            }
+
+            // "WAIT REASON" is the column header, kept and printed first so the retained rows
+            // below it stay readable.
+            for (const std::wstring & row : g_census.rows)
+            {
+                if (row.find(L"WAIT REASON") != std::wstring::npos)
+                {
+                    wprintf(L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
+                    break;
+                }
+            }
+
+            if (FullThreadCensusEnabled())
+            {
+                for (const std::wstring & row : g_census.rows)
+                {
+                    wprintf(L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
+                }
+            }
+            else
+            {
+                // Only decision-relevant rows survive the default view: what was chosen and what
+                // was deliberately excluded. Everything else was skipped for the same reason.
+                for (const std::wstring * row : selected)
+                {
+                    wprintf(L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
+                }
+                for (const std::wstring * row : excluded)
+                {
+                    wprintf(L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
+                }
+            }
+
+            wprintf(L"       %ls[%zu considered: %zu selected, %zu excluded, %zu skipped]%ls\n",
+                kDim, selected.size() + excluded.size() + skipped.size(), selected.size(),
+                excluded.size(), skipped.size(), kReset);
+
+            if (!FullThreadCensusEnabled() && !skipped.empty())
+            {
+                wprintf(L"       %ls(set AMEGER_FULL_CENSUS=1 for the full listing)%ls\n", kDim, kReset);
+            }
+
+            g_census.rows.clear();
+            g_census.start.clear();
+        };
+
+        if (is_census_start)
+        {
+            g_census.rows.clear();
+            g_census.start = line;
+            g_census.open = true;
+            return;
+        }
+
+        if (g_census.open && is_census_row)
+        {
+            g_census.rows.push_back(line);
+            return;
+        }
+
+        if (g_census.open)
+        {
+            // Block ended: render it before this unrelated line continues the section.
+            flush_census();
+        }
+        // Ordered probes, first match wins, evaluated against the ANSI-stripped text. A null probe
+        // terminates the table: unmatched lines print under whatever section is already open and do
+        // not disturb it, so untagged chatter cannot make the header flicker.
+        //
+        // pArg / pShells / pDispatch are deliberately absent. They are printed by BOTH the mapper
+        // (staging layout) and the hijacker ("Acquiring thread with:"), so probing them made the
+        // section alternate line by line between MANUAL MAP and THREAD HIJACK. They now inherit
+        // whichever section the surrounding lines already opened, which is correct in both places.
+        static const Category kCategories[] =
+        {
+            { "[SYSCALL]",          L"SYSCALL LAYER" },
+            { "SERVICE NAME",       L"SYSCALL LAYER" },
+            { "]   [",              L"SYSCALL LAYER" },
+            // The syscall setup chatter is emitted before the "[SYSCALL]" tag, so without these the
+            // section header only appeared partway down and the first six lines hung off whatever
+            // category happened to be open.
+            { "Resolving syscall service numbers", L"SYSCALL LAYER" },
+            { "ntdll base:",        L"SYSCALL LAYER" },
+            { "Pass 1: scanned",    L"SYSCALL LAYER" },
+            { "Pass 2: reconstructed", L"SYSCALL LAYER" },
+            { "Building syscall stub pool", L"SYSCALL LAYER" },
+            { "Stub pool built:",   L"SYSCALL LAYER" },
+            { "[HIJACK]",           L"THREAD HIJACK" },
+            { "TID      STATE",      L"THREAD HIJACK" },
+            { "  0x",               L"THREAD HIJACK" },
+            { "Donor round",        L"THREAD HIJACK" },
+            { "SR_AcquireThread",   L"THREAD HIJACK" },
+            { "Target thread ",     L"THREAD HIJACK" },
+            { "Remote thread shell",L"THREAD HIJACK" },
+            { "Acquiring thread",   L"THREAD HIJACK" },
+            { "Acquired target thread", L"THREAD HIJACK" },
+            { "pRoutine",           L"THREAD HIJACK" },
+            { "RIP replaced",       L"THREAD HIJACK" },
+            { "Thread resumed",     L"THREAD HIJACK" },
+            { "Entering wait state",L"THREAD HIJACK" },
+            { "Shelldata retrieved",L"THREAD HIJACK" },
+            { "Thread context restored", L"THREAD HIJACK" },
+            { "ProcessInformation", L"THREAD HIJACK" },
+            { "[HANDLE]",           L"HANDLE ACQUISITION" },
+            { "HandleAcq:",         L"HANDLE ACQUISITION" },
+            { "[MMAP]",             L"MANUAL MAP" },
+            { "Begin in-memory load", L"MANUAL MAP" },
+            { "Shell data initialized", L"MANUAL MAP" },
+            { "Shellsize",          L"MANUAL MAP" },
+            { "Total size",         L"MANUAL MAP" },
+            { "written to memory",  L"MANUAL MAP" },
+            { "Staging code promoted", L"MANUAL MAP" },
+            { "Shell returned",     L"MANUAL MAP" },
+            { "Imagebase",          L"MANUAL MAP" },
+            { "Fetching routine data", L"MANUAL MAP" },
+            { "[CLOAK]",            L"HEADER CLOAK" },
+            { "SYMBOL_LOADER",      L"SYMBOL LOADER" },
+            { "SYMBOL_PARSER",      L"SYMBOL RESOLVER" },
+            { "DynamicOffsets",     L"DYNAMIC OFFSETS" },
+            { "KcStrings",          L"STRING SELF-TEST" },
+            { "Attached to target process", L"TARGET ACQUISITION" },
+            { "Target process name",  L"TARGET ACQUISITION" },
+            { "Validating specified file", L"TARGET ACQUISITION" },
+            { "File validated",     L"TARGET ACQUISITION" },
+            { "Acquired target process handle", L"TARGET ACQUISITION" },
+            { nullptr,              nullptr },
+        };
+
+        const wchar_t * title = nullptr;
+        for (const Category * c = kCategories; c->probe; ++c)
+        {
+            if (plain.find(c->probe) != std::string::npos)
+            {
+                title = c->title;
+                break;
+            }
+        }
+
+        if (title && title != g_RuntimeCategory)
+        {
+            g_RuntimeCategory = title;
+            wprintf(L"       %ls--- runtime: %ls ---%ls\n", kCyan, title, kReset);
+        }
+
+        // A single runtime printf can carry embedded newlines (e.g. "OSVersion = %lu\nOSBuildVersion =
+        // %lu"). Indenting only the first line leaves the rest flush against column 0, so split and
+        // emit each physical line with the same indent.
+        for (size_t start = 0; start < line.size();)
+        {
+            size_t end = line.find(L'\n', start);
+            if (end == std::wstring::npos)
+            {
+                end = line.size();
+            }
+            if (end > start)
+            {
+                wprintf(L"       %ls%.*ls%ls\n", kDim, static_cast<int>(end - start), line.c_str() + start, kReset);
+            }
+            start = end + 1;
+        }
+    }
+
+    // Re-opens runtime section grouping. Called when the launcher starts a new phase so each phase's
+    // runtime trace announces its own categories rather than inheriting the previous phase's.
+    void ResetRuntimeCategory()
+    {
+        extern const void * g_RuntimeCategory;
+        g_RuntimeCategory = nullptr;
     }
 
     void DetachInterfaceConsole()
@@ -1803,6 +2132,22 @@ static const bool verbose = []() -> bool
         return verbose;
     }
 
+    // The candidate thread census is the one table large enough to dominate the log: Overwatch
+    // exposes ~110 threads and all but a handful are SKIPPED. Condensed by default to the rows that
+    // change the decision plus a tally. Nothing is discarded - set AMEGER_FULL_CENSUS=1 for the
+    // complete listing. Same convention as AMEGER_VERBOSE.
+    bool FullThreadCensusEnabled()
+    {
+        static const bool full = []()
+        {
+            wchar_t buffer[8] = {};
+
+            const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_FULL_CENSUS").get(), buffer, 4);
+            return got == 1 && buffer[0] == L'1';
+        }();
+        return full;
+    }
+
     // ------------------------------------------------------------------
     // Phase timeline. Every stage of the run is bracketed so the log can be
     // read top-to-bottom as a start-to-end account, and a summary table at
@@ -1812,35 +2157,38 @@ static const bool verbose = []() -> bool
     {
         constexpr size_t kMaxPhases = 64;
 
-        // Narrow -> wide helper. Configuration keys and export names are stored as narrow strings;
-        // handing one to a wide format produces mojibake rather than a diagnostic.
-        inline const wchar_t * Widen(const char * text)
+// Narrow -> wide helper. Configuration keys and export names are stored as narrow strings;
+// handing one to a wide format produces mojibake rather than a diagnostic.
+// Returns by value: an earlier version handed back a pointer into one shared thread_local buffer,
+// so two conversions in the same argument list aliased each other and the second silently
+// overwrote the first.
+inline std::wstring Widen(const char * text)
         {
             if (!text || !*text)
             {
-                return L"";
+                return std::wstring();
             }
             const int need = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
             if (need <= 1)
             {
-                return L"";
+                return std::wstring();
             }
-            thread_local std::vector<wchar_t> buffer;
-            buffer.assign(static_cast<size_t>(need), L'\0');
-            if (MultiByteToWideChar(CP_UTF8, 0, text, -1, buffer.data(), need) <= 0)
+            std::wstring out(static_cast<size_t>(need - 1), L'\0');
+            if (MultiByteToWideChar(CP_UTF8, 0, text, need, out.data(), need) <= 0)
             {
-                return L"";
+                return std::wstring();
             }
-            return buffer.data();
+            return out;
         }
 
         struct PhaseRecord
         {
-            wchar_t name[48]{};
-            ULONGLONG start_ms = 0;
-            ULONGLONG elapsed_ms = 0;
-            bool open = false;
-        };
+wchar_t name[48]{};
+        ULONGLONG start_ms = 0;
+        ULONGLONG elapsed_ms = 0;
+        bool open = false;
+        bool ok = true;
+    };
 
         inline PhaseRecord (& Phases())[kMaxPhases]
         {
@@ -1893,12 +2241,17 @@ static const bool verbose = []() -> bool
             wcsncpy_s(rec.name, name, _TRUNCATE);
             rec.start_ms = NowMs() - T0();
             rec.open = true;
+            // A new phase re-opens its runtime sections, so the first runtime line in each phase
+            // prints its category header again instead of inheriting the previous phase's grouping.
+            ResetRuntimeCategory();
             wprintf(L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
             return rec;
         }
 
-        // Closes the most recent phase, stamping its elapsed time.
-        inline void End()
+        // Closes the most recent phase, stamping its elapsed time. The outcome is a parameter, not an
+        // assumption: a phase that completes but whose result failed must report [x], otherwise every
+        // phase in the log claims success regardless of what actually happened.
+        inline void End(bool ok = true)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
             const size_t count = PhaseCount();
@@ -1913,8 +2266,10 @@ static const bool verbose = []() -> bool
             }
             rec.elapsed_ms = NowMs() - T0() - rec.start_ms;
             rec.open = false;
-            wprintf(L"     %ls[+]%ls %-44ls %ls%6llu ms%s  (+%llu ms)\n",
-                kGreen, kReset, rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
+            rec.ok = ok;
+            wprintf(L"     %ls[%ls]%ls %-44ls %ls%6llu ms%s  (+%llu ms)\n",
+                ok ? kGreen : kRed, ok ? L"+" : L"x", kReset,
+                rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
         }
 
         // Free-form note attached under the currently open phase.
@@ -4791,11 +5146,11 @@ LUID luid{};
                 wprintf(L"  %ls[+]%ls Delay-import directory present in payload (%ls%lu%ls bytes).\n",
                     kGreen, kReset, kGreen, dir.Size, kReset);
             else
-                wprintf(L"  %ls[+]%ls No delay-import directory present in module.\n", kGreen, kReset);
+                wprintf(L"  %ls[*]%ls No delay-import directory in module (nothing to resolve).\n", kDim, kReset);
         }
         else
         {
-            wprintf(L"  %ls[+]%ls No local image to survey.\n", kGreen, kReset);
+            wprintf(L"  %ls[x]%ls Delay-import survey skipped: no local image to read.\n", kRed, kReset);
         }
     }
 
@@ -4829,9 +5184,19 @@ LUID luid{};
                     if (ReadProcessMemory(process, ReCa<LPCVOID>(cookie_va), &cookie_value, sizeof(cookie_value), &cv)
                         && cv == sizeof(cookie_value))
                     {
-                        wprintf(L"  %ls[+]%ls Security cookie : %ls0x%016llX%ls (read back at 0x%016llX, derived from image base)\n",
-                            kGreen, kReset, kGreen, cookie_value, kReset,
-                            static_cast<unsigned long long>(cookie_va));
+                        // This is a READ-BACK, not a check: nothing is compared against an expected
+                        // value, so it cannot pass or fail. Mark it neutral. The cookie value being
+                        // image-base-derived is expected after relocation, but "expected" is not
+                        // "verified" - say so rather than implying the /GS cookie was validated.
+                        const unsigned long long image_base_ull =
+                            static_cast<unsigned long long>(ReCa<ULONG_PTR>(hRemoteBase));
+                        const bool cookie_is_image_base = cookie_value == image_base_ull;
+                        wprintf(L"  %ls[=]%ls Security cookie read-back.. %ls0x%016llX%ls at VA %ls0x%016llX%ls\n",
+                            kCyan, kReset, kGreen, cookie_value, kReset, kGreen, cookie_va, kReset);
+                        wprintf(L"  %ls[*]%ls   observed %ls%s%ls the relocated image base - consistent with a "
+                                L"base-derived /GS cookie, but this is an observation, not a validation "
+                                L"(no expected value exists to compare against)\n",
+                            kDim, kReset, kCyan, cookie_is_image_base ? L"equals" : L"differs from", kReset);
                         cookie_reported = true;
                     }
                 }
@@ -4853,8 +5218,20 @@ LUID luid{};
                     remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
                 {
                     auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
-                    wprintf(L"  %ls[+]%ls Security cookie : no load-config cookie in image; TLS Directory VA = %ls0x%016llX%ls\n",
-                        kGreen, kReset, kGreen, tls->AddressOfCallBacks, kReset);
+                    wprintf(L"  %ls[*]%ls Security cookie: no load-config cookie field in the image; "
+                            L"falling back to TLS Directory cross-check\n", kDim, kReset);
+                    if (tls->AddressOfCallBacks)
+                    {
+                        wprintf(L"  %ls[=]%ls   TLS callback array VA (remote).. %ls0x%016llX%ls\n",
+                            kCyan, kReset, kGreen, static_cast<unsigned long long>(tls->AddressOfCallBacks), kReset);
+                        wprintf(L"  %ls[+]%ls   TLS callbacks present and mapped in a section (survives the header erase "
+                                L"- confirms per-image fixups ran)\n", kGreen, kReset);
+                    }
+                    else
+                    {
+                        wprintf(L"  %ls[!]%ls   TLS Directory readable but AddressOfCallBacks is zero - "
+                                L"no fixed-up evidence in this image\n", kYellow, kReset);
+                    }
                     cookie_reported = true;
                 }
             }
@@ -4862,19 +5239,22 @@ LUID luid{};
 
         if (!cookie_reported)
         {
-            wprintf(L"  %ls[+]%ls Security cookie : image carries no load-config cookie field; "
-                    L"nothing to read back.\n", kGreen, kReset);
+            wprintf(L"  %ls[!]%ls Security cookie: NOT VERIFIED - no load-config cookie field, no TLS directory "
+                    L"cross-check, and no readable remote header. Nothing was confirmed this step.\n",
+                kYellow, kReset);
         }
     }
 
     // "Enable exceptions (SEH)" step. Split out of DebugAndVerifyStealth verbatim.
     void StealthEnableExceptions(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        StealthVerifierBuffers & buffers, int & step, int total)
+        DWORD flags, StealthVerifierBuffers & buffers, int & step, int total)
     {
+        const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(L"  %ls[+]%ls SEH via inverted/function table, zero VEH chain entries "
-                L"(process-internal; not observable from the injector)\n", kGreen, kReset);
+        wprintf(L"  %ls[*]%ls VEH chain entries added by launcher: %ls0%ls "
+                L"(launcher installs no VEH; the target's chain is not observable from here)\n",
+            kDim, kReset, kCyan, kReset);
         wprintf(L"\n");
 
         if (have_local_nt)
@@ -4907,13 +5287,27 @@ LUID luid{};
             }
             else
             {
-                wprintf(L"  %ls[+]%ls No exception directory present in the payload.\n", kGreen, kReset);
+                // Absence is an observation, not a pass: nothing was checked because there was
+                // nothing to check. Green here would read as "verified" in a summary.
+                wprintf(L"  %ls[*]%ls No exception directory present in the payload (nothing to verify).\n", kDim, kReset);
             }
         }
 
         wprintf(L"\n");
-        wprintf(L"  %ls[+]%ls Inverted function table updated for %ls%s%ls "
-                L"(process-internal; not externally observable)\n", kGreen, kReset, kGreen, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
+        // Previously printed unconditionally in green, claiming RtlAddFunctionTable had updated the
+        // inverted table even when INJ_MM_ENABLE_EXCEPTIONS was clear and no call was ever made.
+        if (exceptions_active(INJ_MM_ENABLE_EXCEPTIONS))
+        {
+            wprintf(L"  %ls[*]%ls Inverted function table: %lsrequested%ls via %ls%s%ls "
+                    L"(in-shell call returned success; table contents are process-internal and not verifiable from outside)\n",
+                kDim, kReset, kCyan, kReset, kCyan, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
+        }
+        else
+        {
+            wprintf(L"  %ls[*]%ls Inverted function table: %lsnot requested%ls "
+                    L"(INJ_MM_ENABLE_EXCEPTIONS clear - %ls was never called)\n",
+                kDim, kReset, kYellow, kReset, XOR_STR_W(L"RtlAddFunctionTable").get());
+        }
     }
 
     // "Verify exception handling" — ground truth from in-shell telemetry.
@@ -4925,15 +5319,24 @@ LUID luid{};
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify exception handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
-        wprintf(L"  %ls[+]%ls Launcher VEH shell............ %lsnone%ls (launcher installs no VEH; target chain not observable)\n",
-            kGreen, kReset, kGreen, kReset);
-        wprintf(L"  %ls[+]%ls Added VEH chain entries........ %ls0%ls (launcher-side count; target chain not observable)\n",
-            kGreen, kReset, kGreen, kReset);
-        wprintf(L"  %ls[+]%ls SEH coverage................... %ls%s%ls\n",
-            kGreen, kReset,
-            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? kGreen : kYellow,
-            isActive(INJ_MM_ENABLE_EXCEPTIONS) ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; driver returned success (table internals not externally observable)"
-                                               : L"disabled; payload exceptions not covered",
+        // Marker policy for this step:
+        //   [+] a check ran and passed        [*] nothing was checkable / not requested
+        //   [!] a check ran and found a gap   [x] telemetry missing entirely
+        // The launcher deliberately installs no VEH and cannot read the target's exception chain, so
+        // those two lines are unobservable facts and must never carry a pass marker.
+        wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design; target chain not observable)\n",
+            kDim, kReset, kCyan, kReset);
+        wprintf(L"  %ls[*]%ls Added VEH chain entries........ %ls0%ls (launcher-side count; target chain not observable)\n",
+            kDim, kReset, kCyan, kReset);
+
+        const bool exceptions_on = isActive(INJ_MM_ENABLE_EXCEPTIONS);
+        wprintf(L"  %ls%s%ls SEH coverage................... %ls%s%ls\n",
+            exceptions_on ? L"[+]" : L"[*]",
+            exceptions_on ? kGreen : kDim, kReset,
+            exceptions_on ? kGreen : kYellow,
+            exceptions_on
+                ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; in-shell call returned success (table internals not externally observable)"
+                : L"disabled (INJ_MM_ENABLE_EXCEPTIONS clear) - payload exceptions are NOT covered",
             kReset);
 
         STRING_STATS stealth_fix_stats{};
@@ -5052,11 +5455,17 @@ LUID luid{};
         }
         if (exec)
         {
-            wprintf(L"  %ls[+]%ls TLS Initialized: %u configured -> %u executed, %u failed (verified in-shell)\n",
-                kGreen, kReset, exec->TlsCallbacksConfigured, exec->TlsCallbacksExecuted, exec->TlsCallbacksFailed);
+            // Marker must follow the result: configured != executed, or any failure, is not a pass.
+            const bool tls_ok = exec->TlsCallbacksConfigured == exec->TlsCallbacksExecuted &&
+                exec->TlsCallbacksFailed == 0;
+            wprintf(L"  %ls%s%ls TLS Initialized: %u configured -> %u executed, %u failed (in-shell read-back)\n",
+                tls_ok ? L"[+]" : L"[!]",
+                tls_ok ? kGreen : kYellow, kReset,
+                exec->TlsCallbacksConfigured, exec->TlsCallbacksExecuted, exec->TlsCallbacksFailed);
             if (exec->TlsLastExecutedAddress)
             {
-                wprintf(L"  %ls[*]%ls Last executed TLS callback: %p (queried address)\n", kDim, kReset, exec->TlsLastExecutedAddress);
+                wprintf(L"  %ls[*]%ls Last executed TLS callback: %p (address only - not re-read to confirm it ran)\n",
+                    kDim, kReset, exec->TlsLastExecutedAddress);
             }
             if (exec->TlsCallbacksFailed)
             {
@@ -5068,8 +5477,8 @@ LUID luid{};
                 kYellow, kReset, kYellow, tls_callbacks, kReset);
         else
 
-            wprintf(L"  %ls[+]%ls No TLS callbacks present (callback array empty or absent).\n",
-                kGreen, kReset);
+            wprintf(L"  %ls[*]%ls No TLS callbacks present (callback array empty or absent) - nothing executed.\n",
+                kDim, kReset);
     }
 
     // "Execute DllMain" — ground truth only: exact return, cycles, Win32 from in-shell telemetry.
@@ -5151,11 +5560,56 @@ LUID luid{};
                 kGreen, MapStats->TlsSize, kReset,
                 kGreen, MapStats->DebugSize, kReset,
                 kGreen, MapStats->ExportSize, kReset);
-            wprintf(L"\n  %ls[+]%ls All data directories zeroed successfully.\n", kGreen, kReset);
+            // A directory is satisfied when it was empty (nothing to clean) OR the mapper reported
+            // it cleaned. Requiring all six bits set is wrong: the mapper never marks an already-empty
+            // directory as cleaned, so Debug/Export/DelayImport stay clear on a perfect run.
+            struct DirCheck
+            {
+                int index;
+                const wchar_t * name;
+                DWORD size;
+            };
+            const DirCheck dirs[] =
+            {
+                { IMAGE_DIRECTORY_ENTRY_IMPORT,       L"Import",       MapStats->ImportSize },
+                { IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, L"DelayImport",  MapStats->DelayImportSize },
+                { IMAGE_DIRECTORY_ENTRY_BASERELOC,    L"Reloc",        MapStats->RelocSize },
+                { IMAGE_DIRECTORY_ENTRY_TLS,          L"TLS",          MapStats->TlsSize },
+                { IMAGE_DIRECTORY_ENTRY_DEBUG,        L"Debug",        MapStats->DebugSize },
+                { IMAGE_DIRECTORY_ENTRY_EXPORT,       L"Export",       MapStats->ExportSize },
+            };
+            constexpr size_t kDirCount = sizeof(dirs) / sizeof(dirs[0]);
+            size_t populated = 0, satisfied = 0;
+            wchar_t missed[128] = {};
+            for (size_t i = 0; i < kDirCount; ++i)
+            {
+                if (dirs[i].size == 0)
+                {
+                    continue; // empty: nothing to clean, nothing to report
+                }
+                ++populated;
+                if (MapStats->CleanedMask & (1u << dirs[i].index))
+                {
+                    ++satisfied;
+                }
+                else
+                {
+                    swprintf_s(missed + wcslen(missed), _countof(missed) - wcslen(missed),
+                        L"%ls%s ", wcslen(missed) ? L"," : L"", dirs[i].name);
+                }
+            }
+            const bool all_cleaned = (satisfied == populated);
+            wprintf(L"  %ls%s%ls %ls%zu of %zu%ls non-empty director%s reported cleaned by the mapper%s%s.\n",
+                all_cleaned ? L"[+]" : L"[x]",
+                all_cleaned ? kGreen : kRed, kReset,
+                kGreen, satisfied, populated, kReset,
+                populated == 1 ? L"y" : L"ies", kReset,
+                all_cleaned ? L"" : L" - unreported: ", missed);
             if (MapStats->Verified)
             {
-                wprintf(L"  %ls[+]%ls Payload-side re-read confirms all 6 directories are zero "
-                        L"(re-read after header cloak, served from the mapper's header snapshot).\n", kGreen, kReset);
+                wprintf(L"  %ls[+]%ls Payload-side re-read after header cloak: residual mask "
+                        L"0x%08X across all %zu directories (mapper-side snapshot).\n",
+                    kGreen, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
             }
             else if (MapStats->ResidualMask)
             {
@@ -5190,23 +5644,41 @@ LUID luid{};
             }
             else
             {
-                wprintf(L"  %ls[+]%ls Cross-process re-read not applicable: the header is "
-                        L"intentionally cloaked by the mapper before control returns.\n", kGreen, kReset);
+                wprintf(L"  %ls[*]%ls Cross-process re-read NOT PERFORMED: the header is intentionally "
+                        L"cloaked (PAGE_NOACCESS) by the mapper before control returns, so the host cannot "
+                        L"read the directory table back. This is a coverage gap, not a pass.\n",
+                    kDim, kReset);
             }
         }
         else if (nt_data)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(nt_data);
-            wprintf(L"  %ls[+]%ls Import = %ls%d%ls  Reloc = %ls%d%ls  TLS = %ls%d%ls  Exception = %ls%d%ls  Security = %ls%d%ls  Debug = %ls%d%ls  GlobalPtr = %ls%d%ls\n",
-                kGreen, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size == 0 ? 0 : 1, kReset,
-                kGreen, nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_GLOBALPTR].Size == 0 ? 0 : 1, kReset);
-            wprintf(L"  %ls[+]%ls All data directories zeroed to prevent static analysis.\n", kGreen, kReset);
+            const auto present = [nt](int idx) -> int
+            {
+                return nt->OptionalHeader.DataDirectory[idx].Size == 0 ? 0 : 1;
+            };
+            const int non_zero = present(IMAGE_DIRECTORY_ENTRY_IMPORT) +
+                present(IMAGE_DIRECTORY_ENTRY_BASERELOC) +
+                present(IMAGE_DIRECTORY_ENTRY_TLS) +
+                present(IMAGE_DIRECTORY_ENTRY_EXCEPTION) +
+                present(IMAGE_DIRECTORY_ENTRY_SECURITY) +
+                present(IMAGE_DIRECTORY_ENTRY_DEBUG) +
+                present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR);
+            wprintf(L"  %ls%s%ls Import=%ls%d%ls Reloc=%ls%d%ls TLS=%ls%d%ls Exception=%ls%d%ls Security=%ls%d%ls Debug=%ls%d%ls GlobalPtr=%ls%d%ls\n",
+                non_zero == 0 ? L"[+]" : L"[!]",
+                non_zero == 0 ? kGreen : kYellow, kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_IMPORT), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_BASERELOC), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_TLS), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_EXCEPTION), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_SECURITY), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_DEBUG), kReset,
+                kGreen, present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR), kReset);
+            // No mapper telemetry for this run: the numbers below come from a single header read,
+            // not from an independent re-read, so this is weaker evidence than the branch above.
+            wprintf(L"  %ls[*]%ls %ls%d%ls of 7 surveyed directories non-zero (read from the remote header "
+                    L"only - no mapper telemetry this run, so no independent confirmation).\n",
+                kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset);
         }
         else
         {
@@ -5294,12 +5766,25 @@ LUID luid{};
                 if (next <= current) break;
                 current = next;
             }
-            wprintf(L"  %ls[+]%ls RWX=%ls%d%ls RO=%ls%d%ls RW=%ls%d%ls RX=%ls%d%ls PrivateExec=%ls%d%ls Mismatch=%ls%d%ls\n",
-                kGreen, kReset, rwx_count ? kRed : kGreen, rwx_count, kReset,
+            // A section-level mismatch is a real failure even when RWX==0, so it must not ride a
+            // green marker. Header page (PAGE_NOACCESS) is intentionally excluded from the tally.
+            const bool wx_clean = (rwx_count == 0 && mismatch == 0);
+            wprintf(L"  %ls%s%ls RWX=%ls%d%ls RO=%ls%d%ls RW=%ls%d%ls RX=%ls%d%ls PrivateExec=%ls%d%ls Mismatch=%ls%d%ls\n",
+                wx_clean ? L"[+]" : L"[x]",
+                wx_clean ? kGreen : kRed, kReset, rwx_count ? kRed : kGreen, rwx_count, kReset,
                 kGreen, ro_count, kReset, kGreen, rw_count, kReset, kGreen, rx_count, kReset,
                 kGreen, priv_exec_count, kReset, mismatch ? kRed : kGreen, mismatch, kReset);
-            if (rwx_count == 0) wprintf(L"  %ls[+]%ls Strict W^X posture enforced (RWX==0 verified by VirtualQueryEx walk).\n", kGreen, kReset);
-            else wprintf(L"  %ls[x]%ls W^X VIOLATION: %d RWX region(s) (verified ground truth).\n", kRed, kReset, rwx_count);
+            if (wx_clean)
+                wprintf(L"  %ls[+]%ls Strict W^X posture enforced (RWX==0 and 0 section mismatches, "
+                        L"verified by VirtualQueryEx walk).\n", kGreen, kReset);
+            else
+            {
+                if (rwx_count)
+                    wprintf(L"  %ls[x]%ls W^X VIOLATION: %d RWX region(s) (verified ground truth).\n", kRed, kReset, rwx_count);
+                if (mismatch)
+                    wprintf(L"  %ls[x]%ls %d section(s) whose queried protection differs from the declared "
+                            L"protection (see per-section VERIFICATION column).\n", kRed, kReset, mismatch);
+            }
         }
         else
         {
@@ -5441,12 +5926,18 @@ LUID luid{};
 
             if (VerboseOutputEnabled())
             {
-                wprintf(L"  %ls[+]%ls Export names: %ls%zu%ls neutral, %ls%zu%ls foreign\n",
-                    kGreen, kReset, kGreen, export_neutral, kReset, kGreen, export_foreign, kReset);
-                wprintf(L"  %ls[+]%ls Standard section names remaining: %ls%zu%ls\n",
-                    kGreen, kReset, kGreen, standard_sections, kReset);
-                wprintf(L"  %ls[+]%ls Debug directory size: %ls0x%lX%ls\n",
-                    kGreen, kReset, kGreen, static_cast<unsigned long>(debug_size), kReset);
+                // Each line's marker follows its own value; the aggregate verdict is decided below.
+                wprintf(L"  %ls%s%ls Export names: %ls%zu%ls neutral, %ls%zu%ls foreign\n",
+                    export_foreign ? L"[x]" : L"[+]", export_foreign ? kRed : kGreen, kReset,
+                    kGreen, export_neutral, kReset,
+                    export_foreign ? kRed : kGreen, export_foreign, kReset);
+                wprintf(L"  %ls%s%ls Standard section names remaining: %ls%zu%ls\n",
+                    standard_sections ? L"[x]" : L"[+]",
+                    standard_sections ? kRed : kGreen, kReset,
+                    kGreen, standard_sections, kReset);
+                wprintf(L"  %ls%s%ls Debug directory size: %ls0x%lX%ls\n",
+                    debug_size ? L"[x]" : L"[+]", debug_size ? kRed : kGreen, kReset,
+                    kGreen, static_cast<unsigned long>(debug_size), kReset);
             }
             if (export_foreign || standard_sections || debug_size)
             {
@@ -5789,7 +6280,7 @@ LUID luid{};
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
-        const THREAD_EXEC_STATS * ThreadExec, f_GetLastStringStats get_string_stats,
+        f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
@@ -5801,39 +6292,8 @@ LUID luid{};
         if (!hRemoteBase)
             return false;
 
-        wprintf(L"====================================================================================================\n");
-        wprintf(L" [AMEGER INJECTOR] -- TARGET ACQUISITION & EXECUTION TELEMETRY\n");
-        wprintf(L"====================================================================================================\n");
-        if (ProcessHijack)
-        {
-            const bool via_scan = ProcessHijack->Source == static_cast<DWORD>(HijackSource::Scan);
-            if (!via_scan)
-            {
-                // Sponsor path: the donor table is never walked, so census counters are legitimately
-                // zero. Reporting them as zeros would read as a failed scan rather than "not needed".
-                wprintf(L"[HANDLE]  [*] Handle Table Census: not applicable (sponsor handle satisfied acquisition)\n");
-                wprintf(L"[HANDLE]  [*] Dynamic Object Types: not calibrated (scan bypassed)\n");
-            }
-            else
-            {
-                wprintf(L"[HANDLE]  [*] Handle Table Census: %u total handles | %u examined | snap=%u bytes\n",
-                    ProcessHijack->TotalHandles, ProcessHijack->Examined, ProcessHijack->SnapshotBytes);
-                wprintf(L"[HANDLE]  [+] Dynamic Object Types: Calibrated=%u (self-calibrated filtered scan)\n",
-                    ProcessHijack->Calibrated);
-            }
-            if (ProcessHijack->Success)
-            {
-                wprintf(L"[HANDLE]  [+] Donor Handle Acquired: donor pid=%u handle=0x%08X local=0x%08X access=0x%08X\n",
-                    ProcessHijack->DonorPid, ProcessHijack->DonorHandle, ProcessHijack->NewHandle, ProcessHijack->GrantedAccess);
-            }
-        }
-        if (ThreadExec && ThreadExec->Attempted)
-        {
-            wprintf(L"[HIJACK]  [*] Polling Execution: iters=%u elapsed=%u ms ret=0x%08X tid=0x%04X\n",
-                ThreadExec->PollIterations, ThreadExec->ExecMs, ThreadExec->RoutineRet, ThreadExec->HijackedTid);
-            wprintf(L"[HIJACK]  [+] Stack Sanitization: %llu bytes zeroed | cycles=%llu\n",
-                (unsigned long long)ThreadExec->StackScrubbedBytes, (unsigned long long)ThreadExec->RoutineCyclesDelta);
-        }
+        // No second banner here: the acquisition summary would restate what step 1 below already
+        // prints in full, and the runtime trace already carries the hijack lines. One header per run.
 
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
@@ -5942,7 +6402,7 @@ LUID luid{};
 
         if (step_enabled[kStealthEnableExceptions])
         {
-            StealthEnableExceptions(process, hRemoteBase, have_local_nt, buffers, step, total);
+            StealthEnableExceptions(process, hRemoteBase, have_local_nt, flags, buffers, step, total);
         }
 
         if (step_enabled[kStealthVerifyExceptionHandling])
@@ -6004,13 +6464,13 @@ LUID luid{};
     bool SafeDebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
-        const THREAD_EXEC_STATS * ThreadExec, f_GetLastStringStats get_string_stats,
+        f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
         __try
         {
-            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, ExecTelemetry, ThreadExec, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers);
+            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, ExecTelemetry, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -7162,7 +7622,9 @@ LUID luid{};
             {
                 // The map is held as narrow std::string; printing it straight into a wide
                 // format produced mojibake, so widen it explicitly.
-                Trace::Note(L"  %ls -> %ls", Trace::Widen(e.old_name.c_str()), Trace::Widen(e.new_name.c_str()));
+                const std::wstring old_w = Trace::Widen(e.old_name.c_str());
+                const std::wstring new_w = Trace::Widen(e.new_name.c_str());
+                Trace::Note(L"  %ls -> %ls", old_w.c_str(), new_w.c_str());
             }
         }
         Trace::End();
@@ -7190,23 +7652,9 @@ LUID luid{};
             return 1;
         }
         Trace::Note(L"module base   : %p", reinterpret_cast<void *>(runtime.module));
+        Trace::Note(L"execution     : %ls", L"ThreadDonor");
+        Trace::Note(L"mode          : %ls", L"MemoryLoading");
         Trace::End();
-
-        if (VerboseOutputEnabled())
-        {
-            wprintf(L"Runtime module base = %ls%p%ls\n", kGreen, reinterpret_cast<void *>(runtime.module), kReset);
-        }
-        wprintf(L"Execution: %lsThreadDonor%ls\n", kGreen, kReset);
-        wprintf(L"Mode: %lsMemoryLoading%ls\n\n", kGreen, kReset);
-
-        if (VerboseOutputEnabled())
-        {
-            wprintf(L"%ls[+]%ls Configuration loaded: %ls\n", kGreen, kReset, config_path.c_str());
-        }
-
-        wprintf(L"\n");
-        wprintf(L"Target: %ls%ls%ls | Timeout: %ls%d%ls ms\n",
-            kGreen, config.target_name.c_str(), kReset, kGreen, config.timeout, kReset);
 
         Trace::Begin(L"Decode load flags");
         const DWORD preflight_flags = BuildFlags(config);
@@ -7232,7 +7680,7 @@ LUID luid{};
         ReportPayloadCapabilities(raw_data, preflight_flags);
 
         Trace::Begin(L"Runtime init: symbols + imports");
-        wprintf(L"\n%ls[+]%ls Downloading Windows symbols...\n", kGreen, kReset);
+        Trace::Note(L"resolving Windows symbols + import descriptors");
         DWORD symbol_state = INJ_ERR_SYMBOL_INIT_NOT_DONE;
         DWORD import_state = INJ_ERR_IMPORT_HANDLER_NOT_DONE;
         DWORD init_state = INJ_ERR_SUCCESS;
@@ -7248,7 +7696,6 @@ LUID luid{};
         Trace::Note(L"symbol state  : 0x%08lX", static_cast<unsigned long>(symbol_state));
         Trace::Note(L"import state  : 0x%08lX", static_cast<unsigned long>(import_state));
         Trace::End();
-        wprintf(L"%ls[+]%ls Download completed.\n\n", kGreen, kReset);
 
         Trace::Begin(L"Operator confirmation");
         const ConfirmationResult confirmation = ConfirmBeforeDetection();
@@ -7657,7 +8104,7 @@ LUID luid{};
             }
 
             stealth_gate_ok = SafeDebugAndVerifyStealth(targetHandle, data.hDllOut, flags, raw_data.data(), raw_data.size(),
-                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, &ThreadExec, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
+                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
         }
         else
         {
@@ -7666,7 +8113,7 @@ LUID luid{};
         }
         Trace::Note(L"verification gate: %s | wx_violated: %s",
             stealth_gate_ok ? L"PASS" : L"FAIL", wx_violated ? L"YES" : L"NO");
-        Trace::End();
+        Trace::End(stealth_gate_ok && !wx_violated);
 
         if (!runtime.get_last_thread_exec_stats || !ThreadExec.Attempted)
         {
@@ -7713,13 +8160,137 @@ LUID luid{};
         }
 
         const bool had_target = (targetHandle != nullptr);
+        // Report the handles actually closed rather than asserting they were. These values are
+        // captured before the RAII guards reset them, so the line states what happened rather
+        // than what was intended.
+        struct ReleasedHandles
+        {
+            ULONGLONG values[3] = { 0, 0, 0 };
+            unsigned count = 0;
+        } released;
+
+        const auto record = [&released](ULONGLONG h)
+        {
+            if (h && released.count < 3)
+            {
+                released.values[released.count++] = h;
+            }
+        };
+
+        record(ReCa<ULONGLONG>(sponsorRaw));
+        record(ReCa<ULONGLONG>(threadSponsorRaw));
+        record(ReCa<ULONGLONG>(targetHandle));
+
+        // Post-state confirmation. Re-query the mapped image in the target NOW, after the whole
+        // verification suite has run, and report what is actually observed at this instant. Every
+        // other success line in this program restates an intent or a decision made earlier; this one
+        // is a fresh measurement of the live target, so it can contradict the earlier stages.
+        if (had_target && data.hDllOut)
+        {
+            MEMORY_BASIC_INFORMATION head{};
+            const DWORD base_prot =
+                VirtualQueryEx(targetHandle, data.hDllOut, &head, sizeof(head)) ? head.Protect : 0;
+
+            // Walk the committed extent of the image and tally protections, so the numbers here come
+            // from this query rather than being carried over from the page-protection step.
+            int post_rwx = 0, post_rx = 0, post_rw = 0, post_ro = 0, post_noaccess = 0;
+            ULONGLONG committed = 0;
+            bool walked = false;
+            BYTE * cursor = ReCa<BYTE *>(data.hDllOut);
+            while (committed < 0x4000000ULL)
+            {
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (!VirtualQueryEx(targetHandle, cursor, &mbi, sizeof(mbi)) || !mbi.RegionSize)
+                {
+                    break;
+                }
+                walked = true;
+                if (mbi.State == MEM_COMMIT)
+                {
+                    committed += mbi.RegionSize;
+                    switch (mbi.Protect)
+                    {
+                    case PAGE_EXECUTE_READWRITE: ++post_rwx; break;
+                    case PAGE_EXECUTE_READ:
+                    case PAGE_EXECUTE:          ++post_rx;  break;
+                    case PAGE_READWRITE:        ++post_rw;  break;
+                    case PAGE_READONLY:         ++post_ro;  break;
+                    case PAGE_NOACCESS:         ++post_noaccess; break;
+                    default: break;
+                    }
+                }
+                else
+                {
+                    break; // uncommitted gap ends the image
+                }
+                BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
+                if (next <= cursor)
+                {
+                    break;
+                }
+                cursor = next;
+            }
+
+            if (walked)
+            {
+                wprintf(L"\n  Post-state re-query of the mapped image (taken after the verification suite):\n");
+                wprintf(L"    [%ls%ls%ls] image base %p | first region protect %ls%s%s | state %s\n",
+                    post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
+                    data.hDllOut,
+                    kGreen, StealthPageDesc(base_prot), kReset,
+                    head.State == MEM_COMMIT ? L"MEM_COMMIT" : L"NOT COMMITTED");
+                wprintf(L"    [%ls%ls%ls] committed extent %llu KB | RX=%d RW=%d RO=%d NOACCESS=%d RWX=%d\n",
+                    post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
+                    static_cast<unsigned long long>(committed / 1024),
+                    post_rx, post_rw, post_ro, post_noaccess, post_rwx);
+                wprintf(L"    [%ls%ls%ls] DllMain result read back at exit: %ls%s%s | TLS %u/%u executed "
+                        L"| loader lock 0x%08X/0x%08X | hijacked TID 0x%04X\n",
+                    L"+", kGreen, kReset,
+                    ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE",
+                    ExecTelemetry.DllMainResult ? kGreen : kRed, kReset,
+                    ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
+                    (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus,
+                    (unsigned)ThreadExec.HijackedTid);
+                if (post_rwx)
+                {
+                    wprintf(L"    [%lsx%s] WARNING: %d RWX region(s) observed in the post-state query.\n",
+                        kRed, kReset, post_rwx);
+                }
+            }
+            else
+            {
+                wprintf(L"\n  [%lsx%s] Post-state re-query failed: image base not queryable.\n", kRed, kReset);
+            }
+        }
+        else if (!had_target)
+        {
+            wprintf(L"\n  [%ls*%s] Post-state re-read NOT PERFORMED: no target handle was retained.\n", kDim, kReset);
+        }
+
         targetHandleGuard.reset();
         threadSponsorGuard.reset();
         sponsorGuard.reset();
         targetHandle = nullptr;
         threadSponsorRaw = nullptr;
         sponsorRaw = nullptr;
-        wprintf(L"  %ls[+]%ls Donor handles released; no target handles held.\n", kGreen, kReset);
+
+        {
+            wchar_t list[96] = {};
+            for (unsigned i = 0; i < released.count; ++i)
+            {
+                swprintf_s(list + wcslen(list), _countof(list) - wcslen(list), L"%ls0x%04llX%s",
+                    i ? L", " : L"", released.values[i], kReset);
+            }
+            if (released.count)
+            {
+                wprintf(L"  %ls[+]%ls Closed %ls%u%ls handle(s) before exit: %ls\n",
+                    kGreen, kReset, kGreen, released.count, kReset, list);
+            }
+            else
+            {
+                wprintf(L"  %ls[*]%ls No handles were open at cleanup (none acquired this run).\n", kDim, kReset);
+            }
+        }
 
         wprintf(L"\n");
         if (!stealth_gate_ok)
@@ -7752,15 +8323,124 @@ LUID luid{};
             wprintf(L"    W^X posture. Treat this build as suspect.\n\n");
         }
 
-        wprintf(L"Operation succeeded. DLL loaded at %ls%p%s.\n", kGreen, data.hDllOut, kReset);
-        wprintf(L"%ls[+]%ls Victim frozen %ls%lu ms%s (measured wall time of the inject call; configured timeout %ls%lu ms%ls).\n",
-            kGreen, kReset,
-            kGreen, static_cast<unsigned long>(inject_window_ms), kReset,
-            kGreen, static_cast<unsigned long>(data.Timeout), kReset);
-        wprintf(L"[VERIFY]  [+] W^X Security Audit: RWX Regions Found: %ls%d%ls (Strict W^X %ls)\n",
-            kGreen, wx_violated ? 1 : 0, kReset, wx_violated ? L"VIOLATED" : L"Enforced");
+        // Verification coverage. The gate above is a boolean, so on its own it cannot distinguish
+        // "everything checked and passed" from "most checks were inapplicable and the rest passed".
+        // Spell out which of the capabilities were actually observable from an external injector, so
+        // a PASS is never mistaken for broader coverage than it has.
+        {
+            const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
+            const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
+            const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
+                MapStats.Verified != 0;
+            struct Coverage
+            {
+                const wchar_t * label;
+                bool checked;
+                const wchar_t * note;
+            };
+            const Coverage coverage[] =
+            {
+                { L"in-shell execution telemetry", exec_telemetry_read, L"RDTSC timing, DllMain result, loader-lock, TLS" },
+                { L"data-directory wipe re-read",    map_stats_read, L"mapper-side re-read after header cloak" },
+                { L"cross-process header re-read",   false, L"impossible: mapper leaves the header PAGE_NOACCESS" },
+                { L"page protections / W^X",         !wx_violated, L"VirtualQueryEx walk of the mapped image" },
+                { L"forensic posture (runtime DLL)", stealth_gate_ok, L"exports, section names, debug directory" },
+                { L"string-encryption markers",      stealth_gate_ok, L"34 markers absent from the runtime DLL" },
+                { L"payload exception unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; target chain not observable" },
+                { L"target VEH / exception chain",   false, L"process-internal; not observable from an injector" },
+            };
+
+            constexpr size_t kCoverageCount = sizeof(coverage) / sizeof(coverage[0]);
+            unsigned checked = 0, unchecked = 0;
+            for (size_t i = 0; i < kCoverageCount; ++i)
+            {
+                checked += coverage[i].checked ? 1u : 0u;
+                unchecked += coverage[i].checked ? 0u : 1u;
+            }
+
+            wprintf(L"\n");
+            wprintf(L"  Verification coverage (%ls%u of %zu capabilities externally checked%ls):\n",
+                kGreen, checked, kCoverageCount, kReset);
+            for (size_t i = 0; i < kCoverageCount; ++i)
+            {
+                wprintf(L"    %ls%s%ls %-34ls %ls\n",
+                    coverage[i].checked ? L"[+]" : L"[*]",
+                    coverage[i].checked ? kGreen : kDim, kReset,
+                    coverage[i].label, coverage[i].note);
+            }
+            if (unchecked)
+            {
+                wprintf(L"  %ls[*]%ls %ls%u%ls capabilit%s not checkable from outside the target - reported as\n",
+                    kDim, kReset, kYellow, unchecked, kReset, unchecked == 1 ? L"y is" : L"ies are");
+                wprintf(L"    observations, not passes. A green gate means every check that COULD run did.\n");
+            }
+        }
+
+        // Final banner. Everything printed here is a value observed during this run; nothing is a
+        // restatement of the configured flags, because the flags describe what was requested, not
+        // what happened.
+        wprintf(L"\n");
+        wprintf(L"Load result (every value below was read back during this run):\n");
+
+        // Single helper so the marker, its colour and the reset can never drift out of alignment
+        // with the value that follows them again.
+        const auto row = [](const wchar_t * label, bool ok)
+        {
+            wprintf(L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
+        };
+
+        row(L"return code............... ", result == INJ_ERR_SUCCESS);
+        wprintf(L"0x%08X (%s)\n", static_cast<unsigned>(result),
+            result == INJ_ERR_SUCCESS ? L"INJ_ERR_SUCCESS" : L"non-zero");
+
+        row(L"mapped image base......... ", data.hDllOut != nullptr);
+        wprintf(L"%p\n", data.hDllOut);
+
+        row(L"inject call wall time..... ", true);
+        wprintf(L"%llu ms (timeout %lu ms)\n",
+            static_cast<unsigned long long>(inject_window_ms),
+            static_cast<unsigned long>(data.Timeout));
+
+        row(L"DllMain(DLL_PROCESS_ATTACH) returned ", ExecTelemetry.DllMainResult != 0);
+        wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE");
+
+        const bool tls_ok = ExecTelemetry.TlsCallbacksConfigured == ExecTelemetry.TlsCallbacksExecuted &&
+            ExecTelemetry.TlsCallbacksFailed == 0;
+        row(L"TLS callbacks............. ", tls_ok);
+        wprintf(L"%u executed of %u configured (%u failed)\n",
+            ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
+            ExecTelemetry.TlsCallbacksFailed);
+
+        const bool lock_ok = ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0;
+        row(L"loader lock acquire/release  ", lock_ok);
+        wprintf(L"0x%08X / 0x%08X\n",
+            (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
+
+        row(L"thread hijack............. ", ThreadExec.Success != 0);
+        wprintf(L"TID 0x%04X, success=%u, routine ret 0x%08X, %u poll(s) over %u ms\n",
+            (unsigned)ThreadExec.HijackedTid, (unsigned)ThreadExec.Success,
+            (unsigned)ThreadExec.RoutineRet, (unsigned)ThreadExec.PollIterations,
+            (unsigned)ThreadExec.ExecMs);
+
+        row(L"hijacked stack scrubbed... ", ThreadExec.StackScrubbedBytes != 0);
+        wprintf(L"%llu bytes in %llu cycles\n",
+            static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
+            static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
+
+        row(L"data directories wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
+        wprintf(L"cleaned mask 0x%08X, residual 0x%08X, mapper re-read %s\n",
+            (unsigned)MapStats.CleanedMask, (unsigned)MapStats.ResidualMask,
+            MapStats.Verified ? L"verified" : L"NOT verified");
+
+        row(L"W^X....................... ", !wx_violated);
+        wprintf(L"RWX regions found: %d (%s)\n", wx_violated ? 1 : 0,
+            wx_violated ? L"VIOLATED" : L"enforced");
+
+        row(L"verification gate......... ", true);
+        wprintf(L"PASS\n");
         wprintf(L"====================================================================================================\n");
-        wprintf(L"[RESULT]  [+] INJECTION CONFIRMED: Module Mapped at %p (Target: %ls)\n", data.hDllOut, target.name.c_str());
+        wprintf(L"[RESULT]  [+] Mapped at %p in %ls (PID %lu)\n",
+            data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
         wprintf(L"====================================================================================================\n");
         Trace::Summary(L"SUCCESS");
         PauseBeforeExit();

@@ -1188,7 +1188,18 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					}
 				}
 				LOG(1, "[HIJACK] [*] Polling Execution: state=Finished iters=%u elapsed=%u ms ret=0x%08X\n", poll_iterations, exec_ms, data.Ret);
-				LOG(1, "[HIJACK] [+] Stack Sanitization: scrubbed=%llu bytes cycles=%llu\n", (unsigned long long)data.StackScrubbedBytes, (unsigned long long)data.RoutineCyclesDelta);
+// Marker follows the value: a 0-byte result means nothing was reported scrubbed, which is an
+				// absent measurement rather than a successful scrub.
+				if (data.StackScrubbedBytes)
+				{
+					LOG(1, "[HIJACK] [+] Stack Sanitization: scrubbed=%llu bytes cycles=%llu\n",
+						(unsigned long long)data.StackScrubbedBytes,
+						(unsigned long long)data.RoutineCyclesDelta);
+				}
+				else
+				{
+					LOG(1, "[HIJACK] [*] Stack Sanitization: 0 bytes scrubbed (no sanitization result reported)\n");
+				}
 
 				break;
 			}

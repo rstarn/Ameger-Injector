@@ -137,6 +137,13 @@ bool PollAsyncWorker(ASYNC_WORKER_SLOT & slot);
 
 void JoinAsyncWorker(ASYNC_WORKER_SLOT & slot);
 
+// Blocks until the worker thread has actually exited, WITHOUT closing either handle. The Done event
+// is signalled by the worker before it finishes unwinding and emitting its trailing telemetry, so a
+// caller that only polls Done can observe "complete" while the thread is still logging. JoinAsyncWorker
+// would also fix the ordering but consumes the handles, which breaks any later PollAsyncWorker call
+// (WaitForSingleObject on a closed handle fails, reading as "not done"). This waits without consuming.
+bool WaitAsyncWorkerThread(const ASYNC_WORKER_SLOT & slot);
+
 std::wstring CharArrayToStdWstring(const char * szString);
 
 void __stdcall StartDownload();

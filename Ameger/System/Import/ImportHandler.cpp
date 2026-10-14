@@ -97,7 +97,11 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	}
 
 	LOG(1, "native OS module    loaded at %p\n", g_hNTDLL);
-	LOG(1, "OSVersion = %lu\nOSBuildVersion = %lu\n", GetOSVersion(), GetOSBuildVersion());
+	// One record per line, not a single printf with an embedded newline. custom_print() dispatches
+	// synchronously but the runtime logs from several threads, so a multi-line record can be torn
+	// apart by an unrelated line landing between the two halves.
+	LOG(1, "OSVersion = %lu\n", GetOSVersion());
+	LOG(1, "OSBuildVersion = %lu\n", GetOSBuildVersion());
 
 	auto k32_name = XOR_STR_W(L"kernel32.dll");
 	HINSTANCE hK32 = GetModuleHandle(k32_name.get());

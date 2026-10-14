@@ -514,13 +514,89 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// Forensic ground-truth summary: every line below is a read-back value,
 	// never an inference. Pre/post protection queries happen in-shell and the
 	// host only reports the recorded NTSTATUS/return/scan counts.
-	LOG(1, "[MMAP] [+] Image Relocation: base=%p sections=%u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
-	LOG(1, "[MMAP] [+] DllMain: result=%d win32=0x%08X cycles=%llu\n", (int)data.ExecTelemetry.DllMainResult, data.ExecTelemetry.DllMainLastWin32Error, (unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
-	LOG(1, "[MMAP] [+] LoaderLock: lock=0x%08X state=%u cookie=0x%llX unlock=0x%08X\n", (unsigned)data.ExecTelemetry.LdrLockStatus, data.ExecTelemetry.LoaderLockState, (unsigned long long)data.ExecTelemetry.LoaderLockCookie, (unsigned)data.ExecTelemetry.LdrUnlockStatus);
-	LOG(1, "[MMAP] [+] TLS: configured=%u executed=%u failed=%u last=%p\n", data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted, data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
-	LOG(1, "[MMAP] [+] SEH: dynamic=%d inverted=%d entry=%p\n", (int)data.ExecTelemetry.DynamicTableInstalled, (int)data.ExecTelemetry.InvertedTableInstalled, data.ExecTelemetry.InvertedTableEntryBase);
-	LOG(1, "[CLOAK] [+] Wipe: span=%llu mz=%u pe=%u prot=0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
-	LOG(1, "[MMAP] [+] PageProtections: %u section records\n", data.SectionProtCount);
+	// Marker follows the value here too: a zero section count means the relocation pass produced
+	// nothing, which is not a successful relocation.
+	if (data.pImageBase && data.CachedSectionCount)
+	{
+		LOG(1, "[MMAP] [+] Image Relocation: base=%p sections=%u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
+	}
+	else
+	{
+		LOG(1, "[MMAP] [x] Image Relocation produced nothing (base=%p sections=%u)\n",
+			ReCa<void *>(data.pImageBase), data.CachedSectionCount);
+	}
+
+	// The shell can abort mid-sequence (DllMain returning FALSE is the common case), leaving the
+	// later stages untouched. DllMainCyclesDelta is the discriminator: it is only non-zero if
+	// DllMain was actually entered, so it distinguishes "refused to initialize" from "never reached".
+	// Reporting [+] unconditionally would claim success for stages that never ran.
+	if (data.ExecTelemetry.DllMainCyclesDelta == 0)
+	{
+		LOG(1, "[MMAP] [*] DllMain: not reached (shell aborted earlier)\n");
+	}
+	else if (data.ExecTelemetry.DllMainResult == 0)
+	{
+		LOG(1, "[MMAP] [x] DllMain: result=0 (FALSE) win32=0x%08X cycles=%llu -- payload refused to initialize\n",
+			data.ExecTelemetry.DllMainLastWin32Error,
+			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
+	}
+	else
+	{
+		LOG(1, "[MMAP] [+] DllMain: result=1 win32=0x%08X cycles=%llu\n",
+			data.ExecTelemetry.DllMainLastWin32Error,
+			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
+	}
+
+	// Non-zero on either NTSTATUS means the lock was not taken/released as intended.
+	if (data.ExecTelemetry.LdrLockStatus == 0 && data.ExecTelemetry.LdrUnlockStatus == 0)
+	{
+		LOG(1, "[MMAP] [+] LoaderLock: lock=0x%08X state=%u cookie=0x%llX unlock=0x%08X\n",
+			(unsigned)data.ExecTelemetry.LdrLockStatus, data.ExecTelemetry.LoaderLockState,
+			(unsigned long long)data.ExecTelemetry.LoaderLockCookie,
+			(unsigned)data.ExecTelemetry.LdrUnlockStatus);
+	}
+	else
+	{
+		LOG(1, "[MMAP] [x] LoaderLock NTSTATUS non-zero: lock=0x%08X unlock=0x%08X state=%u\n",
+			(unsigned)data.ExecTelemetry.LdrLockStatus,
+			(unsigned)data.ExecTelemetry.LdrUnlockStatus,
+			data.ExecTelemetry.LoaderLockState);
+	}
+
+	const bool tls_ok = data.ExecTelemetry.TlsCallbacksConfigured == data.ExecTelemetry.TlsCallbacksExecuted &&
+		data.ExecTelemetry.TlsCallbacksFailed == 0;
+	LOG(1, "[MMAP] [%s] TLS: configured=%u executed=%u failed=%u last=%p\n",
+		tls_ok ? "+" : "x",
+		data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted,
+		data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
+
+	// Both tables absent means no exception coverage was installed. Green would claim a capability
+	// that does not exist in this configuration.
+	const bool seh_ok = data.ExecTelemetry.DynamicTableInstalled || data.ExecTelemetry.InvertedTableInstalled;
+	LOG(1, "[MMAP] [%s] SEH: dynamic=%d inverted=%d entry=%p%s\n",
+		seh_ok ? "+" : "*",
+		(int)data.ExecTelemetry.DynamicTableInstalled, (int)data.ExecTelemetry.InvertedTableInstalled,
+		data.ExecTelemetry.InvertedTableEntryBase,
+		seh_ok ? "" : " (none installed - payload exceptions not covered)");
+
+	// A zero span means the cloak stage was skipped, not that it found nothing to wipe.
+	if (data.ExecTelemetry.PreSectionSpanWiped == 0)
+	{
+		LOG(1, "[CLOAK] [*] Wipe: not executed (shell aborted before cloak)\n");
+	}
+	else
+	{
+		LOG(1, "[CLOAK] [+] Wipe: span=%llu mz=%u pe=%u prot=0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
+	}
+
+	if (data.SectionProtCount == 0)
+	{
+		LOG(1, "[MMAP] [*] PageProtections: not applied (shell aborted before protections)\n");
+	}
+	else
+	{
+		LOG(1, "[MMAP] [+] PageProtections: %u section records\n", data.SectionProtCount);
+	}
 
 	if (remote_ret != INJ_ERR_SUCCESS)
 	{
