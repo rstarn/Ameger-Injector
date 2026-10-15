@@ -184,7 +184,7 @@ bool ProcessInformation::RefreshInformation()
 		}
 
 		m_BufferSize	= next_size;
-		m_pFirstProcess = ReCa<SYSTEM_PROCESS_INFORMATION *>(new(std::nothrow) BYTE[m_BufferSize]);
+		m_pFirstProcess = ReCa<SYSTEM_PROCESS_INFORMATION *>(new(std::nothrow) BYTE[m_BufferSize]());
 		if (!m_pFirstProcess)
 		{
 			return false;
@@ -201,8 +201,11 @@ bool ProcessInformation::RefreshInformation()
 		return false;
 	}
 
-	m_pCurrentProcess	= m_pFirstProcess;
-	m_pCurrentThread	= &m_pCurrentProcess->Threads[0];
+	// The cursor has to move with the thread pointer: a rebuilt snapshot starts at thread 0, and
+	// leaving the old index behind makes the next NextThread() skip threads or stop early.
+	m_CurrentThreadIndex	= 0;
+	m_pCurrentProcess		= m_pFirstProcess;
+	m_pCurrentThread		= &m_pCurrentProcess->Threads[0];
 
 	return true;
 }
@@ -224,10 +227,10 @@ bool ProcessInformation::GetThreadState(KTHREAD_STATE & state, KWAIT_REASON & re
 		return false;
 	}
 
-	// The kernel writes both fields as ULONGs; the enum mirrors narrow them to a byte on purpose so
-	// that a value outside the documented set is truncated rather than trusted.
-	state	= static_cast<KTHREAD_STATE>(static_cast<BYTE>(m_pCurrentThread->ThreadState));
-	reason	= static_cast<KWAIT_REASON>(static_cast<BYTE>(m_pCurrentThread->WaitReason));
+	// The kernel writes both fields as ULONGs; carry the full value through to the widened output
+	// enums (KTHREAD_STATE/KWAIT_REASON are now ULONG-backed) rather than narrowing to a byte.
+	state	= static_cast<KTHREAD_STATE>(m_pCurrentThread->ThreadState);
+	reason	= static_cast<KWAIT_REASON>(m_pCurrentThread->WaitReason);
 
 	return true;
 }

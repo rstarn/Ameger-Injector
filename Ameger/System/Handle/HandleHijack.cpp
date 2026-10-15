@@ -472,18 +472,20 @@ namespace
 		{
 			return nullptr;
 		}
-		// Release ownership from the local UniqueHandle before moving to the vector.
-		// If emplace_back throws, we still own the handle via Raw and must close it.
-		Owner.release();
+		// Reserve first so the only throwing step happens while Owner still exclusively owns the
+		// handle. Releasing before the insert put two owners on the same raw handle: the temporary
+		// closed it on a throwing reallocation and the catch closed it a second time.
 		try
 		{
+			Owners.reserve(Owners.size() + 1);
 			Owners.emplace_back(OwnerPid, UniqueHandle(Raw));
 		}
 		catch (...)
 		{
-			CloseHandle(Raw);
 			return nullptr;
 		}
+
+		Owner.release();
 
 		return Raw;
 	}

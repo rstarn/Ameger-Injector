@@ -1047,6 +1047,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	// retry window is deliberately generous, with a short backoff, because a single missed poll used
 	// to leak the trampoline and leave the victim inside the stub.
 	constexpr int kForceRestorePolls = 24;
+	// Widest distance our stub can place RSP below the victim's original RSP while RIP is still inside
+	// the code page: pushfq + 15 GPRs (0x80), then `and rsp,-16` (up to 0xF) and `sub rsp,0x40`.
+	// Comparing RSP for equality instead of against this window only matched the single instruction
+	// before pushfq, so the forced restore never fired and the trampoline was retained every time.
+	constexpr ULONG_PTR kStubFrameWindow = 0x100;
+
 	auto ForceRestoreContext = [&](bool & restored, bool & resumed) -> void
 	{
 		restored = false;
@@ -1091,10 +1097,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					}
 
 				}
-				else if (ctx.Rsp == OldContext.Rsp)
+				else if (ctx.Rsp <= OldContext.Rsp && (OldContext.Rsp - ctx.Rsp) <= kStubFrameWindow)
 				{
 
 					ctx.Rip = OldRIP;
+					ctx.Rsp = OldContext.Rsp;
 					restored = NT_SUCCESS(ScNtSetContextThread(hThread, &ctx)) != FALSE;
 					settled = true;
 				}
@@ -1372,10 +1379,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 				context_restored = true;
 			}
-			else if (check_context.Rsp == OldContext.Rsp)
+			else if (check_context.Rsp <= OldContext.Rsp &&
+				(OldContext.Rsp - check_context.Rsp) <= kStubFrameWindow)
 			{
 
 				check_context.Rip = OldRIP;
+				check_context.Rsp = OldContext.Rsp;
 				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 

@@ -338,6 +338,22 @@ bool BuildPool()
 {
 	SC_LOG_INFO("Building syscall stub pool (%zu entries, %u bytes each)...", kSyscallTableCount, SC_STUB_SIZE);
 
+	// Re-resolution (e.g. an incomplete pool whose readiness flag was left false) re-enters this
+	// function via SyscallResolveAll, which holds the syscall lock the whole time. To avoid leaking the
+	// previous allocation, free any pool still stored before building a new one. We also null every
+	// g_SyscallTable[i].Stub first so no entry keeps a dangling pointer into the region about to be
+	// freed. This is safe: every Stub read site either runs after g_SyscallPoolReady is latched (under
+	// the lock) or is SyscallResolveAll itself, so no caller is mid-use of the old stubs here.
+	for (size_t i = 0; i < kSyscallTableCount; ++i)
+	{
+		g_SyscallTable[i].Stub = nullptr;
+	}
+	BYTE * OldPool = ReCa<BYTE *>(g_SyscallPool.exchange(nullptr, std::memory_order_acq_rel));
+	if (OldPool)
+	{
+		VirtualFree(OldPool, 0, MEM_RELEASE);
+	}
+
 	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
@@ -643,14 +659,19 @@ DWORD SyscallResolveAll()
 				// neighbour's number would let a rerouted or obfuscated thunk issue a WRONG syscall in
 				// the target, which is far worse than issuing none. The entry keeps kInvalidService, no
 				// stub is built for it, and the Sc* wrapper fails loudly with STATUS_ENTRYPOINT_NOT_FOUND.
-				if (span_rva > 0 && span_service > 0 && span_rva == static_cast<DWORD>(span_service))
+				// Note that span_rva is a byte distance while span_service is an index distance, so requiring
+				// the two to be equal demanded exactly one byte of thunk spacing per service number, which no
+				// ntdll layout has, and therefore this recovery path never fired at all.
+				if (span_rva > 0 && span_service > 0 && (span_rva % static_cast<DWORD>(span_service)) == 0)
 				{
-					const int Reconstructed = static_cast<int>(Lower->Service) + static_cast<int>(Rva - Lower->Rva);
+					const DWORD stride_bytes = span_rva / static_cast<DWORD>(span_service);
+					const DWORD offset_calls = (Rva - Lower->Rva) / stride_bytes;
+					const int Reconstructed = static_cast<int>(Lower->Service) + static_cast<int>(offset_calls);
 					if (Reconstructed > 0 && Reconstructed <= 0xFFFF)
 					{
 						g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
 						g_Resolution[i].Reconstructed = true;
-						SC_LOG_INFO("Recovered %s via SSN 0x%04X + %u | Distance: 0x%X bytes | Stride 1:1", kSyscallNames[i], Lower->Service, (Rva - Lower->Rva), span_rva);
+						SC_LOG_INFO("Recovered %s via SSN 0x%04X + %u | Distance: 0x%X bytes | Stride %u bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
 					}
 				}
 			}
@@ -675,8 +696,10 @@ DWORD SyscallResolveAll()
 		return 0;
 	}
 
-	g_SyscallPoolReady.store(true, std::memory_order_release);
-
+	// The readiness flag is latched only once every stub is built (see the check below). BuildPool()
+	// returns true as long as at least one stub was written, so a partially resolved table here must
+	// not be advertised as ready: SyscallStub would then hand out a null stub for an unresolved entry
+	// instead of re-resolving. The flag is gated accordingly; do not move it above this point.
 	DWORD Ready = 0;
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
@@ -734,9 +757,12 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	// "ready" is only true when every table entry resolved. A partial pool must not read as ready.
+	// "ready" is only true when every table entry resolved. A partial pool must not read as ready:
+	// BuildPool() succeeds once a single stub exists, so latch the flag only when the whole table
+	// resolved, otherwise SyscallStub re-resolves instead of trusting a hole.
 	if (Ready == kSyscallTableCount)
 	{
+		g_SyscallPoolReady.store(true, std::memory_order_release);
 		SC_LOG_OK("Syscall layer ready: %u/%zu stubs built\n", Ready, kSyscallTableCount);
 	}
 	else

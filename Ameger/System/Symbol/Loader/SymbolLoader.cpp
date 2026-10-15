@@ -622,8 +622,14 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	const DWORD codeview_offset = pDebugDir->AddressOfRawData;
 	const DWORD codeview_size	= pDebugDir->SizeOfData;
+
+	// The record is read below through a PdbInformation (signature, GUID, age, then the file name),
+	// so it has to cover at least the fixed part of that structure before any field is touched.
+	// "SizeOfData != 0" was not enough: a one-byte record still made the signature read below run
+	// past the end of the mapped image. The file name is bounded separately further down.
+	constexpr DWORD kCodeViewFixedSize = static_cast<DWORD>(offsetof(PdbInformation, PdbFileName));
 	const bool codeview_record_ok =
-		codeview_size != 0 &&
+		codeview_size >= kCodeViewFixedSize &&
 		codeview_offset <= pOpt64->SizeOfImage &&
 		codeview_size <= pOpt64->SizeOfImage - codeview_offset;
 
@@ -985,10 +991,11 @@ void SYMBOL_LOADER::PurgePdb()
 		return;
 	}
 
-	if (m_hPdbFile)
-	{
-		Cleanup();
-	}
+	// Unconditional: the PDB this object serves is about to be deleted, so it must stop reporting
+	// ready and must drop the handle (an open handle would make DeleteFileW fail as well). Whether
+	// a handle happens to be held right now is not part of that contract - gating this on
+	// m_hPdbFile left the object reporting ready after its PDB was gone.
+	Cleanup();
 
 	if (!DeleteFileW(m_szPdbPath.c_str()))
 	{
@@ -998,6 +1005,7 @@ void SYMBOL_LOADER::PurgePdb()
 
 	LOG(1, XOR_STR_A("SYMBOL_LOADER: cached PDB purged from disk\n").get());
 	m_Filesize = 0;
+	m_szPdbPath.clear();
 
 	if (m_bCreatedPdbDir && !m_szPdbDir.empty())
 	{

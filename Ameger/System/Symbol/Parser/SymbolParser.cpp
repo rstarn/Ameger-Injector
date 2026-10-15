@@ -16,7 +16,7 @@ SYMBOL_PARSER::~SYMBOL_PARSER()
 
 DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 {
-	LOG(1, XOR_STR_A("SYMBOL_LOADER::Initialize\n").get());
+	LOG(1, XOR_STR_A("SYMBOL_PARSER::Initialize\n").get());
 
 	m_bReady = false;
 

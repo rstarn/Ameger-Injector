@@ -755,15 +755,17 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         HFONT bodyFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ oldBodyFont = nullptr;
         if (bodyFont)
         {
-            SelectObject(state.memDc, bodyFont);
+            oldBodyFont = SelectObject(state.memDc, bodyFont);
         }
         SetTextColor(state.memDc, RGB(200, 206, 220));
         RECT bodyRc{ 18, 44, state.width - 18, state.height - 70 };
         DrawTextW(state.memDc, state.message.c_str(), -1, &bodyRc, DT_LEFT | DT_WORDBREAK);
         if (bodyFont)
         {
+            SelectObject(state.memDc, oldBodyFont);
             DeleteObject(bodyFont);
         }
 
@@ -1503,15 +1505,17 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         // The clipboard log is written unconditionally: it is the only output channel a headless
         // run has, so routing errors past it would drop exactly the diagnostics an operator needs
         // most. The debugger copy is additive, not a replacement.
-        if (message)
+        if (!message)
         {
-            wchar_t line[1024]{};
-            swprintf_s(line, L"%ls[x]%ls %ls", kRed, kReset, message);
-            ameger_ui_log::AppendStripped(line);
-            OutputDebugStringW(line);
-            OutputDebugStringW(L"\n");
             return;
         }
+
+        wchar_t line[1024]{};
+        swprintf_s(line, L"%ls[x]%ls %ls", kRed, kReset, message);
+        ameger_ui_log::AppendStripped(line);
+        OutputDebugStringW(line);
+        OutputDebugStringW(L"\n");
+
         HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
@@ -1522,15 +1526,17 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     void PrintWarning(const wchar_t * message)
     {
-        if (message)
+        if (!message)
         {
-            wchar_t line[1024]{};
-            swprintf_s(line, L"  %ls[!]%ls %ls", kYellow, kReset, message);
-            ameger_ui_log::AppendStripped(line);
-            OutputDebugStringW(line);
-            OutputDebugStringW(L"\n");
             return;
         }
+
+        wchar_t line[1024]{};
+        swprintf_s(line, L"  %ls[!]%ls %ls", kYellow, kReset, message);
+        ameger_ui_log::AppendStripped(line);
+        OutputDebugStringW(line);
+        OutputDebugStringW(L"\n");
+
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
@@ -3860,7 +3866,7 @@ LUID luid{};
         return QueryProcess(target.pid, target.name, target.architecture);
     }
 
-    bool SelectTarget(const std::wstring & configured_name, TargetSelection & target, bool & cancelled)
+    bool SelectTarget(const std::wstring & configured_name, TargetSelection & target, bool & cancelled, int timeout_ms)
     {
         cancelled = false;
         if (configured_name.empty())
@@ -3879,6 +3885,8 @@ LUID luid{};
         {
             wprintf(L"%ls[+]%ls Waiting for %ls... (Press Q to quit)\n", kGreen, kReset, target.requested_name.c_str());
         }
+        const ULONGLONG wait_timeout = timeout_ms > 0 ? static_cast<ULONGLONG>(timeout_ms) : 60000ULL;
+        const ULONGLONG deadline = GetTickCount64() + wait_timeout;
         for (;;)
         {
             const DWORD found = FindProcess(target.requested_name);
@@ -3896,7 +3904,18 @@ LUID luid{};
             {
                 // Headless WINDOWS build: no console input exists, so wait
                 // without a cancel key. Cancellation is served by the
-                // layered confirmation gates before and after this wait.
+                // layered confirmation gates before and after this wait. The
+                // wait is still bounded: with no key to press, an unbounded
+                // loop is a hang with no diagnostics, so the configured
+                // timeout applies here too and the wait fails instead.
+                if (GetTickCount64() >= deadline)
+                {
+                    wchar_t wait_message[512]{};
+                    swprintf_s(wait_message, L"Timed out after %lu ms waiting for %ls to start (headless; no console to cancel with).",
+                        static_cast<unsigned long>(wait_timeout), target.requested_name.c_str());
+                    PrintError(wait_message);
+                    return false;
+                }
                 Sleep(100);
                 continue;
             }
@@ -5540,8 +5559,8 @@ LUID luid{};
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Target debug port............ %lsUNKNOWN%ls (query failed; not treated as clean)\n",
-                    kYellow, kReset, kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Target debug port............ %lsUNKNOWN%ls (query failed; not treated as clean; port status 0x%08X, flags status 0x%08X)\n",
+                    kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
         // Local debugger self-check: pure queries on OUR process (IsDebuggerPresent
@@ -8383,7 +8402,7 @@ LUID luid{};
         Trace::Begin(L"Select target process");
         TargetSelection target;
         bool cancelled = false;
-        if (!SelectTarget(config.target_name, target, cancelled))
+        if (!SelectTarget(config.target_name, target, cancelled, config.timeout))
         {
             Trace::End();
             if (cancelled)

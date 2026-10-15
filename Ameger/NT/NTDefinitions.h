@@ -68,13 +68,18 @@ typedef enum class _THREADINFOCLASS
 	ThreadBasicInformation			= 0
 } THREADINFOCLASS;
 
-typedef enum class _KTHREAD_STATE : UCHAR
+// The kernel writes ThreadState/WaitReason as ULONGs in SYSTEM_THREAD_INFORMATION (see the mirror
+// below, whose ULONG fields are pinned by static_asserts). These enums are the *output* storage of
+// ProcessInformation::GetThreadState, so they are widened to ULONG to match the source width and
+// avoid silently truncating the value on the way out. The SYSTEM_THREAD_INFORMATION layout itself is
+// untouched, so the stride static_asserts still hold.
+typedef enum class _KTHREAD_STATE : ULONG
 {
 	Running = 0x02,
 	Waiting = 0x05
 } KTHREAD_STATE;
 
-typedef enum class _KWAIT_REASON : UCHAR
+typedef enum class _KWAIT_REASON : ULONG
 {
 	WrQueue = 0x0F
 } KWAIT_REASON;

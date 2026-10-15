@@ -317,6 +317,131 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	return true;
 }
 
+namespace
+{
+	// Deepest scratch tree layout that is walked before giving up. The tree lives in user writable
+	// storage, so its shape is untrusted input and the walk is iterative and depth bounded rather
+	// than a recursion that mirrors it.
+	constexpr size_t kMaxScratchTreeDepth = 64;
+
+	struct ScratchTreeEntry
+	{
+		std::wstring Path;
+		size_t Depth;
+	};
+
+	// Deletes every file and directory below `root` (not `root` itself) and reports whether the tree
+	// came out completely empty. Every failure is logged and folded into the result, so a child that
+	// could not be removed can no longer disappear behind a successful return.
+	bool DeleteScratchTree(const std::wstring & root)
+	{
+		bool complete = true;
+
+		// Directories are recorded pre-order, so removing the record in reverse removes every child
+		// before the directory that holds it.
+		std::vector<std::wstring> directories;
+		std::vector<ScratchTreeEntry> pending;
+
+		pending.push_back(ScratchTreeEntry{ root, 0 });
+
+		while (!pending.empty())
+		{
+			const ScratchTreeEntry current = pending.back();
+			pending.pop_back();
+
+			std::wstring pattern = current.Path;
+			if (pattern.back() != L'\\')
+			{
+				pattern += L'\\';
+			}
+			pattern += L'*';
+
+			WIN32_FIND_DATAW find_data{ 0 };
+			HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, 0);
+			if (find == INVALID_HANDLE_VALUE)
+			{
+				continue;
+			}
+
+			do
+			{
+				const wchar_t * name = find_data.cFileName;
+
+				if (name[0] == L'.' && (name[1] == L'\0' || (name[1] == L'.' && name[2] == L'\0')))
+				{
+					continue;
+				}
+
+				std::wstring child = current.Path;
+				if (child.back() != L'\\')
+				{
+					child += L'\\';
+				}
+				child += name;
+
+				if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				{
+					SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+
+					if (!DeleteFileW(child.c_str()))
+					{
+						LOG(1, "Failed to delete a file in scratch storage: 0x%08X (%ls)\n", GetLastError(), child.c_str());
+
+						complete = false;
+					}
+
+					continue;
+				}
+
+				// A junction or symlink is unlinked, never descended into: following it would delete
+				// whatever it points at, which is not necessarily scratch storage.
+				if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+				{
+					if (!RemoveDirectoryW(child.c_str()))
+					{
+						LOG(1, "Failed to remove a reparse point in scratch storage: 0x%08X (%ls)\n", GetLastError(), child.c_str());
+
+						complete = false;
+					}
+
+					continue;
+				}
+
+				if (current.Depth + 1 >= kMaxScratchTreeDepth)
+				{
+					LOG(1, "Scratch storage is deeper than the supported limit and was left in place: %ls\n", child.c_str());
+
+					complete = false;
+
+					continue;
+				}
+
+				pending.push_back(ScratchTreeEntry{ child, current.Depth + 1 });
+				directories.push_back(child);
+			} while (FindNextFileW(find, &find_data));
+
+			FindClose(find);
+		}
+
+		for (size_t i = directories.size(); i > 0; --i)
+		{
+			if (!RemoveDirectoryW(directories[i - 1].c_str()))
+			{
+				const DWORD remove_error = GetLastError();
+
+				if (remove_error != ERROR_FILE_NOT_FOUND && remove_error != ERROR_PATH_NOT_FOUND)
+				{
+					LOG(1, "Failed to remove a directory in scratch storage: 0x%08X (%ls)\n", remove_error, directories[i - 1].c_str());
+
+					complete = false;
+				}
+			}
+		}
+
+		return complete;
+	}
+}
+
 bool DeleteSymbolCacheRoot(const std::wstring & root)
 {
 	if (root.empty())
@@ -335,76 +460,13 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 		return false;
 	}
 
-	std::wstring pattern = root;
-	if (pattern.back() != L'\\')
-	{
-		pattern += L'\\';
-	}
-	pattern += L'*';
-
-	WIN32_FIND_DATAW find_data{ 0 };
-	HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, 0);
-	if (find != INVALID_HANDLE_VALUE)
-	{
-		do
-		{
-			const wchar_t * name = find_data.cFileName;
-
-			if (name[0] == L'.' && (name[1] == L'\0' || (name[1] == L'.' && name[2] == L'\0')))
-			{
-				continue;
-			}
-
-			std::wstring child = root;
-			if (child.back() != L'\\')
-			{
-				child += L'\\';
-			}
-			child += name;
-
-			if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-			{
-
-				std::wstring nested = child + L"\\*";
-
-				WIN32_FIND_DATAW inner{ 0 };
-				HANDLE inner_find = FindFirstFileExW(nested.c_str(), FindExInfoBasic, &inner, FindExSearchNameMatch, nullptr, 0);
-				if (inner_find != INVALID_HANDLE_VALUE)
-				{
-					do
-					{
-						const wchar_t * inner_name = inner.cFileName;
-
-						if (inner_name[0] == L'.' && (inner_name[1] == L'\0' || (inner_name[1] == L'.' && inner_name[2] == L'\0')))
-						{
-							continue;
-						}
-
-						std::wstring inner_child = child + L"\\" + inner_name;
-						SetFileAttributesW(inner_child.c_str(), FILE_ATTRIBUTE_NORMAL);
-						DeleteFileW(inner_child.c_str());
-					} while (FindNextFileW(inner_find, &inner));
-
-					FindClose(inner_find);
-				}
-
-				RemoveDirectoryW(child.c_str());
-			}
-			else
-			{
-				SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
-				DeleteFileW(child.c_str());
-			}
-		} while (FindNextFileW(find, &find_data));
-
-		FindClose(find);
-	}
+	const bool tree_cleared = DeleteScratchTree(root);
 
 	// A root that is already gone is a success (the goal was that it not exist); anything still there
 	// afterwards is reported as a failure so the caller can log it.
 	if (RemoveDirectoryW(root.c_str()))
 	{
-		return true;
+		return tree_cleared;
 	}
 
 	const DWORD remove_error = GetLastError();
@@ -517,19 +579,25 @@ bool SymbolDownloadDisabled()
 
 namespace
 {
-	// A leaf name qualifies as owned scratch storage when it is either one of the random 10 character
-	// names GetSymbolCacheRoot mints, or the dedicated fallback directory. Anything else - including
-	// the install folder itself, which has a real product name - is rejected.
+	// Length of the random leaf GetSymbolCacheRoot mints.
+	constexpr size_t kRandomLeafLength = 10;
+
+	// A leaf name qualifies as owned scratch storage when it is either one of the random names
+	// GetSymbolCacheRoot mints - exactly kRandomLeafLength alphanumeric characters, the first forced
+	// into 'a'..'z' - or the dedicated fallback directory. Anything else - including the install
+	// folder itself, which has a real product name - is rejected. The shape has to be matched exactly
+	// and not just bounded: "Users", "Windows" and "Program Files" are all short and alphanumeric, so
+	// a length-and-alphabet test alone lets arbitrary user directories pass as scratch storage.
 	bool IsScratchLeafName(const std::wstring & leaf)
 	{
-		if (leaf.empty() || leaf.size() > 32)
-		{
-			return false;
-		}
-
 		if (leaf == AMEGER_SCRATCH_LEAF_DIR)
 		{
 			return true;
+		}
+
+		if (leaf.size() != kRandomLeafLength)
+		{
+			return false;
 		}
 
 		for (size_t i = 0; i < leaf.size(); ++i)
@@ -547,7 +615,7 @@ namespace
 			}
 		}
 
-		return true;
+		return leaf[0] >= L'a' && leaf[0] <= L'z';
 	}
 
 	std::wstring NormalizeTrailingSeparator(std::wstring path)
