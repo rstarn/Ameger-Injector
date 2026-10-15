@@ -560,7 +560,11 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 	}
 
 	ULONG old_protect = 0;
-	if (!ScProtectMemory(ProcessHandle, BaseAddress, Size, PAGE_READWRITE))
+	// Capture the prior protection so the restores below return the region to its
+	// actual state. Passing nullptr here used to leave old_protect at 0, so both
+	// restores applied protection 0 (invalid) and silently left scrubbed regions
+	// writable — a stealth defect on every scrubbed trampoline/staging page.
+	if (!ScProtectMemory(ProcessHandle, BaseAddress, Size, PAGE_READWRITE, &old_protect))
 	{
 		return;
 	}

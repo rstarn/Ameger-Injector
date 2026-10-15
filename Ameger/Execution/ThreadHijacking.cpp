@@ -425,6 +425,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			if (g_DynamicOffsetsReady.load(std::memory_order_acquire) && processInformation.SetProcess(hTargetProc))
 			{
 				const KTHREAD_STATE running_state = static_cast<KTHREAD_STATE>(g_DynamicOffsets.ThreadStateRunning);
+				const KTHREAD_STATE waiting_state = KTHREAD_STATE::Waiting;
 
 				constexpr int kSponsorValidationPasses = 6;
 				bool sponsor_worker = false;
@@ -459,6 +460,22 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 							if (have_state && st == running_state)
 							{
 								sponsor_usable = true;
+							}
+							else if (have_state && st == waiting_state && IsSafeWaitReason(wr))
+							{
+								// A Waiting sponsor on a safe wait reason is as usable as any other
+								// thread this file selects: the census path already picks Waiting
+								// threads on exactly this allowlist (FindHijackThread, reason
+								// 4/6/11/13/15). Demanding Running here made the runtime discard a
+								// handle the launcher had already opened with the correct access and
+								// then fall through to the budget-limited donor scan, which on an idle
+								// target exhausts its budget and fails the whole injection with
+								// SR_HT_ERR_OPEN_REFUSED. Wait reasons outside the allowlist (e.g. 37,
+								// observed on notepad) are still refused: those threads are not
+								// reliably scheduled and stall the 2s startup probe.
+								sponsor_usable = true;
+								LOG(2, "Sponsor TID %06X Waiting on safe reason %d; accepting sponsor\n",
+									SponsorTidActual, static_cast<int>(wr));
 							}
 							else if (sponsor_pass + 1 < kSponsorValidationPasses)
 							{

@@ -1,4 +1,3 @@
-
 #include "PCH.h"
 
 #include <cstdarg>
@@ -2384,6 +2383,12 @@ LUID luid{};
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
+    // Picks a thread to sponsor. The Waiting-state fallbacks are load-bearing and must stay:
+    // the runtime re-checks a sponsored TID and drops it unless it is Running, but the HANDLE
+    // the launcher opens here lives in the launcher's own handle table with exactly
+    // INJ_THREAD_HIJACK_ACCESS, and the runtime's donor scan later finds it there. Restricting
+    // this to Running threads (tested) removed that donor and made the runtime's scan exhaust
+    // its budget and fail the whole injection with SR_HT_ERR_OPEN_REFUSED on an idle target.
     DWORD PickHijackThreadTid(DWORD target_pid)
     {
         if (!target_pid)
@@ -4752,6 +4757,68 @@ LUID luid{};
             {
                 wprintf(L"      %ls... and %d more RWX region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
             }
+
+            // Process-wide RX census: VAD-present / PEB-absent exposure (§2.6).
+            // A manually mapped image is committed RX MEM_PRIVATE with no loader
+            // entry, exactly what a VAD-vs-PEB walk (VCheck/IntegrityCk shape)
+            // flags. This walk is VirtualQueryEx-only: no reads, no writes.
+            // Capped so a hostile/large address space cannot hang the verifier.
+            {
+                unsigned long rx_image = 0, rx_private = 0, rx_mapped = 0;
+                unsigned long long rx_private_bytes = 0;
+                bool census_done = false;
+                LPCVOID census_cur = nullptr;
+                for (unsigned long iter = 0; iter < 100000; ++iter)
+                {
+                    MEMORY_BASIC_INFORMATION census_mbi{};
+                    if (!VirtualQueryEx(process, census_cur, &census_mbi, sizeof(census_mbi)) ||
+                        !census_mbi.RegionSize)
+                    {
+                        census_done = true;
+                        break;
+                    }
+                    if (census_mbi.State == MEM_COMMIT)
+                    {
+                        const DWORD prot = census_mbi.Protect & 0xFFu;
+                        const bool is_rx = (prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE ||
+                            prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY);
+                        if (is_rx)
+                        {
+                            if (census_mbi.Type == MEM_IMAGE)
+                            {
+                                ++rx_image;
+                            }
+                            else if (census_mbi.Type == MEM_PRIVATE)
+                            {
+                                ++rx_private;
+                                rx_private_bytes += census_mbi.RegionSize;
+                            }
+                            else if (census_mbi.Type == MEM_MAPPED)
+                            {
+                                ++rx_mapped;
+                            }
+                        }
+                    }
+                    LPCVOID census_next = ReCa<BYTE *>(census_mbi.BaseAddress) + census_mbi.RegionSize;
+                    if (census_next <= census_cur)
+                    {
+                        break;
+                    }
+                    census_cur = census_next;
+                }
+                wprintf(L"      %lsVAD RX census%s: image-RX %ls%lu%s | private-RX %ls%lu%s (%ls%llu%s KB) | mapped-RX %ls%lu%s%s\n",
+                    kDim, kReset,
+                    kGreen, rx_image, kReset,
+                    rx_private ? kYellow : kGreen, rx_private, kReset,
+                    rx_private ? kYellow : kGreen, rx_private_bytes / 1024, kReset,
+                    kGreen, rx_mapped, kReset,
+                    census_done ? L"" : L" [TRUNCATED at 100k regions]");
+                if (rx_private)
+                {
+                    wprintf(L"      %ls[!]%ls %ls%lu%s private-RX region(s) exist process-wide (incl. this load's image); "
+                            L"each is VAD-visible with no loader entry\n", kYellow, kReset, kYellow, rx_private, kReset);
+                }
+            }
         }
         else if (!wx_queryable)
         {
@@ -5245,6 +5312,45 @@ LUID luid{};
         }
     }
 
+    // VEH first-chance survey types (full definitions live below with the other
+    // remote-survey helpers; declared here so the SEH steps can use them).
+    struct VehFirstChanceSurvey
+    {
+        bool handleValid = false;
+        bool readOk = false;
+        ULONG crossFlags = 0;
+        bool usingVeh = false;
+        bool usingVch = false;
+        BYTE beingDebugged = 0;
+        ULONG ntGlobalFlag = 0;
+        PVOID pebAddress = nullptr;
+        DWORD lastError = 0;
+    };
+    inline bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out);
+    inline LONG NTAPI VehProbeDummyHandler(EXCEPTION_POINTERS *);
+    inline bool ProbeLocalVehPathRoundTrip();
+    // Debug-port survey (read-only NtQueryInformationProcess; installs nothing).
+    // ProcessDebugPort=7 returns the debug port (0 = none attached).
+    // ProcessDebugFlags=31 returns flags (DEBUGINHERIT bit clear means a debugger
+    // is present; value 1 with no debugger is the normal observed state).
+    // Raw values only; interpretation is heuristic.
+    struct DebugPortSurvey
+    {
+        bool handleValid = false;
+        bool portReadOk = false;
+        bool flagsReadOk = false;
+        PVOID debugPort = nullptr;
+        ULONG debugFlags = 0;
+        LONG portStatus = 0;
+        LONG flagsStatus = 0;
+    };
+    inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out);
+    // Remote-survey helpers defined below with the hook-scan code; forward-declared
+    // here because the forensic-posture step (above their definitions) uses them.
+    // Plain (non-inline) to match their definitions exactly.
+    bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out);
+    bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
+
     // "Enable exceptions (SEH)" step. Split out of DebugAndVerifyStealth verbatim.
     void StealthEnableExceptions(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         DWORD flags, StealthVerifierBuffers & buffers, int & step, int total)
@@ -5252,9 +5358,49 @@ LUID luid{};
         const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        wprintf(L"  %ls[*]%ls VEH chain entries added by launcher: %ls0%ls "
-                L"(launcher installs no VEH; the target's chain is not observable from here)\n",
-            kDim, kReset, kCyan, kReset);
+        // VEH first-chance stealth survey: RPM-only PEB read (CrossProcessFlags PEB+80,
+        // BeingDebugged PEB+2, NtGlobalFlag PEB+0xBC x64). No remote writes, no handler
+        // installed, no allocation. Result-based: every value below was read this run.
+        {
+            VehFirstChanceSurvey veh{};
+            if (!process)
+            {
+                wprintf(L"  %ls[*]%ls VEH first-chance survey... %lsskipped%ls (no target handle; nothing read)\n",
+                    kDim, kReset, kYellow, kReset);
+            }
+            else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
+            {
+                wprintf(L"  %ls[+]%ls VEH first-chance survey... PEB=%p CrossFlags=%ls0x%08X%ls UsingVEH=%ls%s%ls UsingVCH=%ls%s%ls\n",
+                    kGreen, kReset, veh.pebAddress,
+                    kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
+                    kGreen, veh.usingVeh ? L"YES" : L"NO", kReset,
+                    kGreen, veh.usingVch ? L"YES" : L"NO", kReset);
+                wprintf(L"  %ls[+]%ls PEB debug correlates...... BeingDebugged=%ls%u%ls NtGlobalFlag=%ls0x%08X%ls (read back, not inferred)\n",
+                    kGreen, kReset,
+                    kGreen, static_cast<unsigned>(veh.beingDebugged), kReset,
+                    kGreen, static_cast<unsigned>(veh.ntGlobalFlag), kReset);
+                wprintf(L"  %ls[*]%ls VEH chain entries added by launcher: %ls0%ls (by design; survey is read-only, installs nothing)\n",
+                    kDim, kReset, kCyan, kReset);
+                if (veh.usingVeh)
+                {
+                    wprintf(L"  %ls[!]%ls Target uses VEH first-chance: payload exceptions go to target VEH first; "
+                            L"SEH-only payload has no VEH handler (see Verify step)\n", kYellow, kReset);
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls VEH first-chance survey... %lsREAD FAILED%ls (err 0x%08X; nothing proven)\n",
+                    kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
+            }
+        }
+        // Local VEH path self-test: Add/Remove round-trip proves the OS VEH path works
+        // here without leaving any net entry. Result-based, zero-trace by construction.
+        {
+            const bool local_veh_ok = ProbeLocalVehPathRoundTrip();
+            wprintf(L"  %ls[%ls]%ls Local VEH path self-test.... %ls%s%ls (add+remove round-trip, net entries 0)\n",
+                local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"+" : L"!", kReset,
+                local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"OK" : L"FAILED", kReset);
+        }
         wprintf(L"\n");
 
         if (have_local_nt)
@@ -5311,7 +5457,7 @@ LUID luid{};
     }
 
     // "Verify exception handling" — ground truth from in-shell telemetry.
-    void StealthVerifyExceptionHandling(DWORD flags, bool have_local_nt, const VERIFIABLE_EXEC_TELEMETRY * exec,
+    void StealthVerifyExceptionHandling(HANDLE process, DWORD flags, bool have_local_nt, const VERIFIABLE_EXEC_TELEMETRY * exec,
         StealthVerifierBuffers & buffers,
         f_GetLastStringStats get_string_stats, int & step, int total)
     {
@@ -5322,12 +5468,101 @@ LUID luid{};
         // Marker policy for this step:
         //   [+] a check ran and passed        [*] nothing was checkable / not requested
         //   [!] a check ran and found a gap   [x] telemetry missing entirely
-        // The launcher deliberately installs no VEH and cannot read the target's exception chain, so
-        // those two lines are unobservable facts and must never carry a pass marker.
-        wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design; target chain not observable)\n",
-            kDim, kReset, kCyan, kReset);
-        wprintf(L"  %ls[*]%ls Added VEH chain entries........ %ls0%ls (launcher-side count; target chain not observable)\n",
-            kDim, kReset, kCyan, kReset);
+        // VEH first-chance is now observable via read-only PEB survey (no handler
+        // installed in target), so these lines carry real read-back results.
+        {
+            VehFirstChanceSurvey veh{};
+            if (!process)
+            {
+                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsskipped%ls (no target handle)\n",
+                    kDim, kReset, kYellow, kReset);
+                wprintf(L"  %ls[*]%ls Target VEH first-chance........ %lsskipped%ls (no target handle; nothing read)\n",
+                    kDim, kReset, kYellow, kReset);
+            }
+            else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
+            {
+                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design; survey installs nothing)\n",
+                    kDim, kReset, kCyan, kReset);
+                wprintf(L"  %ls[+]%ls Target VEH first-chance........ CrossFlags=%ls0x%08X%ls UsingVEH=%ls%s%ls PEB=%p (read back)\n",
+                    kGreen, kReset,
+                    kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
+                    kGreen, veh.usingVeh ? L"YES" : L"NO", kReset, veh.pebAddress);
+                if (veh.usingVeh)
+                {
+                    wprintf(L"  %ls[!]%ls First-chance gap............... target VEH active; INT3/AV goes to target VEH first; "
+                            L"payload installs no VEH (stealth: avoids chain entry)\n", kYellow, kReset);
+                }
+                else
+                {
+                    wprintf(L"  %ls[+]%ls First-chance posture........... target VEH flag clear; SEH-table path sufficient for payload\n",
+                        kGreen, kReset);
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design)\n",
+                    kDim, kReset, kCyan, kReset);
+                wprintf(L"  %ls[!]%ls Target VEH first-chance........ %lsREAD FAILED%ls (err 0x%08X)\n",
+                    kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
+            }
+        }
+        // Debug-port survey: read-only NtQueryInformationProcess (no writes, no
+        // handler). DebugPort 0 = no debugger attached (Warden's own check shape
+        // per .analysis §11.6). Limited-query handles may fail this read; a failed
+        // read is reported as unknown, never as clean.
+        {
+            DebugPortSurvey dbg{};
+            if (!process)
+            {
+                wprintf(L"  %ls[*]%ls Target debug port............ %lsskipped%ls (no target handle)\n",
+                    kDim, kReset, kYellow, kReset);
+            }
+            else if (QueryRemoteDebugPort(process, dbg) && (dbg.portReadOk || dbg.flagsReadOk))
+            {
+                if (dbg.portReadOk)
+                {
+                    const bool clean = (dbg.debugPort == nullptr);
+                    wprintf(L"  %ls[%ls]%ls Target debug port............ %ls%p%ls (%ls)\n",
+                        clean ? kGreen : kYellow, clean ? L"+" : L"!", kReset,
+                        clean ? kGreen : kYellow, dbg.debugPort, kReset,
+                        clean ? L"none attached" : L"DEBUGGER PORT SET");
+                }
+                if (dbg.flagsReadOk)
+                {
+                    wprintf(L"  %ls[+]%ls Target debug flags........... %ls0x%08X%ls (read back)\n",
+                        kGreen, kReset, kGreen, static_cast<unsigned>(dbg.debugFlags), kReset);
+                }
+                if (!dbg.portReadOk)
+                {
+                    wprintf(L"  %ls[!]%ls Target debug port............ %lsUNREADABLE%ls (status 0x%08X; needs QUERY_INFORMATION)\n",
+                        kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus));
+                }
+            }
+            else
+            {
+                wprintf(L"  %ls[!]%ls Target debug port............ %lsUNKNOWN%ls (query failed; not treated as clean)\n",
+                    kYellow, kReset, kYellow, kReset);
+            }
+        }
+        // Local debugger self-check: pure queries on OUR process (IsDebuggerPresent
+        // reads our PEB.BeingDebugged; CheckRemoteDebuggerPresent queries our debug
+        // port). Zero-trace, result-based; proves the check SHAPE works here so a
+        // clean target reading is meaningful rather than a dead code path.
+        {
+            const BOOL local_present = IsDebuggerPresent();
+            BOOL self_remote = FALSE;
+            const BOOL self_ok = CheckRemoteDebuggerPresent(GetCurrentProcess(), &self_remote);
+            wprintf(L"  %ls[%ls]%ls Local debugger self-check... IsDebuggerPresent=%ls%s%ls CheckRemote=%ls%s%s (%ls)\n",
+                local_present ? kYellow : kGreen, local_present ? L"!" : L"+", kReset,
+                local_present ? kYellow : kGreen, local_present ? L"TRUE" : L"FALSE", kReset,
+                kGreen, self_ok ? (self_remote ? L"TRUE" : L"FALSE") : L"QUERY FAILED", kReset,
+                self_ok ? L"shape verified" : L"unverified here");
+            if (local_present)
+            {
+                wprintf(L"  %ls[!]%ls Launcher itself is debugged: target PEB/TLS guards would fire on the GAME, not here — detach before a real run\n",
+                    kYellow, kReset);
+            }
+        }
 
         const bool exceptions_on = isActive(INJ_MM_ENABLE_EXCEPTIONS);
         wprintf(L"  %ls%s%ls SEH coverage................... %ls%s%ls\n",
@@ -5497,6 +5732,19 @@ LUID luid{};
             return;
         }
         const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
+        // DllMainCyclesDelta is only non-zero if DllMain was actually entered, so it is the
+        // discriminator between "refused to initialize" and "never ran". A payload with no
+        // entry point (AddressOfEntryPoint == 0) is skipped by the shell, which leaves both
+        // DllMainResult and the cycle counter at their defaults; reporting that as
+        // "returned FALSE (verified failure)" contradicted a SUCCESS return code in a run
+        // where every stage had actually completed.
+        if (exec->DllMainCyclesDelta == 0)
+        {
+            wprintf(L"  %ls[*]%ls DllMain not entered: cycle counter is 0, so the shell never called the "
+                    L"entry point (no entry point in the image, or an earlier stage aborted). "
+                    L"No pass/fail is claimed.\n", kDim, kReset);
+            return;
+        }
         wprintf(L"  %ls[+]%ls DllMain Execution: RETURN=%ls%s%ls | LastError=0x%08X | Cycles=%llu (~%.2f ms)\n",
             kGreen, kReset, kGreen, exec->DllMainResult ? L"TRUE" : L"FALSE", kReset,
             exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms);
@@ -5519,6 +5767,16 @@ LUID luid{};
         if (!exec)
         {
             wprintf(L"  %ls[x]%ls Loader-lock unverified: no execution telemetry.\n", kRed, kReset);
+            return;
+        }
+        // The lock is taken inside the DllMain step, so if DllMain was never entered the NTSTATUS
+        // fields still hold their initial 0xC0000001 (STATUS_UNSUCCESSFUL) sentinel. That is
+        // "not attempted", not a non-zero failure, and must not be reported as a failure.
+        if (exec->DllMainCyclesDelta == 0)
+        {
+            wprintf(L"  %ls[*]%ls Loader lock not attempted: it is taken inside the DllMain step and DllMain "
+                    L"was never entered (status fields still hold the 0x%08X sentinel). No pass/fail is claimed.\n",
+                kDim, kReset, (unsigned)exec->LdrLockStatus);
             return;
         }
         wprintf(L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus=0x%08X | Cookie=0x%llX | State=%u\n",
@@ -6073,6 +6331,220 @@ LUID luid{};
                 wprintf(L"  %ls[!]%ls Target CFG policy unreadable.\n", kYellow, kReset);
             }
         }
+
+        // Target main-image survey: import/export/TLS shape read back from the
+        // REMOTE headers (§§2.1/2.3/1.5). Single-import + 76-export claims are
+        // per-build; these counts re-fingerprint the live target instead of
+        // quoting the OP. All RPM-only, bounded, terminator-capped; out-of-image
+        // pointers are never followed (same rule as the mapper's own loader).
+        {
+            std::wstring survey_name;
+            ULONG_PTR survey_base = 0;
+            SIZE_T survey_size = 0;
+            if (!process || !GetRemoteMainModule(process, survey_name, survey_base, survey_size) ||
+                !survey_base || !survey_size)
+            {
+                wprintf(L"  %ls[*]%ls Target image survey...... %lsskipped%ls (main module not enumerable; nothing read)\n",
+                    kDim, kReset, kYellow, kReset);
+            }
+            else
+            {
+                BYTE survey_dos[sizeof(IMAGE_DOS_HEADER)] = { 0 };
+                SIZE_T survey_got = 0;
+                bool survey_ok = ReadProcessMemory(process, ReCa<LPCVOID>(survey_base),
+                    survey_dos, sizeof(survey_dos), &survey_got) && survey_got == sizeof(survey_dos);
+                auto survey_dos_hdr = ReCa<IMAGE_DOS_HEADER *>(survey_dos);
+                LONG survey_lfanew = survey_ok ? survey_dos_hdr->e_lfanew : 0;
+                const bool survey_dos_ok = survey_ok && survey_dos_hdr->e_magic == IMAGE_DOS_SIGNATURE &&
+                    survey_lfanew > 0 && survey_lfanew <= 0x10000;
+                BYTE survey_nt[sizeof(IMAGE_NT_HEADERS64)] = { 0 };
+                SIZE_T survey_nt_got = 0;
+                bool survey_nt_ok = false;
+                IMAGE_DATA_DIRECTORY survey_dirs[IMAGE_NUMBEROF_DIRECTORY_ENTRIES] = {};
+                if (survey_dos_ok)
+                {
+                    survey_nt_ok = ReadProcessMemory(process,
+                        ReCa<LPCVOID>(survey_base + static_cast<ULONG_PTR>(survey_lfanew)),
+                        survey_nt, sizeof(survey_nt), &survey_nt_got) && survey_nt_got == sizeof(survey_nt);
+                    auto survey_nt_hdr = ReCa<IMAGE_NT_HEADERS64 *>(survey_nt);
+                    survey_nt_ok = survey_nt_ok && survey_nt_hdr->Signature == IMAGE_NT_SIGNATURE &&
+                        survey_nt_hdr->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+                    if (survey_nt_ok)
+                    {
+                        memcpy(survey_dirs, survey_nt_hdr->OptionalHeader.DataDirectory, sizeof(survey_dirs));
+                    }
+                }
+                if (!survey_nt_ok)
+                {
+                    wprintf(L"  %ls[!]%ls Target image survey...... headers unreadable at %ls%ls%ls base %p\n",
+                        kYellow, kReset, kYellow, survey_name.c_str(), kReset,
+                        ReCa<void *>(survey_base));
+                }
+                else
+                {
+                    // Import descriptor count (terminator-capped, 20B/entry, max 129 RPMs).
+                    unsigned long imp_count = 0;
+                    bool imp_done = false;
+                    bool imp_ok = false;
+                    const DWORD imp_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+                    const DWORD imp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+                    if (!imp_rva || !imp_size)
+                    {
+                        imp_ok = true; // no import dir: zero imports, read as such
+                        imp_done = true;
+                    }
+                    else if (imp_rva < survey_size)
+                    {
+                        imp_ok = true;
+                        for (unsigned long i = 0; i < 128; ++i)
+                        {
+                            const ULONG_PTR entry_addr = survey_base + imp_rva +
+                                static_cast<ULONG_PTR>(i) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+                            if (entry_addr + sizeof(IMAGE_IMPORT_DESCRIPTOR) > survey_base + survey_size ||
+                                !IsSafeCodePage(process, entry_addr, sizeof(IMAGE_IMPORT_DESCRIPTOR)))
+                            {
+                                imp_ok = false;
+                                break;
+                            }
+                            IMAGE_IMPORT_DESCRIPTOR entry{};
+                            SIZE_T entry_got = 0;
+                            if (!ReadProcessMemory(process, ReCa<LPCVOID>(entry_addr),
+                                &entry, sizeof(entry), &entry_got) || entry_got != sizeof(entry))
+                            {
+                                imp_ok = false;
+                                break;
+                            }
+                            if (!entry.FirstThunk && !entry.OriginalFirstThunk && !entry.Name)
+                            {
+                                imp_done = true;
+                                break;
+                            }
+                            ++imp_count;
+                        }
+                    }
+                    if (imp_ok && imp_done)
+                    {
+                        wprintf(L"  %ls[+]%ls Target imports.......... %ls%lu%ls descriptor(s) in %ls%ls%ls (read back)\n",
+                            kGreen, kReset, kGreen, imp_count, kReset, kGreen, survey_name.c_str(), kReset);
+                        if (imp_count == 1)
+                        {
+                            wprintf(L"      %ls[*]%ls single-import shape holds on this build (matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
+                        }
+                        else if (imp_count == 0)
+                        {
+                            wprintf(L"      %ls[!]%ls zero imports: packed/demand-loaded shape (sec 12.7 heap-trampoline model?) - re-fingerprint\n",
+                                kYellow, kReset);
+                        }
+                        else
+                        {
+                            wprintf(L"      %ls[*]%ls multi-import shape (%lu): Eidolon may be reverted/absent on this build (sec 12.2)\n",
+                                kDim, kReset, imp_count);
+                        }
+                    }
+                    else
+                    {
+                        wprintf(L"  %ls[!]%ls Target imports.......... unreadable (dir rva 0x%08X size 0x%08X)\n",
+                            kYellow, kReset, static_cast<unsigned>(imp_rva), static_cast<unsigned>(imp_size));
+                    }
+
+                    // Export counts (single 40B RPM, no name walk in target).
+                    const DWORD exp_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+                    const DWORD exp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+                    if (!exp_rva || !exp_size)
+                    {
+                        wprintf(L"  %ls[+]%ls Target exports.......... none (no export directory)\n", kGreen, kReset);
+                    }
+                    else if (exp_rva < survey_size && IsSafeCodePage(process, survey_base + exp_rva, 40))
+                    {
+                        IMAGE_EXPORT_DIRECTORY exp_dir{};
+                        SIZE_T exp_got = 0;
+                        if (ReadProcessMemory(process, ReCa<LPCVOID>(survey_base + exp_rva),
+                            &exp_dir, sizeof(exp_dir), &exp_got) && exp_got == sizeof(exp_dir))
+                        {
+                            wprintf(L"  %ls[+]%ls Target exports.......... %ls%lu%ls funcs / %ls%lu%ls names (OP claimed 76 symbols; this build read back)\n",
+                                kGreen, kReset,
+                                kGreen, static_cast<unsigned long>(exp_dir.NumberOfFunctions), kReset,
+                                kGreen, static_cast<unsigned long>(exp_dir.NumberOfNames), kReset);
+                        }
+                        else
+                        {
+                            wprintf(L"  %ls[!]%ls Target exports.......... directory unreadable\n", kYellow, kReset);
+                        }
+                    }
+                    else
+                    {
+                        wprintf(L"  %ls[!]%ls Target exports.......... directory out of image/safepage\n", kYellow, kReset);
+                    }
+
+                    // Remote TLS callback count (bounded array RPM, in-image only).
+                    const DWORD tls_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress;
+                    const DWORD tls_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].Size;
+                    if (!tls_rva || !tls_size)
+                    {
+                        wprintf(L"  %ls[*]%ls Target TLS callbacks.... none (no TLS directory in remote headers)\n", kDim, kReset);
+                    }
+                    else if (tls_rva < survey_size && IsSafeCodePage(process, survey_base + tls_rva, sizeof(IMAGE_TLS_DIRECTORY64)))
+                    {
+                        IMAGE_TLS_DIRECTORY64 tls_dir{};
+                        SIZE_T tls_got = 0;
+                        if (ReadProcessMemory(process, ReCa<LPCVOID>(survey_base + tls_rva),
+                            &tls_dir, sizeof(tls_dir), &tls_got) && tls_got == sizeof(tls_dir) &&
+                            tls_dir.AddressOfCallBacks)
+                        {
+                            unsigned long cb_count = 0;
+                            bool cb_done = false;
+                            bool cb_ok = true;
+                            const ULONGLONG cb_va = tls_dir.AddressOfCallBacks;
+                            for (unsigned long i = 0; i < 64; ++i)
+                            {
+                                const ULONG_PTR slot = static_cast<ULONG_PTR>(cb_va + static_cast<ULONGLONG>(i) * 8);
+                                if (slot < survey_base || slot + 8 > survey_base + survey_size ||
+                                    !IsSafeCodePage(process, slot, 8))
+                                {
+                                    cb_ok = false;
+                                    break;
+                                }
+                                ULONGLONG cb = 0;
+                                SIZE_T cb_got = 0;
+                                if (!ReadProcessMemory(process, ReCa<LPCVOID>(slot),
+                                    &cb, sizeof(cb), &cb_got) || cb_got != sizeof(cb))
+                                {
+                                    cb_ok = false;
+                                    break;
+                                }
+                                if (!cb)
+                                {
+                                    cb_done = true;
+                                    break;
+                                }
+                                ++cb_count;
+                            }
+                            if (cb_ok && cb_done)
+                            {
+                                wprintf(L"  %ls[+]%ls Target TLS callbacks.... %ls%lu%ls configured (remote array read; OP claimed 3 in exe)\n",
+                                    kGreen, kReset, kGreen, cb_count, kReset);
+                            }
+                            else
+                            {
+                                wprintf(L"  %ls[!]%ls Target TLS callbacks.... array walk failed after %lu\n", kYellow, kReset, cb_count);
+                            }
+                        }
+                        else if (!tls_dir.AddressOfCallBacks && tls_got == sizeof(tls_dir))
+                        {
+                            wprintf(L"  %ls[*]%ls Target TLS callbacks.... directory present, zero callbacks\n", kDim, kReset);
+                        }
+                        else
+                        {
+                            wprintf(L"  %ls[!]%ls Target TLS directory.... unreadable\n", kYellow, kReset);
+                        }
+                    }
+                    else
+                    {
+                        wprintf(L"  %ls[!]%ls Target TLS directory.... out of image/safepage\n", kYellow, kReset);
+                    }
+                }
+            }
+        }
     }
 
     // "Erase PE header" — two-pass: pre-state declared, post-state VirtualQueryEx assert.
@@ -6407,7 +6879,7 @@ LUID luid{};
 
         if (step_enabled[kStealthVerifyExceptionHandling])
         {
-            StealthVerifyExceptionHandling(flags, have_local_nt, ExecTelemetry, buffers, get_string_stats, step, total);
+            StealthVerifyExceptionHandling(process, flags, have_local_nt, ExecTelemetry, buffers, get_string_stats, step, total);
         }
 
         if (step_enabled[kStealthExecuteTls])
@@ -6585,6 +7057,174 @@ LUID luid{};
 
         CloseHandle(snapshot);
         return found;
+    }
+
+    // VEH first-chance stealth survey (maximum effort, result-based, zero-trace).
+    //
+    // Warden registers a first-chance VEH via TLS callback (RtlAddVectoredExceptionHandler)
+    // and the chain itself lives process-internal (RtlpVectoredHandlerList in ntdll .data,
+    // not exported). Walking it from an injector would require remote code execution
+    // (transient handler + walk + remove), which is itself a W^X/VAD artifact and risks
+    // tripping IntegrityCk/MemoryTestHasFailed. The stealthy observable is the PEB
+    // CrossProcessFlags ProcessUsingVEH/ProcessUsingVCH bits (PEB+80, bits 2/3), plus
+    // BeingDebugged (PEB+2) and NtGlobalFlag (PEB+0xBC on x64) as debug-port correlates.
+    // All reads are ReadProcessMemory-only: no remote writes, no allocations, no handler
+    // installed in the target, no hooks, no PDB download. Every line printed from the
+    // survey is a value actually read back this run, never a restated flag.
+    // Full VEH survey definitions (types forward-declared above for the SEH steps).
+    static_assert(offsetof(AMEGER_PEB, CrossProcessFlags) == 80);
+    static_assert(offsetof(AMEGER_PEB, Mutant) == 8);
+
+    inline bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out)
+    {
+        out = VehFirstChanceSurvey{};
+        if (!process || process == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        out.handleValid = true;
+
+        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        NtQueryInformationProcessFn query = nullptr;
+        {
+            auto mod_name = XOR_STR_W(L"ntdll.dll");
+            HMODULE mod = GetModuleHandleW(mod_name.get());
+            if (mod)
+            {
+                auto api_name = XOR_STR_A("NtQueryInformationProcess");
+                query = ReCa<NtQueryInformationProcessFn>(GetProcAddress(mod, api_name.get()));
+            }
+        }
+        if (!query)
+        {
+            out.lastError = GetLastError();
+            return false;
+        }
+
+        struct LocalPbi
+        {
+            LONG ExitStatus;
+            PVOID PebBaseAddress;
+            ULONG_PTR AffinityMask;
+            LONG BasePriority;
+            HANDLE UniqueProcessId;
+            HANDLE InheritedFromUniqueProcessId;
+        };
+        LocalPbi pbi{};
+        ULONG ret_len = 0;
+        const LONG status = query(process, 0, &pbi, static_cast<ULONG>(sizeof(pbi)), &ret_len);
+        if (status != 0 || !pbi.PebBaseAddress)
+        {
+            out.lastError = static_cast<DWORD>(status != 0 ? status : ERROR_INVALID_ADDRESS);
+            return false;
+        }
+        out.pebAddress = pbi.PebBaseAddress;
+
+        const ULONG_PTR peb = ReCa<ULONG_PTR>(pbi.PebBaseAddress);
+        const ULONG_PTR cross_addr = peb + offsetof(AMEGER_PEB, CrossProcessFlags);
+        const ULONG_PTR debugged_addr = peb + 2;
+        const ULONG_PTR global_flag_addr = peb + offsetof(AMEGER_PEB, NtGlobalFlag);
+
+        ULONG cross = 0;
+        BYTE debugged = 0;
+        ULONG gflag = 0;
+        SIZE_T got = 0;
+        if (!ReadProcessMemory(process, ReCa<LPCVOID>(cross_addr), &cross, sizeof(cross), &got) ||
+            got != sizeof(cross))
+        {
+            out.lastError = GetLastError();
+            return false;
+        }
+        got = 0;
+        if (!ReadProcessMemory(process, ReCa<LPCVOID>(debugged_addr), &debugged, sizeof(debugged), &got) ||
+            got != sizeof(debugged))
+        {
+            out.lastError = GetLastError();
+            return false;
+        }
+        got = 0;
+        if (!ReadProcessMemory(process, ReCa<LPCVOID>(global_flag_addr), &gflag, sizeof(gflag), &got) ||
+            got != sizeof(gflag))
+        {
+            out.lastError = GetLastError();
+            return false;
+        }
+
+        out.crossFlags = cross;
+        out.usingVeh = (cross & 0x4u) != 0;
+        out.usingVch = (cross & 0x8u) != 0;
+        out.beingDebugged = debugged;
+        out.ntGlobalFlag = gflag;
+        out.readOk = true;
+        return true;
+    }
+
+    inline LONG NTAPI VehProbeDummyHandler(EXCEPTION_POINTERS *)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Local VEH path self-test: AddVectored + RemoveVectored round-trip. Proves the VEH
+    // path is functional on this OS without leaving any net chain entry. Result-based:
+    // returns true only if add returned non-null and remove returned non-zero.
+    inline bool ProbeLocalVehPathRoundTrip()
+    {
+        void * handle = AddVectoredExceptionHandler(1, VehProbeDummyHandler);
+        if (!handle)
+        {
+            return false;
+        }
+        const ULONG removed = RemoveVectoredExceptionHandler(handle);
+        return removed != 0;
+    }
+
+    // Debug-port survey definition. Classes: ProcessDebugPort=7 (PVOID port, 0 =
+    // none), ProcessDebugFlags=9 (ULONG). Read-only; some handles (QUERY_LIMITED)
+    // cannot satisfy these reads — that yields UNKNOWN, never a clean claim.
+    inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out)
+    {
+        out = DebugPortSurvey{};
+        if (!process || process == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        out.handleValid = true;
+
+        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        NtQueryInformationProcessFn query = nullptr;
+        {
+            auto mod_name = XOR_STR_W(L"ntdll.dll");
+            HMODULE mod = GetModuleHandleW(mod_name.get());
+            if (mod)
+            {
+                auto api_name = XOR_STR_A("NtQueryInformationProcess");
+                query = ReCa<NtQueryInformationProcessFn>(GetProcAddress(mod, api_name.get()));
+            }
+        }
+        if (!query)
+        {
+            return false;
+        }
+
+        PVOID port = nullptr;
+        ULONG port_len = 0;
+        out.portStatus = query(process, 7, &port, static_cast<ULONG>(sizeof(port)), &port_len);
+        if (out.portStatus == 0 && port_len == sizeof(port))
+        {
+            out.debugPort = port;
+            out.portReadOk = true;
+        }
+
+        ULONG pflags = 0;
+        ULONG flags_len = 0;
+        out.flagsStatus = query(process, 31, &pflags, static_cast<ULONG>(sizeof(pflags)), &flags_len);
+        if (out.flagsStatus == 0 && flags_len == sizeof(pflags))
+        {
+            out.debugFlags = pflags;
+            out.flagsReadOk = true;
+        }
+
+        return out.portReadOk || out.flagsReadOk;
     }
 
     struct RestoredHook
@@ -6986,12 +7626,40 @@ LUID luid{};
                 }
             }
 
-            const wchar_t * Verdict = (guarded == 0) ? L"untrapped" : L"guarded";
-            const wchar_t * VerdictTint = (guarded == 0) ? L"" : kYellow;
-            wprintf(L"  %ls%ls%s%s (%ls%zu%s committed region(s) walked)\n",
+            // INT3 share over the sampled executable bytes. Computed before the verdict line so the
+            // verdict can reflect it: Warden INT3-patches code (.analysis 6.4), so a "no guard
+            // pages" process that still shows INT3 bytes must not be labelled untrapped.
+            const size_t cc_pct = sample_bytes ? (cc_bytes * 100) / sample_bytes : 0;
+
+            // The walk below spans the whole process, not one module, so the counts are process-wide.
+            // The verdict states the two facts that were measured (guard pages, INT3 share) and does
+            // not imply a per-module or pass/fail conclusion.
+            const wchar_t * Verdict = guarded ? L"guarded" : L"no guard pages";
+            wchar_t VerdictNote[192]{};
+            if (guarded == 0)
+            {
+                if (sample_bytes == 0)
+                {
+                    swprintf_s(VerdictNote, L"no executable region was readable");
+                }
+                else if (cc_pct)
+                {
+                    swprintf_s(VerdictNote, L"INT3 %zu%% of sampled exec bytes (process-wide; not a per-module verdict)",
+                        cc_pct);
+                }
+                else
+                {
+                    swprintf_s(VerdictNote, L"no INT3 in sampled exec bytes");
+                }
+            }
+            wprintf(L"  %ls%ls%s%s (%ls%zu%s committed region(s) walked, process-wide)\n",
                 StageField(mod, 24).c_str(),
-                VerdictTint, Verdict, kReset,
+                guarded ? kYellow : L"", Verdict, kReset,
                 kGreen, walked, kReset);
+            if (VerdictNote[0])
+            {
+                wprintf(L"  %*s%ls%s\n", static_cast<int>(StageField(mod, 24).size()), L"", VerdictNote, kReset);
+            }
 
             wprintf(L"\n");
 
@@ -7014,8 +7682,6 @@ LUID luid{};
 
             if (sample_bytes)
             {
-                const size_t cc_pct = (cc_bytes * 100) / sample_bytes;
-
                 wprintf(L"      %ls%ls%zu%ls of %ls%zu%ls sampled bytes are INT3 (%ls0xCC%ls), %ls%zu%s%%, from %ls%zu%ls of %ls%zu%ls exec region(s)\n",
                     StageField(L"INT3:", 12).c_str(),
                     kGreen, cc_bytes, kReset,
@@ -7841,6 +8507,9 @@ LUID luid{};
                     Sleep(20);
                 }
 
+                // The Waiting fallbacks here are deliberate: the runtime may reject the sponsored
+                // TID as not Running, but the HANDLE opened from it stays in the launcher's handle
+                // table with exactly the access the donor scan needs, so it is worth offering.
                 const DWORD victim_tid = PickHijackThreadTid(target.pid);
                 if (!victim_tid)
                 {
@@ -8160,6 +8829,12 @@ LUID luid{};
         }
 
         const bool had_target = (targetHandle != nullptr);
+        // VEH first-chance coverage probe: must run while the target handle is still
+        // open (handles close below before the coverage table). RPM-only, installs
+        // nothing. Stored here so the table below reports what was actually read.
+        VehFirstChanceSurvey veh_coverage_probe{};
+        const bool veh_coverage_read = had_target &&
+            QueryRemoteVehFirstChance(targetHandle, veh_coverage_probe) && veh_coverage_probe.readOk;
         // Report the handles actually closed rather than asserting they were. These values are
         // captured before the RAII guards reset them, so the line states what happened rather
         // than what was intended.
@@ -8332,6 +9007,16 @@ LUID luid{};
             const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
             const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
                 MapStats.Verified != 0;
+            // VEH first-chance is now a read-only PEB survey (CrossProcessFlags PEB+80),
+            // so it is externally checkable whenever the target handle is valid. Probe
+            // once here for the coverage denominator; the steps above already printed
+            // the read-back values.
+            VehFirstChanceSurvey veh_coverage{};
+            const bool veh_checked = veh_coverage_read;
+            if (veh_checked)
+            {
+                veh_coverage = veh_coverage_probe;
+            }
             struct Coverage
             {
                 const wchar_t * label;
@@ -8346,8 +9031,8 @@ LUID luid{};
                 { L"page protections / W^X",         !wx_violated, L"VirtualQueryEx walk of the mapped image" },
                 { L"forensic posture (runtime DLL)", stealth_gate_ok, L"exports, section names, debug directory" },
                 { L"string-encryption markers",      stealth_gate_ok, L"34 markers absent from the runtime DLL" },
-                { L"payload exception unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; target chain not observable" },
-                { L"target VEH / exception chain",   false, L"process-internal; not observable from an injector" },
+                { L"payload exception unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; SEH-table path" },
+                { L"target VEH first-chance (PEB)",  veh_checked, L"RPM-only CrossFlags PEB+80; installs nothing" },
             };
 
             constexpr size_t kCoverageCount = sizeof(coverage) / sizeof(coverage[0]);
@@ -8401,8 +9086,16 @@ LUID luid{};
             static_cast<unsigned long long>(inject_window_ms),
             static_cast<unsigned long>(data.Timeout));
 
-        row(L"DllMain(DLL_PROCESS_ATTACH) returned ", ExecTelemetry.DllMainResult != 0);
-        wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE");
+        row(L"DllMain(DLL_PROCESS_ATTACH) returned ",
+            ExecTelemetry.DllMainCyclesDelta == 0 ? true : ExecTelemetry.DllMainResult != 0);
+        if (ExecTelemetry.DllMainCyclesDelta == 0)
+        {
+            wprintf(L"not entered (no entry point; cycle counter 0)\n");
+        }
+        else
+        {
+            wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE");
+        }
 
         const bool tls_ok = ExecTelemetry.TlsCallbacksConfigured == ExecTelemetry.TlsCallbacksExecuted &&
             ExecTelemetry.TlsCallbacksFailed == 0;
@@ -8411,10 +9104,22 @@ LUID luid{};
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
-        const bool lock_ok = ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0;
+        // The loader-lock NTSTATUSes are only meaningful when DllMain was actually entered; the
+        // lock is taken inside that step. Reporting 0xC0000001 as a failure in a run where the
+        // step never ran contradicted the SUCCESS return code above.
+        const bool lock_attempted = ExecTelemetry.DllMainCyclesDelta != 0;
+        const bool lock_ok = !lock_attempted ||
+            (ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0);
         row(L"loader lock acquire/release  ", lock_ok);
-        wprintf(L"0x%08X / 0x%08X\n",
-            (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
+        if (!lock_attempted)
+        {
+            wprintf(L"not attempted (inside the DllMain step; DllMain not entered)\n");
+        }
+        else
+        {
+            wprintf(L"0x%08X / 0x%08X\n",
+                (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
+        }
 
         row(L"thread hijack............. ", ThreadExec.Success != 0);
         wprintf(L"TID 0x%04X, success=%u, routine ret 0x%08X, %u poll(s) over %u ms\n",

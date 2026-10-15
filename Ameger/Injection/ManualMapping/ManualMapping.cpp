@@ -532,7 +532,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// Reporting [+] unconditionally would claim success for stages that never ran.
 	if (data.ExecTelemetry.DllMainCyclesDelta == 0)
 	{
-		LOG(1, "[MMAP] [*] DllMain: not reached (shell aborted earlier)\n");
+		// Two very different causes produce a zero cycle counter: the image has no entry point
+		// (AddressOfEntryPoint == 0, so the shell skips DllMain by design), or an earlier stage
+		// aborted. Do not imply the second when the first is a normal, fully successful run.
+		LOG(1, "[MMAP] [*] DllMain: not entered (no entry point in image, or an earlier stage aborted)\n");
 	}
 	else if (data.ExecTelemetry.DllMainResult == 0)
 	{
