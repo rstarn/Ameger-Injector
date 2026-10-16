@@ -66,6 +66,11 @@ namespace
 
     constexpr size_t kConfigBlobMagicSize = 8;
 
+    // Number of plaintext string markers StealthVerifyStringEncryption scans for in the runtime DLL.
+    // Kept as a single named constant so the coverage note below can state it without a literal that
+    // could drift from the marker array; a static_assert at the array ties the two together.
+    constexpr size_t kStringMarkerCount = 34;
+
 #ifndef AMEGER_CONFIG_MAGIC_STR
 #define AMEGER_CONFIG_MAGIC_STR "SYSCFG01"
 #endif
@@ -1582,12 +1587,12 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         // the one line that matters and made up roughly half the trace.
         //
         // The struct-size confirmations are matched by their full prefix, not by a leading "size ".
-        // The real line is "        SYMBOL_PARSER: size _PEB = 2008" - indented and prefixed - so a
+        // The real line is "        SymbolParser: Size _PEB = 2008" - indented and prefixed - so a
         // prefix test on "size " alone never matched and all 24 of them were printed.
-        if (strstr(text, "type not found:") || strstr(text, "not found in ") ||
-            strstr(text, "resolved via") || strstr(text, "size ") == text ||
-            strstr(text, "SYMBOL_PARSER: size ") ||
-            strstr(text, "-> id "))
+        if (strstr(text, "Type Not Found") || strstr(text, "Not Found In ") ||
+            strstr(text, "Resolved Via") || strstr(text, "size ") == text ||
+            strstr(text, "SymbolParser: Size ") ||
+            strstr(text, "-> ID "))
         {
             return;
         }
@@ -1691,10 +1696,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         static CensusBlock g_census;
 
         const bool is_census_start = plain.find("Candidate Thread Census") != std::string::npos;
-        const bool is_census_row = plain.find("SELECTED") != std::string::npos ||
-            plain.find("SKIPPED") != std::string::npos ||
-            plain.find("EXCLUDED") != std::string::npos ||
-            plain.find("WAIT REASON") != std::string::npos;
+        const bool is_census_row = plain.find("Selected") != std::string::npos ||
+            plain.find("Skipped") != std::string::npos ||
+            plain.find("Excluded") != std::string::npos ||
+            plain.find("Wait Reason") != std::string::npos;
 
         const auto flush_census = []()
         {
@@ -1709,32 +1714,32 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
             for (const std::wstring & row : g_census.rows)
             {
-                if (row.find(L"SELECTED") != std::wstring::npos)
+                if (row.find(L"Selected") != std::wstring::npos)
                 {
                     selected.push_back(&row);
                 }
-                else if (row.find(L"EXCLUDED") != std::wstring::npos)
+                else if (row.find(L"Excluded") != std::wstring::npos)
                 {
                     excluded.push_back(&row);
                 }
-                else if (row.find(L"SKIPPED") != std::wstring::npos)
+                else if (row.find(L"Skipped") != std::wstring::npos)
                 {
                     skipped.push_back(&row);
                 }
             }
 
-            // The opening "[HIJACK] [*] Candidate Thread Census:" line is withheld until flush so it
+            // The opening "[ThreadHijack] [*] Candidate Thread Census:" line is withheld until flush so it
             // can head the condensed block; without it the table appears with no context at all.
             if (!g_census.start.empty())
             {
                 wprintf(L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
             }
 
-            // "WAIT REASON" is the column header, kept and printed first so the retained rows
+            // "Wait Reason" is the column header, kept and printed first so the retained rows
             // below it stay readable.
             for (const std::wstring & row : g_census.rows)
             {
-                if (row.find(L"WAIT REASON") != std::wstring::npos)
+                if (row.find(L"Wait Reason") != std::wstring::npos)
                 {
                     wprintf(L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
                     break;
@@ -1762,13 +1767,13 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
                 }
             }
 
-            wprintf(L"       %ls[%zu considered: %zu selected, %zu excluded, %zu skipped]%ls\n",
+            wprintf(L"       %ls[%zu Considered: %zu Selected, %zu Excluded, %zu Skipped]%ls\n",
                 kDim, selected.size() + excluded.size() + skipped.size(), selected.size(),
                 excluded.size(), skipped.size(), kReset);
 
             if (!FullThreadCensusEnabled() && !skipped.empty())
             {
-                wprintf(L"       %ls(set AMEGER_FULL_CENSUS=1 for the full listing)%ls\n", kDim, kReset);
+                wprintf(L"       %ls(Set AMEGER_FULL_CENSUS=1 For The Full Listing)%ls\n", kDim, kReset);
             }
 
             g_census.rows.clear();
@@ -1800,60 +1805,60 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         //
         // pArg / pShells / pDispatch are deliberately absent. They are printed by BOTH the mapper
         // (staging layout) and the hijacker ("Acquiring thread with:"), so probing them made the
-        // section alternate line by line between MANUAL MAP and THREAD HIJACK. They now inherit
+        // section alternate line by line between Manual Map and Thread Hijack. They now inherit
         // whichever section the surrounding lines already opened, which is correct in both places.
         static const Category kCategories[] =
         {
-            { "[SYSCALL]",          L"SYSCALL LAYER" },
-            { "SERVICE NAME",       L"SYSCALL LAYER" },
-            { "]   [",              L"SYSCALL LAYER" },
-            // The syscall setup chatter is emitted before the "[SYSCALL]" tag, so without these the
+            { "[Syscall]",          L"Syscall Layer" },
+            { "Service Name",       L"Syscall Layer" },
+            { "]   [",              L"Syscall Layer" },
+            // The syscall setup chatter is emitted before the "[Syscall]" tag, so without these the
             // section header only appeared partway down and the first six lines hung off whatever
             // category happened to be open.
-            { "Resolving syscall service numbers", L"SYSCALL LAYER" },
-            { "ntdll base:",        L"SYSCALL LAYER" },
-            { "Pass 1: scanned",    L"SYSCALL LAYER" },
-            { "Pass 2: reconstructed", L"SYSCALL LAYER" },
-            { "Building syscall stub pool", L"SYSCALL LAYER" },
-            { "Stub pool built:",   L"SYSCALL LAYER" },
-            { "[HIJACK]",           L"THREAD HIJACK" },
-            { "TID      STATE",      L"THREAD HIJACK" },
-            { "  0x",               L"THREAD HIJACK" },
-            { "Donor round",        L"THREAD HIJACK" },
-            { "SR_AcquireThread",   L"THREAD HIJACK" },
-            { "Target thread ",     L"THREAD HIJACK" },
-            { "Remote thread shell",L"THREAD HIJACK" },
-            { "Acquiring thread",   L"THREAD HIJACK" },
-            { "Acquired target thread", L"THREAD HIJACK" },
-            { "pRoutine",           L"THREAD HIJACK" },
-            { "RIP replaced",       L"THREAD HIJACK" },
-            { "Thread resumed",     L"THREAD HIJACK" },
-            { "Entering wait state",L"THREAD HIJACK" },
-            { "Shelldata retrieved",L"THREAD HIJACK" },
-            { "Thread context restored", L"THREAD HIJACK" },
-            { "ProcessInformation", L"THREAD HIJACK" },
-            { "[HANDLE]",           L"HANDLE ACQUISITION" },
-            { "HandleAcq:",         L"HANDLE ACQUISITION" },
-            { "[MMAP]",             L"MANUAL MAP" },
-            { "Begin in-memory load", L"MANUAL MAP" },
-            { "Shell data initialized", L"MANUAL MAP" },
-            { "Shellsize",          L"MANUAL MAP" },
-            { "Total size",         L"MANUAL MAP" },
-            { "written to memory",  L"MANUAL MAP" },
-            { "Staging code promoted", L"MANUAL MAP" },
-            { "Shell returned",     L"MANUAL MAP" },
-            { "Imagebase",          L"MANUAL MAP" },
-            { "Fetching routine data", L"MANUAL MAP" },
-            { "[CLOAK]",            L"HEADER CLOAK" },
-            { "SYMBOL_LOADER",      L"SYMBOL LOADER" },
-            { "SYMBOL_PARSER",      L"SYMBOL RESOLVER" },
-            { "DynamicOffsets",     L"DYNAMIC OFFSETS" },
-            { "KcStrings",          L"STRING SELF-TEST" },
-            { "Attached to target process", L"TARGET ACQUISITION" },
-            { "Target process name",  L"TARGET ACQUISITION" },
-            { "Validating specified file", L"TARGET ACQUISITION" },
-            { "File validated",     L"TARGET ACQUISITION" },
-            { "Acquired target process handle", L"TARGET ACQUISITION" },
+            { "Resolving Syscall Service Numbers", L"Syscall Layer" },
+            { "ntdll Base:",        L"Syscall Layer" },
+            { "Pass 1: Scanned",    L"Syscall Layer" },
+            { "Pass 2: Reconstructed", L"Syscall Layer" },
+            { "Building Syscall Stub Pool", L"Syscall Layer" },
+            { "Stub Pool Built:",   L"Syscall Layer" },
+            { "[ThreadHijack]",     L"Thread Hijack" },
+            { "TID      State",      L"Thread Hijack" },
+            { "  0x",               L"Thread Hijack" },
+            { "Donor Round",        L"Thread Hijack" },
+            { "SR_AcquireThread",   L"Thread Hijack" },
+            { "Target Thread ",     L"Thread Hijack" },
+            { "Remote Thread Shell",L"Thread Hijack" },
+            { "Acquiring Thread",   L"Thread Hijack" },
+            { "Acquired Target Thread", L"Thread Hijack" },
+            { "pRoutine",           L"Thread Hijack" },
+            { "RIP Replaced",       L"Thread Hijack" },
+            { "Thread Resumed",     L"Thread Hijack" },
+            { "Entering Wait State",L"Thread Hijack" },
+            { "ShellData Retrieved",L"Thread Hijack" },
+            { "Thread Context Restored", L"Thread Hijack" },
+            { "ProcessInformation", L"Thread Hijack" },
+            { "[Handle]",            L"Handle Acquisition" },
+            { "HandleAcq:",         L"Handle Acquisition" },
+            { "[ManualMap]",        L"Manual Map" },
+            { "Begin In-Memory Load", L"Manual Map" },
+            { "Shell Data Initialized", L"Manual Map" },
+            { "ShellSize",          L"Manual Map" },
+            { "Total Size",         L"Manual Map" },
+            { "Written To Memory",  L"Manual Map" },
+            { "Staging Code Promoted", L"Manual Map" },
+            { "Shell Returned",     L"Manual Map" },
+            { "ImageBase",          L"Manual Map" },
+            { "Fetching Routine Data", L"Manual Map" },
+            { "[HeaderCloak]",      L"Header Cloak" },
+            { "SymbolLoader",      L"Symbol Loader" },
+            { "SymbolParser",      L"Symbol Resolver" },
+            { "DynamicOffsets",     L"Dynamic Offsets" },
+            { "KcStrings",          L"String Self-Test" },
+            { "Attached To Target Process", L"Target Acquisition" },
+            { "Target Process Name",  L"Target Acquisition" },
+            { "Validating Specified File", L"Target Acquisition" },
+            { "File Validated",     L"Target Acquisition" },
+            { "Acquired Target Process Handle", L"Target Acquisition" },
             { nullptr,              nullptr },
         };
 
@@ -1870,7 +1875,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         if (title && title != g_RuntimeCategory)
         {
             g_RuntimeCategory = title;
-            wprintf(L"       %ls--- runtime: %ls ---%ls\n", kCyan, title, kReset);
+            wprintf(L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
         }
 
         // A single runtime printf can carry embedded newlines (e.g. "OSVersion = %lu\nOSBuildVersion =
@@ -2036,7 +2041,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
                 value = false;
                 return true;
             }
-            PrintWarning(L"Answer y or n.");
+            PrintWarning(L"Answer Y Or N.");
         }
     }
 
@@ -2069,18 +2074,18 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             // WINDOWS subsystem: no console exists. Serve the gate through a
             // layered window with the per-build random class name.
             const bool proceed = LayeredConfirm(
-                L"Begin load? Select OK to proceed or Cancel to quit.");
+                L"Begin Load? Select OK To Proceed Or Cancel To Quit.");
             return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
         }
 
-        wprintf(L"%ls[+]%ls Press Enter to begin, or Q to quit: \n", kGreen, kReset);
+        wprintf(L"%ls[+]%ls Press Enter To Begin, Or Q To Quit: \n", kGreen, kReset);
         fflush(stdout);
 
         std::wstring entered;
         if (!std::getline(std::wcin, entered))
         {
 
-            PrintError(L"Console input ended before confirmation; refusing to load.");
+            PrintError(L"Console Input Ended Before Confirmation; Refusing To Load.");
             return ConfirmationResult::Unavailable;
         }
 
@@ -2138,7 +2143,7 @@ static const bool verbose = []() -> bool
     }
 
     // The candidate thread census is the one table large enough to dominate the log: Overwatch
-    // exposes ~110 threads and all but a handful are SKIPPED. Condensed by default to the rows that
+    // exposes ~110 threads and all but a handful are Skipped. Condensed by default to the rows that
     // change the decision plus a tally. Nothing is discarded - set AMEGER_FULL_CENSUS=1 for the
     // complete listing. Same convention as AMEGER_VERBOSE.
     bool FullThreadCensusEnabled()
@@ -2225,7 +2230,7 @@ wchar_t name[48]{};
             SYSTEMTIME st{};
             GetLocalTime(&st);
             wprintf(L"\n====================================================================================================\n");
-            wprintf(L" [AMEGER INJECTOR] -- FULL PROCEDURE TRACE (start %02u:%02u:%02u.%03u PID %lu)\n",
+            wprintf(L" [Ameger Injector] -- Full Procedure Trace (Start %02u:%02u:%02u.%03u | PID %lu)\n",
                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
                 static_cast<unsigned long>(GetCurrentProcessId()));
             wprintf(L"====================================================================================================\n");
@@ -2303,9 +2308,9 @@ wchar_t name[48]{};
             const ULONGLONG total = NowMs() - T0();
 
             wprintf(L"\n====================================================================================================\n");
-            wprintf(L" [PHASE SUMMARY] %ls\n", outcome ? outcome : L"completed");
+            wprintf(L" [Phase Summary] %ls\n", outcome ? outcome : L"Completed");
             wprintf(L"====================================================================================================\n");
-            wprintf(L"  %-3s %-46s %10s %8s %12s\n", L"#", L"PHASE", L"ELAPSED", L"SHARE", L"START");
+            wprintf(L"  %-3s %-46s %10s %8s %12s\n", L"#", L"Phase", L"Elapsed", L"Share", L"Start");
 
             for (size_t i = 0; i < count; ++i)
             {
@@ -2316,7 +2321,7 @@ wchar_t name[48]{};
                     share, phases[i].start_ms);
             }
 
-            wprintf(L"  %-50s %ls%8llu ms%s\n", L"TOTAL WALL TIME", kGreen, total, kReset);
+            wprintf(L"  %-50s %ls%8llu ms%s\n", L"Total Wall Time", kGreen, total, kReset);
             wprintf(L"====================================================================================================\n");
         }
     }
@@ -3281,12 +3286,12 @@ LUID luid{};
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(file, &size))
         {
-            fwprintf(stderr, L"%lsFailed to query runtime size: 0x%08X%ls\n", kRed, GetLastError(), kReset);
+            fwprintf(stderr, L"%lsFailed To Query Runtime Size = 0x%08X%ls\n", kRed, GetLastError(), kReset);
             return false;
         }
         if (size.QuadPart <= 0 || static_cast<unsigned long long>(size.QuadPart) > PE_IMAGE::MAX_IMAGE_SIZE)
         {
-            fwprintf(stderr, L"%lsInvalid runtime size: %lld bytes%ls\n", kRed, size.QuadPart, kReset);
+            fwprintf(stderr, L"%lsInvalid Runtime Size = %lld Bytes%ls\n", kRed, size.QuadPart, kReset);
             return false;
         }
 
@@ -3301,7 +3306,7 @@ LUID luid{};
             const DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
             if (!read_ok || read == 0)
             {
-                fwprintf(stderr, L"%lsFailed to read runtime: 0x%08X (%zu of %zu bytes)%ls\n", kRed, read_error, total, bytes.size(), kReset);
+                fwprintf(stderr, L"%lsFailed To Read Runtime = 0x%08X (%zu Of %zu Bytes)%ls\n", kRed, read_error, total, bytes.size(), kReset);
                 bytes.clear();
                 return false;
             }
@@ -3320,7 +3325,7 @@ LUID luid{};
         const DWORD validation_result = PE_IMAGE::Validate(bytes.data(), bytes.size(), IMAGE_FILE_MACHINE_AMD64, options, view);
         if (validation_result != FILE_ERR_SUCCESS)
         {
-            fwprintf(stderr, L"%lsRuntime DLL PE validation failed: 0x%08X%ls\n", kRed, validation_result, kReset);
+            fwprintf(stderr, L"%lsRuntime DLL PE Validation Failed = 0x%08X%ls\n", kRed, validation_result, kReset);
             return false;
         }
 
@@ -3342,7 +3347,7 @@ LUID luid{};
         }
         if (!has_embedded_hash)
         {
-            PrintError(L"The runtime has no embedded SHA-256. Build it with Build\\Executors\\Create.bat.");
+            PrintError(L"The Runtime Has No Embedded SHA-256. Build It With Build\\Executors\\Create.bat.");
             return false;
         }
 
@@ -3360,7 +3365,7 @@ LUID luid{};
         const std::wstring actual_hash = Sha256Hex(bytes);
         if (actual_hash.empty() || _wcsicmp(actual_hash.c_str(), expected_hash.c_str()) != 0)
         {
-            fwprintf(stderr, L"%lsRuntime DLL SHA-256 mismatch. Expected %ls, got %ls%ls\n", kRed, expected_hash.c_str(), actual_hash.c_str(), kReset);
+            fwprintf(stderr, L"%lsRuntime DLL SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_hash.c_str(), actual_hash.c_str(), kReset);
             return false;
         }
 
@@ -3372,14 +3377,14 @@ LUID luid{};
         const std::wstring path = RuntimePath(config.dll_dir, config.runtime_name);
         if (path.empty() || !FileExists(path))
         {
-            PrintError((L"The runtime DLL (" + config.runtime_name + L") is missing in " + config.dll_dir + L"\\ next to the executable.").c_str());
+            PrintError((L"The Runtime DLL (" + config.runtime_name + L") Is Missing In " + config.dll_dir + L"\\ Next To The Executable.").c_str());
             return false;
         }
 
         HANDLE runtime_file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (runtime_file == INVALID_HANDLE_VALUE)
         {
-            fwprintf(stderr, L"%lsFailed to open runtime for verification: 0x%08X%ls\n", kRed, GetLastError(), kReset);
+            fwprintf(stderr, L"%lsFailed To Open Runtime For Verification = 0x%08X%ls\n", kRed, GetLastError(), kReset);
             return false;
         }
 
@@ -3462,13 +3467,13 @@ LUID luid{};
 
         if (!runtime.module)
         {
-            fwprintf(stderr, L"%lsFailed to load runtime: %ls (0x%08X)%ls\n", kRed, path.c_str(), load_error, kReset);
+            fwprintf(stderr, L"%lsFailed To Load Runtime = %ls (0x%08X)%ls\n", kRed, path.c_str(), load_error, kReset);
             return false;
         }
 
         if (!export_map_complete)
         {
-            PrintError(L"The runtime export map does not cover every export this launcher needs.");
+            PrintError(L"The Runtime Export Map Does Not Cover Every Export This Launcher Needs.");
             FreeLibrary(runtime.module);
             runtime.module = nullptr;
             return false;
@@ -3476,7 +3481,7 @@ LUID luid{};
 
         if (!runtime.memory_inject || !runtime.get_symbol_state || !runtime.get_import_state || !runtime.initialize_runtime || !runtime.start_download)
         {
-            PrintError(L"The runtime DLL does not expose the required functions.");
+            PrintError(L"The Runtime DLL Does Not Expose The Required Functions.");
             FreeLibrary(runtime.module);
             runtime.module = nullptr;
             return false;
@@ -3484,12 +3489,12 @@ LUID luid{};
 
         if (runtime.get_last_hijack_stats)
         {
-            if (VerboseOutputEnabled()) { wprintf(L"%ls[+]%ls Telemetry export found.\n\n", kGreen, kReset); }
+            if (VerboseOutputEnabled()) { wprintf(L"%ls[+]%ls Telemetry Export Found.\n\n", kGreen, kReset); }
 
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Telemetry export missing; the Acquire process handle step will show no telemetry.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls Telemetry Export Missing; The Acquire Process Handle Step Will Show No Telemetry.\n", kYellow, kReset);
         }
 
         return true;
@@ -3524,7 +3529,7 @@ LUID luid{};
                 const ULONGLONG now = GetTickCount64();
                 if (now >= deadline)
                 {
-                    Trace::Note(L"symbol poll TIMED OUT after %llu ms (%u polls), state=0x%08lX",
+                    Trace::Note(L"Symbol Poll Timed Out After %llu ms (%u Polls) | State = 0x%08lX",
                         static_cast<unsigned long long>(now - poll_start), polls,
                         static_cast<unsigned long>(symbol_state));
                     return false;
@@ -3532,14 +3537,14 @@ LUID luid{};
                 if (now - last_report >= 2000)
                 {
                     last_report = now;
-                    Trace::Note(L"waiting for ntdll symbols... %llu ms elapsed, %u polls",
+                    Trace::Note(L"Waiting For ntdll Symbols... %llu ms Elapsed | %u Polls",
                         static_cast<unsigned long long>(now - poll_start), polls);
                 }
                 Sleep(10);
                 ++polls;
                 symbol_state = runtime.get_symbol_state();
             }
-            Trace::Note(L"symbols ready in %llu ms (%u polls), state=0x%08lX",
+            Trace::Note(L"Symbols Ready In %llu ms (%u Polls) | State = 0x%08lX",
                 static_cast<unsigned long long>(GetTickCount64() - poll_start), polls,
                 static_cast<unsigned long>(symbol_state));
         }
@@ -3559,7 +3564,7 @@ LUID luid{};
                 const ULONGLONG now = GetTickCount64();
                 if (now >= deadline)
                 {
-                    Trace::Note(L"import poll TIMED OUT after %llu ms (%u polls), state=0x%08lX",
+                    Trace::Note(L"Import Poll Timed Out After %llu ms (%u Polls) | State = 0x%08lX",
                         static_cast<unsigned long long>(now - poll_start), polls,
                         static_cast<unsigned long>(import_state));
                     return false;
@@ -3567,14 +3572,14 @@ LUID luid{};
                 if (now - last_report >= 2000)
                 {
                     last_report = now;
-                    Trace::Note(L"waiting for import resolution... %llu ms elapsed, %u polls",
+                    Trace::Note(L"Waiting For Import Resolution... %llu ms Elapsed | %u Polls",
                         static_cast<unsigned long long>(now - poll_start), polls);
                 }
                 Sleep(10);
                 ++polls;
                 import_state = runtime.get_import_state();
             }
-            Trace::Note(L"imports ready in %llu ms (%u polls), state=0x%08lX",
+            Trace::Note(L"Imports Ready In %llu ms (%u Polls) | State = 0x%08lX",
                 static_cast<unsigned long long>(GetTickCount64() - poll_start), polls,
                 static_cast<unsigned long>(import_state));
         }
@@ -3872,7 +3877,7 @@ LUID luid{};
         if (configured_name.empty())
         {
 
-            PrintError(XOR_STR_W(L"No target process is configured (ProcessName is empty).").get());
+            PrintError(XOR_STR_W(L"No Target Process Is Configured (ProcessName Is Empty).").get());
             return false;
         }
         target.requested_name = NormalizeProcessName(configured_name);
@@ -3883,7 +3888,7 @@ LUID luid{};
             GetConsoleMode(probeInput, &probeMode) != FALSE;
         if (hasConsoleForWait)
         {
-            wprintf(L"%ls[+]%ls Waiting for %ls... (Press Q to quit)\n", kGreen, kReset, target.requested_name.c_str());
+            wprintf(L"%ls[+]%ls Waiting For %ls... (Press Q To Quit)\n", kGreen, kReset, target.requested_name.c_str());
         }
         const ULONGLONG wait_timeout = timeout_ms > 0 ? static_cast<ULONGLONG>(timeout_ms) : 60000ULL;
         const ULONGLONG deadline = GetTickCount64() + wait_timeout;
@@ -3895,7 +3900,7 @@ LUID luid{};
                 target.pid = found;
                 if (hasConsoleForWait)
                 {
-                    wprintf(L"%ls[+]%ls %ls detected | PID: %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                    wprintf(L"%ls[+]%ls %ls Detected | PID = %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
                 }
                 return true;
             }
@@ -3911,7 +3916,7 @@ LUID luid{};
                 if (GetTickCount64() >= deadline)
                 {
                     wchar_t wait_message[512]{};
-                    swprintf_s(wait_message, L"Timed out after %lu ms waiting for %ls to start (headless; no console to cancel with).",
+                    swprintf_s(wait_message, L"Timed Out After %lu ms Waiting For %ls To Start (Headless; No Console To Cancel With).",
                         static_cast<unsigned long>(wait_timeout), target.requested_name.c_str());
                     PrintError(wait_message);
                     return false;
@@ -3985,14 +3990,14 @@ LUID luid{};
         const std::wstring directory = ExecutableDirectory();
         if (directory.empty() || payload_name.empty() || dll_dir.empty())
         {
-            PrintError(L"The payload is not configured (the deployment payload name is empty).");
+            PrintError(L"The Payload Is Not Configured (The Deployment Payload Name Is Empty).");
             return false;
         }
 
         const std::wstring path = directory + dll_dir + L"\\" + payload_name;
         if (!FileExists(path))
         {
-            PrintError((L"The payload DLL (" + payload_name + L") is missing in " + dll_dir + L"\\ next to the executable.").c_str());
+            PrintError((L"The Payload DLL (" + payload_name + L") Is Missing In " + dll_dir + L"\\ Next To The Executable.").c_str());
             return false;
         }
 
@@ -4002,39 +4007,39 @@ LUID luid{};
         {
             if (validation_code != FILE_ERR_SUCCESS)
             {
-                fwprintf(stderr, L"%lsNot a usable DLL (PE validation 0x%08X). Need x64 DLL with relocations, no .NET.%ls\n",
+                fwprintf(stderr, L"%lsNot A Usable DLL (PE Validation 0x%08X). Need x64 DLL With Relocations, No .NET.%ls\n",
                     kYellow, validation_code, kReset);
             }
             else
             {
-                PrintWarning(L"Not a usable DLL.");
+                PrintWarning(L"Not A Usable DLL.");
             }
             return false;
         }
 
         if (expected_sha256.empty())
         {
-            PrintError(XOR_STR_W(L"The payload pin is missing (PayloadSha256 is empty); refusing to load without a pinned digest.").get());
+            PrintError(XOR_STR_W(L"The Payload Pin Is Missing (PayloadSha256 Is Empty); Refusing To Load Without A Pinned Digest.").get());
             return false;
         }
         if (_wcsicmp(expected_sha256.c_str(), sha256.c_str()) != 0)
         {
-            fwprintf(stderr, L"%lsPayload SHA-256 mismatch. Expected %ls, got %ls%ls\n", kRed, expected_sha256.c_str(), sha256.c_str(), kReset);
+            fwprintf(stderr, L"%lsPayload SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_sha256.c_str(), sha256.c_str(), kReset);
             return false;
         }
 
         if (info.dotnet)
         {
-            PrintError(L".NET assemblies are not supported in this memory-loading build.");
+            PrintError(L".NET Assemblies Are Not Supported In This Memory-Loading Build.");
             return false;
         }
         if (info.architecture == Architecture::X86)
         {
-            PrintError(L"x86 DLLs are not supported in this x64-only build.");
+            PrintError(L"x86 DLLs Are Not Supported In This x64-Only Build.");
             return false;
         }
 
-        if (VerboseOutputEnabled()) { wprintf(L"Verified SHA-256: %ls%ls%ls\n", kGreen, sha256.c_str(), kReset); }
+        if (VerboseOutputEnabled()) { wprintf(L"Verified SHA-256 = %ls%ls%ls\n", kGreen, sha256.c_str(), kReset); }
         return true;
     }
 
@@ -4103,9 +4108,9 @@ LUID luid{};
 
         if (has_exports && (flags & INJ_MM_CLEAN_DATA_DIR) != 0)
         {
-            wprintf(L"  %ls[*]%ls CleanDataDirectories is on; the payload's export directory is erased during the load.\n",
+            wprintf(L"  %ls[*]%ls CleanDataDirectories Is On; The Payload's Export Directory Is Erased During The Load.\n",
                 kDim, kReset);
-            wprintf(L"      Anything that resolves this payload by export name afterwards will fail.\n");
+            wprintf(L"      Anything That Resolves This Payload By Export Name Afterwards Will Fail.\n");
         }
     }
 
@@ -4131,7 +4136,7 @@ LUID luid{};
             { INJ_MM_RUN_UNDER_LDR_LOCK,       L"INJ_MM_RUN_UNDER_LDR_LOCK" },
         };
 
-        wprintf(L"  %ls[*]%ls Decoded load flags: 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
+        wprintf(L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
         for (const FlagBit & fb : kBits)
         {
             const bool set = (flags & fb.bit) != 0;
@@ -4139,14 +4144,17 @@ LUID luid{};
                 set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
                 fb.bit, fb.name);
         }
-        const DWORD known = 0;
-        (void)known;
-        const DWORD accounted = 0x0001 | 0x0040 | 0x0004 | 0x0080 | 0x00010000 | 0x00020000 |
-            0x00040000 | 0x00080000 | 0x00100000 | 0x00200000 | 0x00400000 | 0x00800000 | 0x01000000;
+        // Derived from the table above so a newly added bit can never be reported as "undecoded"
+        // just because this mask was not updated in lockstep with kBits.
+        DWORD accounted = 0;
+        for (const FlagBit & fb : kBits)
+        {
+            accounted |= fb.bit;
+        }
         const DWORD unexplained = flags & ~accounted;
         if (unexplained)
         {
-            wprintf(L"      %ls[!]%ls 0x%08lX  undecoded bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
+            wprintf(L"      %ls[!]%ls 0x%08lX  Undecoded Bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
         }
         (void)INJ_MM_MAP_FROM_MEMORY;
     }
@@ -4251,7 +4259,7 @@ LUID luid{};
     {
         if (!Stats || !Stats->Attempted)
         {
-            wprintf(L"  %ls[!]%ls %ls handle: no telemetry (older runtime?).\n", kYellow, kReset, Kind);
+            wprintf(L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
             return;
         }
 
@@ -4259,11 +4267,11 @@ LUID luid{};
 
         wchar_t Text[256]{ 0 };
 
-        wprintf(L"  %ls acquisition trace:\n\n", Kind);
+        wprintf(L"  %ls Acquisition Trace:\n\n", Kind);
 
         int Stage = 0;
         const bool target_known = Context && !Context->TargetName.empty();
-        wprintf(L"    %ls %ls %ls%ls%ls, PID %ls%lu%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Target").c_str(),
+        wprintf(L"    %ls %ls %ls%ls%ls | PID = %ls%lu%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Target").c_str(),
             target_known ? kGreen : kYellow,
             target_known ? Context->TargetName.c_str() : L"unknown", kReset,
             kGreen, Context ? Context->TargetPid : 0, kReset);
@@ -4271,8 +4279,8 @@ LUID luid{};
         const DWORD hijack_flag = INJ_HANDLE_HIJACKING;
         const bool hijack_on = (Flags & hijack_flag) != 0;
         const wchar_t * FlagTint = hijack_on ? kGreen : kYellow;
-        wprintf(L"    %ls %ls %ls%s%ls (%ls0x%04X%s in flags %ls0x%08X%s)\n", StageTag(++Stage).c_str(),
-            StageLabel(L"Config flag").c_str(),
+        wprintf(L"    %ls %ls %ls%s%ls (%ls0x%04X%s In Flags %ls0x%08X%s)\n", StageTag(++Stage).c_str(),
+            StageLabel(L"Config Flag").c_str(),
             FlagTint, hijack_on ? L"Y" : L"N", kReset,
             FlagTint, hijack_flag, kReset,
             FlagTint, Flags, kReset);
@@ -4281,8 +4289,8 @@ LUID luid{};
         {
 
             const wchar_t * privilege_text =
-                !Context->PrivilegeAttempted ? L"not required" :
-                (Context->PrivilegeOk ? L"enabled" : L"FAILED");
+                !Context->PrivilegeAttempted ? L"Not Required" :
+                (Context->PrivilegeOk ? L"Enabled" : L"Failed");
             const wchar_t * privilege_tint =
                 !Context->PrivilegeAttempted ? kYellow :
                 (Context->PrivilegeOk ? kGreen : kRed);
@@ -4292,67 +4300,67 @@ LUID luid{};
 
         if (IsThread && Context && Context->SponsorThreadOpened)
         {
-            wprintf(L"    %ls %ls %ls0x%08X%ls pre-opened, TID %ls0x%04X%ls\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %ls0x%08X%ls Pre-Opened, TID %ls0x%04X%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kGreen, static_cast<DWORD>(Context->SponsorThreadValue), kReset,
                 kGreen, Context->SponsorTid, kReset);
         }
         else if (IsThread && Context && Context->SponsorThreadAttempted)
         {
 
-            wprintf(L"    %ls %ls %lsFAILED%ls (no valid TID)\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsFailed%ls (No Valid TID)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kRed, kReset);
         }
         else if (IsThread)
         {
-            wprintf(L"    %ls %ls %lsnot attempted%ls\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsNot Attempted%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kYellow, kReset);
         }
         else if (Context && Context->SponsorOpened)
         {
-            wprintf(L"    %ls %ls %ls0x%08X%ls pre-opened, mask %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %ls0x%08X%ls Pre-Opened, Mask %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kGreen, static_cast<DWORD>(Context->SponsorValue), kReset,
                 kGreen, Context->SponsorAccess, kReset);
 
             const bool skip_roundtrip = (Flags & INJ_SKIP_SPONSOR_ROUNDTRIP) != 0;
             const wchar_t * RoundTripText =
-                Stats->SponsorProbed ? L"OK" : (skip_roundtrip ? L"skipped" : L"FAILED");
+                Stats->SponsorProbed ? L"OK" : (skip_roundtrip ? L"Skipped" : L"Failed");
             const wchar_t * RoundTripTint =
                 Stats->SponsorProbed ? kGreen : (skip_roundtrip ? kGreen : kRed);
-            wprintf(L"    %ls %ls identity %ls%s%ls, roundtrip %ls%s%ls\n", StageTag(++Stage).c_str(),
-                StageLabel(L"Sponsor proof").c_str(),
-                Stats->SponsorValidated ? kGreen : kRed, Stats->SponsorValidated ? L"OK" : L"FAILED", kReset,
+            wprintf(L"    %ls %ls Identity %ls%s%ls, Roundtrip %ls%s%ls\n", StageTag(++Stage).c_str(),
+                StageLabel(L"Sponsor Proof").c_str(),
+                Stats->SponsorValidated ? kGreen : kRed, Stats->SponsorValidated ? L"OK" : L"Failed", kReset,
                 RoundTripTint, RoundTripText, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls %lsnone%ls (donor scan only)\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsNone%ls (Donor Scan Only)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kYellow, kReset);
         }
 
         if (SponsorUsed)
         {
 
-            wprintf(L"    %ls %ls %lsnot required%ls (sponsor satisfied acquisition)\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsNot Required%ls (Sponsor Satisfied Acquisition)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Scan").c_str(), kYellow, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls status %ls0x%08X%ls, %ls%lu%ls handles\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls Status %ls0x%08X%ls, %ls%lu%ls Handles\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Enumeration").c_str(),
                 Stats->SnapStatus == 0 ? kGreen : kYellow, Stats->SnapStatus, kReset,
                 kGreen, Stats->TotalHandles, kReset);
 
             wprintf(L"    %ls %ls %ls%s%ls (%ls)\n", StageTag(++Stage).c_str(), StageLabel(L"Calibration").c_str(),
                 Stats->Calibrated ? kGreen : kYellow,
-                Stats->Calibrated ? L"self-calibrated" : L"uncalibrated", kReset,
-                Stats->Calibrated ? L"filtered scan" : L"unfiltered scan");
+                Stats->Calibrated ? L"Self-Calibrated" : L"Uncalibrated", kReset,
+                Stats->Calibrated ? L"Filtered Scan" : L"Unfiltered Scan");
 
-            wprintf(L"    %ls %ls examined %ls%lu%ls of %ls%lu%ls, owners %ls%lu%ls, dup-denied %ls%lu%ls, verify-rejected %ls%lu%ls, budget-skipped %ls%lu%ls\n",
+            wprintf(L"    %ls %ls Examined %ls%lu%ls Of %ls%lu%ls, Owners %ls%lu%ls, Dup-Denied %ls%lu%ls, Verify-Rejected %ls%lu%ls, Budget-Skipped %ls%lu%ls\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Scan").c_str(),
                 kGreen, Stats->Examined, kReset, kGreen, Stats->TotalHandles, kReset,
                 kGreen, Stats->OwnersOpened, kReset, kGreen, Stats->DupDenied, kReset,
                 kGreen, Stats->VerifyRejected, kReset, kGreen, Stats->BudgetSkipped, kReset);
-            wprintf(L"    %ls %ls snapshot %ls%u%ls bytes | probe method %ls%u%ls (0=none,1=reserve,2=protect,3=roundtrip)\n",
+            wprintf(L"    %ls %ls Snapshot %ls%u%ls Bytes | Probe Method %ls%u%ls (0 = None, 1 = Reserve, 2 = Protect, 3 = Roundtrip)\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Snapshot").c_str(),
                 kGreen, Stats->SnapshotBytes, kReset, kGreen, Stats->ProbeMethod, kReset);
         }
@@ -4364,22 +4372,22 @@ LUID luid{};
             DescribeDonor(Stats->DonorPid, Donor);
             if (Donor[0])
             {
-                wprintf(L"    %ls %ls %ls%s%ls (PID %ls%lu%ls), handle %ls0x%08X%ls, dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
-                    StageLabel(L"Donor owner").c_str(), kGreen, Donor, kReset,
+                wprintf(L"    %ls %ls %ls%s%ls (PID %ls%lu%ls), Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
+                    StageLabel(L"Donor Owner").c_str(), kGreen, Donor, kReset,
                     kGreen, Stats->DonorPid, kReset,
                     kGreen, Stats->DonorHandle, kReset, kGreen, Stats->NewHandle, kReset);
             }
             else
             {
-                wprintf(L"    %ls %ls PID %ls%lu%ls, handle %ls0x%08X%ls, dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
-                    StageLabel(L"Donor owner").c_str(),
+                wprintf(L"    %ls %ls PID %ls%lu%ls, Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
+                    StageLabel(L"Donor Owner").c_str(),
                     kGreen, Stats->DonorPid, kReset,
                     kGreen, Stats->DonorHandle, kReset, kGreen, Stats->NewHandle, kReset);
             }
         }
         else
         {
-            wprintf(L"    %ls %ls %lsnone%ls qualifying\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsNone%ls Qualifying\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Donor owner").c_str(), kYellow, kReset);
         }
 
@@ -4387,23 +4395,23 @@ LUID luid{};
         {
             if (Stats->Source == static_cast<DWORD>(HijackSource::Sponsor))
             {
-                swprintf_s(Text, L"SPONSOR");
+                swprintf_s(Text, L"Sponsor");
             }
             else
             {
-                swprintf_s(Text, L"DONOR SCAN");
+                swprintf_s(Text, L"Donor Scan");
             }
-            wprintf(L"    %ls %ls %ls%s%ls, granted %ls0x%08X%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Result").c_str(),
+            wprintf(L"    %ls %ls %ls%s%ls, Granted %ls0x%08X%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Result").c_str(),
                 kGreen, Text, kReset, kGreen, Stats->GrantedAccess, kReset);
         }
         else if (Stats->Source == static_cast<DWORD>(HijackSource::Direct))
         {
-            wprintf(L"    %ls %ls %lsDIRECT OPEN%ls (code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsDirect Open%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Result").c_str(), kYellow, kReset, kYellow, Stats->FailCode, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls %lsFAILED%ls (code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
+            wprintf(L"    %ls %ls %lsFailed%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Result").c_str(), kRed, kReset, kRed, Stats->FailCode, kReset);
         }
 
@@ -4411,7 +4419,7 @@ LUID luid{};
             && Context->UsedTid != Context->SponsorTid && Stats->Success
             && Stats->Source != static_cast<DWORD>(HijackSource::Sponsor))
         {
-            wprintf(L"    %ls %ls sponsor TID %ls0x%04lX%ls %lsnot usable%ls; hijacked TID %ls0x%04lX%ls\n",
+            wprintf(L"    %ls %ls Sponsor TID %ls0x%04lX%ls %lsNot Usable%ls; Hijacked TID %ls0x%04lX%ls\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Fallback").c_str(),
                 kGreen, static_cast<unsigned long>(Context->SponsorTid), kReset,
                 kYellow, kReset,
@@ -4423,25 +4431,25 @@ LUID luid{};
     {
         if (!Stats || !Stats->Attempted)
         {
-            wprintf(L"  %ls[!]%ls %ls handle: no telemetry (older runtime?).\n", kYellow, kReset, Kind);
+            wprintf(L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
             return;
         }
 
         if (Stats->Success)
         {
-            const wchar_t * SourceText = Stats->Source == static_cast<DWORD>(HijackSource::Sponsor) ? L"sponsor"
-                : Stats->Source == static_cast<DWORD>(HijackSource::Scan) ? L"scan" : L"direct";
-            wprintf(L"  %ls[+]%ls %ls handle acquired via %ls%s%ls (%ls0x%08X%ls)\n", kGreen, kReset, Kind,
+            const wchar_t * SourceText = Stats->Source == static_cast<DWORD>(HijackSource::Sponsor) ? L"Sponsor"
+                : Stats->Source == static_cast<DWORD>(HijackSource::Scan) ? L"Scan" : L"Direct";
+            wprintf(L"  %ls[+]%ls %ls Handle Acquired Via %ls%s%ls (%ls0x%08X%ls)\n", kGreen, kReset, Kind,
                 kGreen, SourceText, kReset, kGreen, Stats->NewHandle, kReset);
         }
         else if (Stats->Source == static_cast<DWORD>(HijackSource::Direct))
         {
-            wprintf(L"  %ls[+]%ls %ls handle acquired via %lsdirect%s (code %ls0x%08X%ls)\n", kGreen, kReset, Kind,
+            wprintf(L"  %ls[+]%ls %ls Handle Acquired Via %lsDirect%s (Code %ls0x%08X%ls)\n", kGreen, kReset, Kind,
                 kYellow, kReset, kYellow, Stats->FailCode, kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls %ls handle failed (code %ls0x%08X%ls)\n", kYellow, kReset, Kind,
+            wprintf(L"  %ls[!]%ls %ls Handle Failed (Code %ls0x%08X%ls)\n", kYellow, kReset, Kind,
                 kYellow, Stats->FailCode, kReset);
         }
     }
@@ -4549,7 +4557,7 @@ LUID luid{};
         case PAGE_READWRITE:         return L"PAGE_READWRITE";
         case PAGE_WRITECOPY:         return L"PAGE_WRITECOPY";
         case PAGE_NOACCESS:          return L"PAGE_NOACCESS";
-        default:                     return L"UNKNOWN";
+        default:                     return L"Unknown";
         }
     }
 
@@ -4560,7 +4568,7 @@ LUID luid{};
         bool * wx_violated, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X execution (advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X Execution (Advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         auto local_sections = [&](WORD & count) -> const IMAGE_SECTION_HEADER *
         {
@@ -4719,47 +4727,47 @@ LUID luid{};
                 if (wx_exec_uncovered == 0)
                 {
 
-                    swprintf_s(RxField, L"RX %ls%lu%ls region(s); all %ls%lu%ls executable section(s) are RX",
+                    swprintf_s(RxField, L"RX %ls%lu%ls Region(s); All %ls%lu%ls Executable Section(s) Are RX",
                         RxTint, static_cast<unsigned long>(wx_rx), kReset,
                         RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
                 }
                 else
                 {
-                    swprintf_s(RxField, L"RX missing for %ls%lu%ls of %ls%lu%ls executable section(s)",
+                    swprintf_s(RxField, L"RX Missing For %ls%lu%ls Of %ls%lu%ls Executable Section(s)",
                         RxTint, static_cast<unsigned long>(wx_exec_uncovered), kReset,
                         RxTint, static_cast<unsigned long>(wx_exec_sections), kReset);
                 }
             }
             else
             {
-                swprintf_s(RxField, L"RX %ls%lu%ls region(s), none declared by the section table",
+                swprintf_s(RxField, L"RX %ls%lu%ls Region(s), None Declared By The Section Table",
                     RxTint, static_cast<unsigned long>(wx_rx), kReset);
             }
 
-            wprintf(L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (required %ls0%ls) | %s | RW %ls%d%s\n",
+            wprintf(L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (Required %ls0%ls) | %s | RW %ls%d%s\n",
                 wx_ok ? kGreen : kYellow, wx_ok ? L"[+]" : L"[!]", kReset,
-                wx_ok ? L"verified" : L"VIOLATED",
+                wx_ok ? L"Verified" : L"Violated",
                 wx_ok ? kGreen : kYellow, wx_rwx, kReset,
                 kGreen, kReset,
                 RxField,
                 kGreen, wx_rw, kReset);
 
-            wprintf(L"      %lscoverage%s: %ls%d%s region(s), %ls%lu%s KB of %ls%lu%s KB image, %s%s%s\n",
+            wprintf(L"      %lsCoverage%s: %ls%d%s Region(s), %ls%lu%s KB Of %ls%lu%s KB Image, %s%s%s\n",
                 kDim, kReset, kGreen, wx_regions, kReset,
                 kGreen, static_cast<unsigned long>(wx_bytes / 1024), kReset,
                 kGreen, static_cast<unsigned long>(wx_image / 1024), kReset,
                 wx_reached_end ? kReset : kYellow,
-                wx_reached_end ? L"reached end of image" : L"TRUNCATED - image not fully scanned",
+                wx_reached_end ? L"Reached End Of Image" : L"Truncated - Image Not Fully Scanned",
                 kReset);
 
             {
                 const bool single = wx_alloc_bases.size() == 1;
-                wprintf(L"      %lsallocations%s: %ls%zu%s %s(%s %s%s)%s | %lsprivate%s: %ls%zu%s KB\n",
+                wprintf(L"      %lsAllocations%s: %ls%zu%s %s(%s %s%s)%s | %lsPrivate%s: %ls%zu%s KB\n",
                     kDim, kReset,
                     kGreen, wx_alloc_bases.size(), kReset,
                     single ? kGreen : kYellow,
-                    single ? L"single" : L"split across",
-                    single ? L"allocation" : L"allocations",
+                    single ? L"Single" : L"Split Across",
+                    single ? L"Allocation" : L"Allocations",
                     single ? kGreen : kYellow,
                     kReset,
                     kDim, kReset,
@@ -4768,13 +4776,13 @@ LUID luid{};
 
             for (int i = 0; i < wx_rwx_listed; ++i)
             {
-                wprintf(L"      %lsRWX region at 0x%016llX, %llu bytes%s\n", kYellow,
+                wprintf(L"      %lsRWX Region At 0x%016llX, %llu Bytes%s\n", kYellow,
                     static_cast<unsigned long long>(wx_rwx_list[i].base),
                     static_cast<unsigned long long>(wx_rwx_list[i].size), kReset);
             }
             if (wx_rwx > wx_rwx_listed)
             {
-                wprintf(L"      %ls... and %d more RWX region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
+                wprintf(L"      %ls... And %d More RWX Region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
             }
 
             // Process-wide RX census: VAD-present / PEB-absent exposure (§2.6).
@@ -4825,17 +4833,17 @@ LUID luid{};
                     }
                     census_cur = census_next;
                 }
-                wprintf(L"      %lsVAD RX census%s: image-RX %ls%lu%s | private-RX %ls%lu%s (%ls%llu%s KB) | mapped-RX %ls%lu%s%s\n",
+                wprintf(L"      %lsVAD RX Census%s: Image-RX %ls%lu%s | Private-RX %ls%lu%s (%ls%llu%s KB) | Mapped-RX %ls%lu%s%s\n",
                     kDim, kReset,
                     kGreen, rx_image, kReset,
                     rx_private ? kYellow : kGreen, rx_private, kReset,
                     rx_private ? kYellow : kGreen, rx_private_bytes / 1024, kReset,
                     kGreen, rx_mapped, kReset,
-                    census_done ? L"" : L" [TRUNCATED at 100k regions]");
+                    census_done ? L"" : L" [Truncated At 100k Regions]");
                 if (rx_private)
                 {
-                    wprintf(L"      %ls[!]%ls %ls%lu%s private-RX region(s) exist process-wide (incl. this load's image); "
-                            L"each is VAD-visible with no loader entry\n", kYellow, kReset, kYellow, rx_private, kReset);
+                    wprintf(L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
+                            L"Each Is VAD-Visible With No Loader Entry\n", kYellow, kReset, kYellow, rx_private, kReset);
                 }
             }
         }
@@ -4846,7 +4854,7 @@ LUID luid{};
             {
                 *wx_violated = true;
             }
-            wprintf(L"  %ls[!]%ls Image not queryable; W^X state unknown.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls Image Not Queryable; W^X State Unknown.\n", kYellow, kReset);
         }
         else
         {
@@ -4855,7 +4863,7 @@ LUID luid{};
             {
                 *wx_violated = true;
             }
-            wprintf(L"  %ls[!]%ls Image size unknown; W^X scan not bounded, result withheld.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls Image Size Unknown; W^X Scan Not Bounded, Result Withheld.\n", kYellow, kReset);
         }
     }
 
@@ -4863,7 +4871,7 @@ LUID luid{};
         bool & string_gate_ok, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify string encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify String Encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         auto m0 = XOR_STR_A("msdl.microsoft.com/download/symbols");
         auto m1 = XOR_STR_A("NtUserMsgWaitForMultipleObjectsEx");
@@ -4894,8 +4902,8 @@ LUID luid{};
         auto m26 = XOR_STR_A("TableEntry");
         auto m27 = XOR_STR_A("CurrentSize");
         auto m28 = XOR_STR_A("HandleAcq");
-        auto m29 = XOR_STR_A("SYMBOL_LOADER");
-        auto m30 = XOR_STR_A("SYMBOL_PARSER");
+        auto m29 = XOR_STR_A("SymbolLoader");
+        auto m30 = XOR_STR_A("SymbolParser");
         auto m31 = XOR_STR_A("DownloadManager");
         auto m32 = XOR_STR_A("TLS_ENTRY");
         auto m33 = XOR_STR_A("PATH_SEARCH_CONTEXT");
@@ -4909,6 +4917,8 @@ LUID luid{};
             m29.get(), m30.get(), m31.get(), m32.get(), m33.get(),
         };
         const size_t marker_count = sizeof(markers) / sizeof(markers[0]);
+        static_assert(sizeof(markers) / sizeof(markers[0]) == kStringMarkerCount,
+            "Update kStringMarkerCount when the marker list changes (the coverage note states it).");
 
         const std::vector<BYTE> & rt_bytes = buffers.runtime_bytes;
         const bool rt_read = buffers.runtime_read;
@@ -4929,33 +4939,33 @@ LUID luid{};
                     {
                         wide_marker[marker_len] = static_cast<wchar_t>(*c);
                     }
-                    wprintf(L"  %ls[x]%ls marker '%ls' FOUND in runtime DLL (narrow %d, wide %d).\n",
+                    wprintf(L"  %ls[x]%ls Marker '%ls' Found In Runtime DLL (Narrow %d, Wide %d).\n",
                         kRed, kReset, wide_marker, hit_narrow ? 1 : 0, hit_wide ? 1 : 0);
                 }
             }
         }
         if (!buffers.runtime_path_known)
         {
-            wprintf(L"  %ls[x]%ls Runtime path unknown; disk-marker check could not run.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Runtime Path Unknown; Disk-Marker Check Could Not Run.\n", kRed, kReset);
             string_gate_ok = false;
         }
         else if (!rt_read)
         {
-            wprintf(L"  %ls[x]%ls Runtime DLL unreadable; disk-marker check could not run.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Runtime DLL Unreadable; Disk-Marker Check Could Not Run.\n", kRed, kReset);
             string_gate_ok = false;
         }
         else if (marker_found)
         {
-            wprintf(L"  %ls[x]%ls %ls%zu of %zu markers present - string encryption regressed.%ls\n",
+            wprintf(L"  %ls[x]%ls %ls%zu Of %zu Markers Present - String Encryption Regressed.%ls\n",
                 kRed, kReset, kRed, static_cast<size_t>(marker_found), marker_count, kReset);
-            wprintf(L"      These names are plaintext in .rdata and are directly scannable in the target.\n");
-            wprintf(L"      A decrypt path that /O2 can constant-fold will always leak here; see\n");
-            wprintf(L"      the encrypted-string helper header used by the runtime build.\n");
+            wprintf(L"      These Names Are Plaintext In .rdata And Are Directly Scannable In The Target.\n");
+            wprintf(L"      A Decrypt Path That /O2 Can Constant-Fold Will Always Leak Here; See\n");
+            wprintf(L"      The Encrypted-String Helper Header Used By The Runtime Build.\n");
             string_gate_ok = false;
         }
         else
         {
-            wprintf(L"  %ls[+]%ls %ls%zu%ls markers absent from runtime DLL (ciphertext only)\n",
+            wprintf(L"  %ls[+]%ls %ls%zu%ls Markers Absent From Runtime DLL (Ciphertext Only)\n",
                 kGreen, kReset, kGreen, marker_count, kReset);
         }
 
@@ -4967,29 +4977,29 @@ LUID luid{};
 
         if (!get_string_stats || !StringStats.Reported)
         {
-            wprintf(L"  %ls[!]%ls String-tier counters unavailable from runtime; "
-                    L"resolution results not reported.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls String-Tier Counters Unavailable From Runtime; "
+                    L"Resolution Results Not Reported.\n", kYellow, kReset);
         }
         else
         {
             const bool all_symbols = StringStats.SymbolsResolved == StringStats.SymbolsDeclared;
-            wprintf(L"  %ls[+]%ls NT symbols resolved via encrypted names: %ls%lu%ls of %ls%lu%ls (import %ls%s%ls)\n",
+            wprintf(L"  %ls[+]%ls NT Symbols Resolved Via Encrypted Names: %ls%lu%ls Of %ls%lu%ls (Import %ls%s%ls)\n",
                 kGreen, kReset,
                 all_symbols ? kGreen : kYellow,
                 static_cast<unsigned long>(StringStats.SymbolsResolved), kReset,
                 all_symbols ? kGreen : kYellow,
                 static_cast<unsigned long>(StringStats.SymbolsDeclared), kReset,
                 all_symbols ? kGreen : kYellow,
-                all_symbols ? L"SUCCESS" : L"PARTIAL",
+                all_symbols ? L"Success" : L"Partial",
                 kReset);
 
-            wprintf(L"  %ls[+]%ls Encrypted names built from ciphertext, no static table: %ls%lu%ls\n",
+            wprintf(L"  %ls[+]%ls Encrypted Names Built From Ciphertext, No Static Table: %ls%lu%ls\n",
                 kGreen, kReset, kGreen,
                 static_cast<unsigned long>(StringStats.HookNamesBuilt), kReset);
 
             const bool tiers_ok = StringStats.TiersTotal != 0
                 && StringStats.TiersPassed == StringStats.TiersTotal;
-            wprintf(L"  %ls[+]%ls self-test tiers passed at import-resolve: %ls%lu%ls of %ls%lu%ls\n",
+            wprintf(L"  %ls[+]%ls Self-Test Tiers Passed At Import-Resolve: %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 tiers_ok ? kGreen : kRed,
                 static_cast<unsigned long>(StringStats.TiersPassed), kReset,
@@ -5089,6 +5099,8 @@ LUID luid{};
         int import_count = 0;
         ULONG import_total_thunks = 0;
         const char * import_problem = nullptr;
+        // Built from the actual slot capacity so the truncation notice can never drift from imports[].
+        char import_trunc_buf[64]{};
 
         if (have_local_nt)
         {
@@ -5112,7 +5124,9 @@ LUID luid{};
                             break;
                         if (import_count >= static_cast<int>(sizeof(imports) / sizeof(imports[0])))
                         {
-                            import_problem = "descriptor list truncated at 64 entries";
+                            sprintf_s(import_trunc_buf, sizeof(import_trunc_buf),
+                                "Descriptor List Truncated At %zu Entries", sizeof(imports) / sizeof(imports[0]));
+                            import_problem = import_trunc_buf;
                             break;
                         }
 
@@ -5166,7 +5180,7 @@ LUID luid{};
                 }
                 else
                 {
-                    import_problem = "import directory RVA not file-backed";
+                    import_problem = "Import Directory RVA Not File-Backed";
                 }
             }
             else
@@ -5177,7 +5191,7 @@ LUID luid{};
 
         if (import_count > 0)
         {
-            wprintf(L" %ls[+]%ls %ls%d%ls import descriptor(s), %ls%lu%ls function(s) total.\n",
+            wprintf(L" %ls[+]%ls %ls%d%ls Import Descriptor(s), %ls%lu%ls Function(s) Total.\n",
                 kGreen, kReset, kGreen, import_count, kReset, kGreen,
                 static_cast<unsigned long>(import_total_thunks), kReset);
 
@@ -5196,7 +5210,7 @@ LUID luid{};
 
                     wchar_t ordinal[8]{ 0 };
                     swprintf_s(ordinal, L"%d.", i + 1);
-                    wprintf(L"      %ls%ls%ls%lu%ls thunk(s)\n",
+                    wprintf(L"      %ls%ls%ls%lu%ls Thunk(s)\n",
                         StageField(ordinal, 6).c_str(),
                         StageField(wide, 26).c_str(),
                         kGreen, static_cast<unsigned long>(imports[i].thunk_count), kReset);
@@ -5205,7 +5219,7 @@ LUID luid{};
         }
         else
         {
-            wprintf(L"  %ls[+]%ls No statically linked import descriptors in the payload.\n", kGreen, kReset);
+            wprintf(L"  %ls[+]%ls No Statically Linked Import Descriptors In The Payload.\n", kGreen, kReset);
         }
 
         if (import_problem)
@@ -5215,7 +5229,7 @@ LUID luid{};
             {
                 wcscpy_s(problem_w, L"<unprintable>");
             }
-            wprintf(L"  %ls[!]%ls Import survey incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
+            wprintf(L"  %ls[!]%ls Import Survey Incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
         }
     }
 
@@ -5223,20 +5237,20 @@ LUID luid{};
     void StealthResolveDelayImports(bool have_local_nt, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve delay imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve Delay Imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if (have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
             auto & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
             if (dir.Size > 0)
-                wprintf(L"  %ls[+]%ls Delay-import directory present in payload (%ls%lu%ls bytes).\n",
+                wprintf(L"  %ls[+]%ls Delay-Import Directory Present In Payload (%ls%lu%ls Bytes).\n",
                     kGreen, kReset, kGreen, dir.Size, kReset);
             else
-                wprintf(L"  %ls[*]%ls No delay-import directory in module (nothing to resolve).\n", kDim, kReset);
+                wprintf(L"  %ls[*]%ls No Delay-Import Directory In Module (Nothing To Resolve).\n", kDim, kReset);
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Delay-import survey skipped: no local image to read.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Delay-Import Survey Skipped: No Local Image To Read.\n", kRed, kReset);
         }
     }
 
@@ -5245,7 +5259,7 @@ LUID luid{};
         StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize security cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize Security Cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         // The DataDirectory array lives in the erased headers, so the load-config RVA is taken from the
         // local image (identical layout) and the cookie is read back from the remote load-config block,
@@ -5277,12 +5291,12 @@ LUID luid{};
                         const unsigned long long image_base_ull =
                             static_cast<unsigned long long>(ReCa<ULONG_PTR>(hRemoteBase));
                         const bool cookie_is_image_base = cookie_value == image_base_ull;
-                        wprintf(L"  %ls[=]%ls Security cookie read-back.. %ls0x%016llX%ls at VA %ls0x%016llX%ls\n",
+                        wprintf(L"  %ls[=]%ls Security Cookie Read-Back.. %ls0x%016llX%ls At VA %ls0x%016llX%ls\n",
                             kCyan, kReset, kGreen, cookie_value, kReset, kGreen, cookie_va, kReset);
-                        wprintf(L"  %ls[*]%ls   observed %ls%s%ls the relocated image base - consistent with a "
-                                L"base-derived /GS cookie, but this is an observation, not a validation "
-                                L"(no expected value exists to compare against)\n",
-                            kDim, kReset, kCyan, cookie_is_image_base ? L"equals" : L"differs from", kReset);
+                        wprintf(L"  %ls[*]%ls   Observed %ls%s%ls The Relocated Image Base - Consistent With A "
+                                L"Base-Derived /GS Cookie, But This Is An Observation, Not A Validation "
+                                L"(No Expected Value Exists To Compare Against)\n",
+                            kDim, kReset, kCyan, cookie_is_image_base ? L"Equals" : L"Differs From", kReset);
                         cookie_reported = true;
                     }
                 }
@@ -5304,19 +5318,19 @@ LUID luid{};
                     remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
                 {
                     auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
-                    wprintf(L"  %ls[*]%ls Security cookie: no load-config cookie field in the image; "
-                            L"falling back to TLS Directory cross-check\n", kDim, kReset);
+                    wprintf(L"  %ls[*]%ls Security Cookie: No Load-Config Cookie Field In The Image; "
+                            L"Falling Back To TLS Directory Cross-Check\n", kDim, kReset);
                     if (tls->AddressOfCallBacks)
                     {
-                        wprintf(L"  %ls[=]%ls   TLS callback array VA (remote).. %ls0x%016llX%ls\n",
+                        wprintf(L"  %ls[=]%ls   TLS Callback Array VA (Remote).. %ls0x%016llX%ls\n",
                             kCyan, kReset, kGreen, static_cast<unsigned long long>(tls->AddressOfCallBacks), kReset);
-                        wprintf(L"  %ls[+]%ls   TLS callbacks present and mapped in a section (survives the header erase "
-                                L"- confirms per-image fixups ran)\n", kGreen, kReset);
+                        wprintf(L"  %ls[+]%ls   TLS Callbacks Present And Mapped In A Section (Survives The Header Erase "
+                                L"- Confirms Per-Image Fixups Ran)\n", kGreen, kReset);
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls   TLS Directory readable but AddressOfCallBacks is zero - "
-                                L"no fixed-up evidence in this image\n", kYellow, kReset);
+                        wprintf(L"  %ls[!]%ls   TLS Directory Readable But AddressOfCallBacks Is Zero - "
+                                L"No Fixed-Up Evidence In This Image\n", kYellow, kReset);
                     }
                     cookie_reported = true;
                 }
@@ -5325,8 +5339,8 @@ LUID luid{};
 
         if (!cookie_reported)
         {
-            wprintf(L"  %ls[!]%ls Security cookie: NOT VERIFIED - no load-config cookie field, no TLS directory "
-                    L"cross-check, and no readable remote header. Nothing was confirmed this step.\n",
+            wprintf(L"  %ls[!]%ls Security Cookie: Not Verified - No Load-Config Cookie Field, No TLS Directory "
+                    L"Cross-Check, And No Readable Remote Header. Nothing Was Confirmed This Step.\n",
                 kYellow, kReset);
         }
     }
@@ -5376,7 +5390,7 @@ LUID luid{};
     {
         const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable Exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         // VEH first-chance stealth survey: RPM-only PEB read (CrossProcessFlags PEB+80,
         // BeingDebugged PEB+2, NtGlobalFlag PEB+0xBC x64). No remote writes, no handler
         // installed, no allocation. Result-based: every value below was read this run.
@@ -5384,31 +5398,31 @@ LUID luid{};
             VehFirstChanceSurvey veh{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls VEH first-chance survey... %lsskipped%ls (no target handle; nothing read)\n",
+                wprintf(L"  %ls[*]%ls VEH First-Chance Survey... %lsSkipped%ls (No Target Handle; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
             {
-                wprintf(L"  %ls[+]%ls VEH first-chance survey... PEB=%p CrossFlags=%ls0x%08X%ls UsingVEH=%ls%s%ls UsingVCH=%ls%s%ls\n",
+                wprintf(L"  %ls[+]%ls VEH First-Chance Survey... PEB = %p | CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | UsingVCH = %ls%s%ls\n",
                     kGreen, kReset, veh.pebAddress,
                     kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
-                    kGreen, veh.usingVeh ? L"YES" : L"NO", kReset,
-                    kGreen, veh.usingVch ? L"YES" : L"NO", kReset);
-                wprintf(L"  %ls[+]%ls PEB debug correlates...... BeingDebugged=%ls%u%ls NtGlobalFlag=%ls0x%08X%ls (read back, not inferred)\n",
+                    kGreen, veh.usingVeh ? L"Yes" : L"No", kReset,
+                    kGreen, veh.usingVch ? L"Yes" : L"No", kReset);
+                wprintf(L"  %ls[+]%ls PEB Debug Correlates...... BeingDebugged = %ls%u%ls | NtGlobalFlag = %ls0x%08X%ls (Read Back, Not Inferred)\n",
                     kGreen, kReset,
                     kGreen, static_cast<unsigned>(veh.beingDebugged), kReset,
                     kGreen, static_cast<unsigned>(veh.ntGlobalFlag), kReset);
-                wprintf(L"  %ls[*]%ls VEH chain entries added by launcher: %ls0%ls (by design; survey is read-only, installs nothing)\n",
+                wprintf(L"  %ls[*]%ls VEH Chain Entries Added By Launcher: %ls0%ls (By Design; Survey Is Read-Only, Installs Nothing)\n",
                     kDim, kReset, kCyan, kReset);
                 if (veh.usingVeh)
                 {
-                    wprintf(L"  %ls[!]%ls Target uses VEH first-chance: payload exceptions go to target VEH first; "
-                            L"SEH-only payload has no VEH handler (see Verify step)\n", kYellow, kReset);
+                    wprintf(L"  %ls[!]%ls Target Uses VEH First-Chance: Payload Exceptions Go To Target VEH First; "
+                            L"SEH-Only Payload Has No VEH Handler (See Verify Step)\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls VEH first-chance survey... %lsREAD FAILED%ls (err 0x%08X; nothing proven)\n",
+                wprintf(L"  %ls[!]%ls VEH First-Chance Survey... %lsRead Failed%ls (Err 0x%08X; Nothing Proven)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
@@ -5416,9 +5430,9 @@ LUID luid{};
         // here without leaving any net entry. Result-based, zero-trace by construction.
         {
             const bool local_veh_ok = ProbeLocalVehPathRoundTrip();
-            wprintf(L"  %ls[%ls]%ls Local VEH path self-test.... %ls%s%ls (add+remove round-trip, net entries 0)\n",
+            wprintf(L"  %ls[%ls]%ls Local VEH Path Self-Test.... %ls%s%ls (Add+Remove Round-Trip, Net Entries 0)\n",
                 local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"+" : L"!", kReset,
-                local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"OK" : L"FAILED", kReset);
+                local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"OK" : L"Failed", kReset);
         }
         wprintf(L"\n");
 
@@ -5429,7 +5443,7 @@ LUID luid{};
             if (exception_dir.Size)
             {
                 const DWORD entry_count = exception_dir.Size / static_cast<DWORD>(sizeof(RUNTIME_FUNCTION));
-                wprintf(L"  %ls[+]%ls Exception directory    : RVA %ls0x%08X%ls  size %ls0x%08X%ls  %ls%lu%s entry(ies)\n",
+                wprintf(L"  %ls[+]%ls Exception Directory    = RVA %ls0x%08X%ls  Size %ls0x%08X%ls  %ls%lu%s Entry(ies)\n",
                     kGreen, kReset,
                     kGreen, exception_dir.VirtualAddress, kReset,
                     kGreen, exception_dir.Size, kReset,
@@ -5440,13 +5454,13 @@ LUID luid{};
                 SIZE_T got = 0;
                 if (process && ReadProcessMemory(process, ReCa<void *>(remote_table), &probe, sizeof(probe), &got) && got == sizeof(probe))
                 {
-                    wprintf(L"  %ls[+]%ls .pdata table     : %ls0x%016llX%ls  first %ls0x%08X%s - %s0x%08X%s\n",
+                    wprintf(L"  %ls[+]%ls .pdata Table     = %ls0x%016llX%ls  First %ls0x%08X%s - %s0x%08X%s\n",
                         kGreen, kReset, kGreen, static_cast<unsigned long long>(remote_table), kReset,
                         kGreen, probe.BeginAddress, kReset, kGreen, probe.EndAddress, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls .pdata table not readable at 0x%016llX\n", kYellow, kReset,
+                    wprintf(L"  %ls[!]%ls .pdata Table Not Readable At 0x%016llX\n", kYellow, kReset,
                         static_cast<unsigned long long>(remote_table));
                 }
             }
@@ -5454,7 +5468,7 @@ LUID luid{};
             {
                 // Absence is an observation, not a pass: nothing was checked because there was
                 // nothing to check. Green here would read as "verified" in a summary.
-                wprintf(L"  %ls[*]%ls No exception directory present in the payload (nothing to verify).\n", kDim, kReset);
+                wprintf(L"  %ls[*]%ls No Exception Directory Present In The Payload (Nothing To Verify).\n", kDim, kReset);
             }
         }
 
@@ -5463,14 +5477,14 @@ LUID luid{};
         // inverted table even when INJ_MM_ENABLE_EXCEPTIONS was clear and no call was ever made.
         if (exceptions_active(INJ_MM_ENABLE_EXCEPTIONS))
         {
-            wprintf(L"  %ls[*]%ls Inverted function table: %lsrequested%ls via %ls%s%ls "
-                    L"(in-shell call returned success; table contents are process-internal and not verifiable from outside)\n",
+            wprintf(L"  %ls[*]%ls Inverted Function Table: %lsRequested%ls Via %ls%s%ls "
+                    L"(In-Shell Call Returned Success; Table Contents Are Process-Internal And Not Verifiable From Outside)\n",
                 kDim, kReset, kCyan, kReset, kCyan, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
         }
         else
         {
-            wprintf(L"  %ls[*]%ls Inverted function table: %lsnot requested%ls "
-                    L"(INJ_MM_ENABLE_EXCEPTIONS clear - %ls was never called)\n",
+            wprintf(L"  %ls[*]%ls Inverted Function Table: %lsNot Requested%ls "
+                    L"(INJ_MM_ENABLE_EXCEPTIONS Clear - %ls Was Never Called)\n",
                 kDim, kReset, kYellow, kReset, XOR_STR_W(L"RtlAddFunctionTable").get());
         }
     }
@@ -5481,7 +5495,7 @@ LUID luid{};
         f_GetLastStringStats get_string_stats, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify exception handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify Exception Handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
         // Marker policy for this step:
@@ -5493,35 +5507,35 @@ LUID luid{};
             VehFirstChanceSurvey veh{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsskipped%ls (no target handle)\n",
+                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsSkipped%ls (No Target Handle)\n",
                     kDim, kReset, kYellow, kReset);
-                wprintf(L"  %ls[*]%ls Target VEH first-chance........ %lsskipped%ls (no target handle; nothing read)\n",
+                wprintf(L"  %ls[*]%ls Target VEH First-Chance........ %lsSkipped%ls (No Target Handle; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design; survey installs nothing)\n",
+                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design; Survey Installs Nothing)\n",
                     kDim, kReset, kCyan, kReset);
-                wprintf(L"  %ls[+]%ls Target VEH first-chance........ CrossFlags=%ls0x%08X%ls UsingVEH=%ls%s%ls PEB=%p (read back)\n",
+                wprintf(L"  %ls[+]%ls Target VEH First-Chance........ CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | PEB = %p (Read Back)\n",
                     kGreen, kReset,
                     kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
-                    kGreen, veh.usingVeh ? L"YES" : L"NO", kReset, veh.pebAddress);
+                    kGreen, veh.usingVeh ? L"Yes" : L"No", kReset, veh.pebAddress);
                 if (veh.usingVeh)
                 {
-                    wprintf(L"  %ls[!]%ls First-chance gap............... target VEH active; INT3/AV goes to target VEH first; "
-                            L"payload installs no VEH (stealth: avoids chain entry)\n", kYellow, kReset);
+                    wprintf(L"  %ls[!]%ls First-Chance Gap............... Target VEH Active; INT3/AV Goes To Target VEH First; "
+                            L"Payload Installs No VEH (Stealth: Avoids Chain Entry)\n", kYellow, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[+]%ls First-chance posture........... target VEH flag clear; SEH-table path sufficient for payload\n",
+                    wprintf(L"  %ls[+]%ls First-Chance Posture........... Target VEH Flag Clear; SEH-Table Path Sufficient For Payload\n",
                         kGreen, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH shell............ %lsnone installed%ls (by design)\n",
+                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design)\n",
                     kDim, kReset, kCyan, kReset);
-                wprintf(L"  %ls[!]%ls Target VEH first-chance........ %lsREAD FAILED%ls (err 0x%08X)\n",
+                wprintf(L"  %ls[!]%ls Target VEH First-Chance........ %lsRead Failed%ls (Err 0x%08X)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
@@ -5533,7 +5547,7 @@ LUID luid{};
             DebugPortSurvey dbg{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls Target debug port............ %lsskipped%ls (no target handle)\n",
+                wprintf(L"  %ls[*]%ls Target Debug Port............ %lsSkipped%ls (No Target Handle)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteDebugPort(process, dbg) && (dbg.portReadOk || dbg.flagsReadOk))
@@ -5541,25 +5555,25 @@ LUID luid{};
                 if (dbg.portReadOk)
                 {
                     const bool clean = (dbg.debugPort == nullptr);
-                    wprintf(L"  %ls[%ls]%ls Target debug port............ %ls%p%ls (%ls)\n",
+                    wprintf(L"  %ls[%ls]%ls Target Debug Port............ %ls%p%ls (%ls)\n",
                         clean ? kGreen : kYellow, clean ? L"+" : L"!", kReset,
                         clean ? kGreen : kYellow, dbg.debugPort, kReset,
-                        clean ? L"none attached" : L"DEBUGGER PORT SET");
+                        clean ? L"None Attached" : L"Debugger Port Set");
                 }
                 if (dbg.flagsReadOk)
                 {
-                    wprintf(L"  %ls[+]%ls Target debug flags........... %ls0x%08X%ls (read back)\n",
+                    wprintf(L"  %ls[+]%ls Target Debug Flags........... %ls0x%08X%ls (Read Back)\n",
                         kGreen, kReset, kGreen, static_cast<unsigned>(dbg.debugFlags), kReset);
                 }
                 if (!dbg.portReadOk)
                 {
-                    wprintf(L"  %ls[!]%ls Target debug port............ %lsUNREADABLE%ls (status 0x%08X; needs QUERY_INFORMATION)\n",
+                    wprintf(L"  %ls[!]%ls Target Debug Port............ %lsUnreadable%ls (Status 0x%08X; Needs QUERY_INFORMATION)\n",
                         kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus));
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Target debug port............ %lsUNKNOWN%ls (query failed; not treated as clean; port status 0x%08X, flags status 0x%08X)\n",
+                wprintf(L"  %ls[!]%ls Target Debug Port............ %lsUnknown%ls (Query Failed; Not Treated As Clean; Port Status 0x%08X, Flags Status 0x%08X)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
@@ -5571,26 +5585,26 @@ LUID luid{};
             const BOOL local_present = IsDebuggerPresent();
             BOOL self_remote = FALSE;
             const BOOL self_ok = CheckRemoteDebuggerPresent(GetCurrentProcess(), &self_remote);
-            wprintf(L"  %ls[%ls]%ls Local debugger self-check... IsDebuggerPresent=%ls%s%ls CheckRemote=%ls%s%s (%ls)\n",
+            wprintf(L"  %ls[%ls]%ls Local Debugger Self-Check... IsDebuggerPresent = %ls%s%ls | CheckRemote = %ls%s%s (%ls)\n",
                 local_present ? kYellow : kGreen, local_present ? L"!" : L"+", kReset,
-                local_present ? kYellow : kGreen, local_present ? L"TRUE" : L"FALSE", kReset,
-                kGreen, self_ok ? (self_remote ? L"TRUE" : L"FALSE") : L"QUERY FAILED", kReset,
-                self_ok ? L"shape verified" : L"unverified here");
+                local_present ? kYellow : kGreen, local_present ? L"True" : L"False", kReset,
+                kGreen, self_ok ? (self_remote ? L"True" : L"False") : L"Query Failed", kReset,
+                self_ok ? L"Shape Verified" : L"Unverified Here");
             if (local_present)
             {
-                wprintf(L"  %ls[!]%ls Launcher itself is debugged: target PEB/TLS guards would fire on the GAME, not here — detach before a real run\n",
+                wprintf(L"  %ls[!]%ls Launcher Itself Is Debugged: Target PEB/TLS Guards Would Fire On The Game, Not Here — Detach Before A Real Run\n",
                     kYellow, kReset);
             }
         }
 
         const bool exceptions_on = isActive(INJ_MM_ENABLE_EXCEPTIONS);
-        wprintf(L"  %ls%s%ls SEH coverage................... %ls%s%ls\n",
+        wprintf(L"  %ls%s%ls SEH Coverage................... %ls%s%ls\n",
             exceptions_on ? L"[+]" : L"[*]",
             exceptions_on ? kGreen : kDim, kReset,
             exceptions_on ? kGreen : kYellow,
             exceptions_on
-                ? L"dynamic function table (RtlAddFunctionTable), VEH-free + reversible; in-shell call returned success (table internals not externally observable)"
-                : L"disabled (INJ_MM_ENABLE_EXCEPTIONS clear) - payload exceptions are NOT covered",
+                ? L"Dynamic Function Table (RtlAddFunctionTable), VEH-Free + Reversible; In-Shell Call Returned Success (Table Internals Not Externally Observable)"
+                : L"Disabled (INJ_MM_ENABLE_EXCEPTIONS Clear) - Payload Exceptions Are Not Covered",
             kReset);
 
         STRING_STATS stealth_fix_stats{};
@@ -5603,13 +5617,13 @@ LUID luid{};
         {
             const bool all_imports =
                 stealth_fix_stats.SymbolsResolved == stealth_fix_stats.SymbolsDeclared;
-            wprintf(L"  %ls[+]%ls Encrypted NT imports............ %ls%lu%ls of %ls%lu%ls\n",
+            wprintf(L"  %ls[+]%ls Encrypted NT Imports............ %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 all_imports ? kGreen : kYellow,
                 static_cast<unsigned long>(stealth_fix_stats.SymbolsResolved), kReset,
                 all_imports ? kGreen : kYellow,
                 static_cast<unsigned long>(stealth_fix_stats.SymbolsDeclared), kReset);
-            wprintf(L"  %ls[+]%ls Self-test tiers................. %ls%lu%ls of %ls%lu%ls\n",
+            wprintf(L"  %ls[+]%ls Self-Test Tiers................. %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
                 static_cast<unsigned long>(stealth_fix_stats.TiersPassed), kReset,
@@ -5618,7 +5632,7 @@ LUID luid{};
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Encrypted NT import counters.... %lsUNAVAILABLE%ls (cannot verify VEH import removal from runtime)\n",
+            wprintf(L"  %ls[!]%ls Encrypted NT Import Counters.... %lsUnavailable%ls (Cannot Verify VEH Import Removal From Runtime)\n",
                 kYellow, kReset, kYellow, kReset);
         }
 
@@ -5628,14 +5642,14 @@ LUID luid{};
             const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
             if (exception_dir.Size)
             {
-                wprintf(L"  %ls[+]%ls Payload exception data.......... RVA %ls0x%08X%ls, %ls%lu%ls entries\n",
+                wprintf(L"  %ls[+]%ls Payload Exception Data.......... RVA %ls0x%08X%ls, %ls%lu%ls Entries\n",
                     kGreen, kReset,
                     kGreen, exception_dir.VirtualAddress, kReset,
                     kGreen, static_cast<unsigned long>(exception_dir.Size / sizeof(RUNTIME_FUNCTION)), kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Payload exception data.......... none; SEH-only cannot unwind payload exceptions\n",
+                wprintf(L"  %ls[!]%ls Payload Exception Data.......... None; SEH-Only Cannot Unwind Payload Exceptions\n",
                     kYellow, kReset);
             }
         }
@@ -5644,21 +5658,21 @@ LUID luid{};
             const bool any_table = exec->DynamicTableInstalled || exec->InvertedTableInstalled;
             if (any_table)
             {
-                wprintf(L"  %ls[+]%ls Structured Exceptions: Dynamic=%ls%s%ls Inverted=%ls%s%ls Entry=%p (verified in-shell)\n",
-                    kGreen, kReset, kGreen, exec->DynamicTableInstalled ? L"YES" : L"NO", kReset,
-                    kGreen, exec->InvertedTableInstalled ? L"YES" : L"NO", kReset, exec->InvertedTableEntryBase);
+                wprintf(L"  %ls[+]%ls Structured Exceptions: Dynamic = %ls%s%ls | Inverted = %ls%s%ls | Entry = %p (Verified In-Shell)\n",
+                    kGreen, kReset, kGreen, exec->DynamicTableInstalled ? L"Yes" : L"No", kReset,
+                    kGreen, exec->InvertedTableInstalled ? L"Yes" : L"No", kReset, exec->InvertedTableEntryBase);
             }
             else
             {
                 // Nothing was installed. This must not carry a [+] marker: it is an absent
                 // capability, not a verified one, and the caller decides whether that is acceptable.
-                wprintf(L"  %ls[*]%ls Structured Exceptions: none installed (Dynamic=NO Inverted=NO) - payload exceptions are not covered\n",
+                wprintf(L"  %ls[*]%ls Structured Exceptions: None Installed (Dynamic = No | Inverted = No) - Payload Exceptions Are Not Covered\n",
                     kDim, kReset);
             }
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Exception telemetry unavailable (host read-back failed).\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Exception Telemetry Unavailable (Host Read-Back Failed).\n", kRed, kReset);
         }
     }
 
@@ -5712,26 +5726,26 @@ LUID luid{};
             // Marker must follow the result: configured != executed, or any failure, is not a pass.
             const bool tls_ok = exec->TlsCallbacksConfigured == exec->TlsCallbacksExecuted &&
                 exec->TlsCallbacksFailed == 0;
-            wprintf(L"  %ls%s%ls TLS Initialized: %u configured -> %u executed, %u failed (in-shell read-back)\n",
+            wprintf(L"  %ls%s%ls TLS Initialized: %u Configured -> %u Executed, %u Failed (In-Shell Read-Back)\n",
                 tls_ok ? L"[+]" : L"[!]",
                 tls_ok ? kGreen : kYellow, kReset,
                 exec->TlsCallbacksConfigured, exec->TlsCallbacksExecuted, exec->TlsCallbacksFailed);
             if (exec->TlsLastExecutedAddress)
             {
-                wprintf(L"  %ls[*]%ls Last executed TLS callback: %p (address only - not re-read to confirm it ran)\n",
+                wprintf(L"  %ls[*]%ls Last Executed TLS Callback: %p (Address Only - Not Re-Read To Confirm It Ran)\n",
                     kDim, kReset, exec->TlsLastExecutedAddress);
             }
             if (exec->TlsCallbacksFailed)
             {
-                wprintf(L"  %ls[x]%ls TLS callback failure: %u callback(s) rejected (verified ground truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
+                wprintf(L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
         }
         else if (tls_callbacks > 0)
-            wprintf(L"  %ls[!]%ls %ls%d%ls TLS callback(s) declared; in-shell telemetry unavailable (advisory only).\n",
+            wprintf(L"  %ls[!]%ls %ls%d%ls TLS Callback(s) Declared; In-Shell Telemetry Unavailable (Advisory Only).\n",
                 kYellow, kReset, kYellow, tls_callbacks, kReset);
         else
 
-            wprintf(L"  %ls[*]%ls No TLS callbacks present (callback array empty or absent) - nothing executed.\n",
+            wprintf(L"  %ls[*]%ls No TLS Callbacks Present (Callback Array Empty Or Absent) - Nothing Executed.\n",
                 kDim, kReset);
     }
 
@@ -5742,12 +5756,12 @@ LUID luid{};
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_DLL_MAIN) == 0)
         {
-            wprintf(L"  %ls[*]%ls DllMain skipped: INJ_MM_RUN_DLL_MAIN not set (no payload entry invoked).\n", kDim, kReset);
+            wprintf(L"  %ls[*]%ls DllMain Skipped: INJ_MM_RUN_DLL_MAIN Not Set (No Payload Entry Invoked).\n", kDim, kReset);
             return;
         }
         if (!exec)
         {
-            wprintf(L"  %ls[x]%ls DllMain unverified: no execution telemetry (host read-back failed).\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls DllMain Unverified: No Execution Telemetry (Host Read-Back Failed).\n", kRed, kReset);
             return;
         }
         const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
@@ -5755,21 +5769,21 @@ LUID luid{};
         // discriminator between "refused to initialize" and "never ran". A payload with no
         // entry point (AddressOfEntryPoint == 0) is skipped by the shell, which leaves both
         // DllMainResult and the cycle counter at their defaults; reporting that as
-        // "returned FALSE (verified failure)" contradicted a SUCCESS return code in a run
+        // "returned False (verified failure)" contradicted a Success return code in a run
         // where every stage had actually completed.
         if (exec->DllMainCyclesDelta == 0)
         {
-            wprintf(L"  %ls[*]%ls DllMain not entered: cycle counter is 0, so the shell never called the "
-                    L"entry point (no entry point in the image, or an earlier stage aborted). "
-                    L"No pass/fail is claimed.\n", kDim, kReset);
+            wprintf(L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
+                    L"Entry Point (No Entry Point In The Image, Or An Earlier Stage Aborted). "
+                    L"No Pass/Fail Is Claimed.\n", kDim, kReset);
             return;
         }
-        wprintf(L"  %ls[+]%ls DllMain Execution: RETURN=%ls%s%ls | LastError=0x%08X | Cycles=%llu (~%.2f ms)\n",
-            kGreen, kReset, kGreen, exec->DllMainResult ? L"TRUE" : L"FALSE", kReset,
+        wprintf(L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu (~%.2f ms)\n",
+            kGreen, kReset, kGreen, exec->DllMainResult ? L"True" : L"False", kReset,
             exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms);
         if (!exec->DllMainResult)
         {
-            wprintf(L"  %ls[x]%ls DllMain returned FALSE (verified failure; shell aborts with INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
         }
     }
 
@@ -5777,15 +5791,15 @@ LUID luid{};
     void StealthRunUnderLoaderLock(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run under loader lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run Under Loader Lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_UNDER_LDR_LOCK) == 0)
         {
-            wprintf(L"  %ls[*]%ls Loader lock not requested (INJ_MM_RUN_UNDER_LDR_LOCK clear).\n", kDim, kReset);
+            wprintf(L"  %ls[*]%ls Loader Lock Not Requested (INJ_MM_RUN_UNDER_LDR_LOCK Clear).\n", kDim, kReset);
             return;
         }
         if (!exec)
         {
-            wprintf(L"  %ls[x]%ls Loader-lock unverified: no execution telemetry.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Loader-Lock Unverified: No Execution Telemetry.\n", kRed, kReset);
             return;
         }
         // The lock is taken inside the DllMain step, so if DllMain was never entered the NTSTATUS
@@ -5793,19 +5807,19 @@ LUID luid{};
         // "not attempted", not a non-zero failure, and must not be reported as a failure.
         if (exec->DllMainCyclesDelta == 0)
         {
-            wprintf(L"  %ls[*]%ls Loader lock not attempted: it is taken inside the DllMain step and DllMain "
-                    L"was never entered (status fields still hold the 0x%08X sentinel). No pass/fail is claimed.\n",
+            wprintf(L"  %ls[*]%ls Loader Lock Not Attempted: It Is Taken Inside The DllMain Step And DllMain "
+                    L"Was Never Entered (Status Fields Still Hold The 0x%08X Sentinel). No Pass/Fail Is Claimed.\n",
                 kDim, kReset, (unsigned)exec->LdrLockStatus);
             return;
         }
-        wprintf(L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus=0x%08X | Cookie=0x%llX | State=%u\n",
+        wprintf(L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus = 0x%08X | Cookie = 0x%llX | State = %u\n",
             kGreen, kReset, (unsigned)exec->LdrLockStatus,
             (unsigned long long)exec->LoaderLockCookie, exec->LoaderLockState);
-        wprintf(L"  %ls[+]%ls Loader Lock Released: LdrUnlockStatus=0x%08X\n",
+        wprintf(L"  %ls[+]%ls Loader Lock Released: LdrUnlockStatus = 0x%08X\n",
             kGreen, kReset, (unsigned)exec->LdrUnlockStatus);
         if (exec->LdrLockStatus != 0 || exec->LdrUnlockStatus != 0)
         {
-            wprintf(L"  %ls[x]%ls Loader-lock NTSTATUS non-zero (verified failure path).\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Loader-Lock NTSTATUS Non-Zero (Verified Failure Path).\n", kRed, kReset);
         }
     }
 
@@ -5813,7 +5827,7 @@ LUID luid{};
     void StealthCleanDataDirectories(const MAP_STATS * MapStats, bool have_remote_nt, BYTE * nt_data, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Clean data directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Clean Data Directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         const bool have_shell_report = MapStats &&
             (MapStats->CleanedMask || MapStats->ImportSize || MapStats->DelayImportSize ||
              MapStats->RelocSize || MapStats->TlsSize || MapStats->DebugSize || MapStats->ExportSize);
@@ -5829,7 +5843,7 @@ LUID luid{};
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_TLS) & 1), kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DEBUG) & 1), kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_EXPORT) & 1), kReset);
-            wprintf(L"  %ls[+]%ls Pre-clean sizes: Import %ls0x%08X%ls | DelayImport %ls0x%08X%ls | Reloc %ls0x%08X%ls | TLS %ls0x%08X%ls | Debug %ls0x%08X%ls | Export %ls0x%08X%ls\n",
+            wprintf(L"  %ls[+]%ls Pre-Clean Sizes: Import = %ls0x%08X%ls | DelayImport = %ls0x%08X%ls | Reloc = %ls0x%08X%ls | TLS = %ls0x%08X%ls | Debug = %ls0x%08X%ls | Export = %ls0x%08X%ls\n",
                 kGreen, kReset,
                 kGreen, MapStats->ImportSize, kReset,
                 kGreen, MapStats->DelayImportSize, kReset,
@@ -5876,7 +5890,7 @@ LUID luid{};
                 }
             }
             const bool all_cleaned = (satisfied == populated);
-            wprintf(L"  %ls%s%ls %ls%zu of %zu%ls non-empty director%s reported cleaned by the mapper%s%s.\n",
+            wprintf(L"  %ls%s%ls %ls%zu Of %zu%ls Non-Empty Director%s Reported Cleaned By The Mapper%s%s.\n",
                 all_cleaned ? L"[+]" : L"[x]",
                 all_cleaned ? kGreen : kRed, kReset,
                 kGreen, satisfied, populated, kReset,
@@ -5884,20 +5898,27 @@ LUID luid{};
                 all_cleaned ? L"" : L" - unreported: ", missed);
             if (MapStats->Verified)
             {
-                wprintf(L"  %ls[+]%ls Payload-side re-read after header cloak: residual mask "
-                        L"0x%08X across all %zu directories (mapper-side snapshot).\n",
+                wprintf(L"  %ls[+]%ls Payload-Side Re-Read After Header Cloak: Residual Mask "
+                        L"0x%08X Across All %zu Directories (Mapper-Side Snapshot).\n",
                     kGreen, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
             }
             else if (MapStats->ResidualMask)
             {
-                wprintf(L"  %ls[!]%ls Re-read found %d directory entry/entries still non-zero "
-                        L"(mask 0x%08X).\n",
-                    kYellow, kReset, static_cast<int>(MapStats->ResidualMask), MapStats->ResidualMask);
+                // ResidualMask is a bitmask (one bit per directory), so its raw value is NOT the
+                // number of residual directories. Popcount it before reporting a count.
+                int residual_dirs = 0;
+                for (DWORD bits = MapStats->ResidualMask; bits; bits &= (bits - 1))
+                {
+                    ++residual_dirs;
+                }
+                wprintf(L"  %ls[!]%ls Re-Read Found %d Directory Entry/Entries Still Non-Zero "
+                        L"(Mask 0x%08X).\n",
+                    kYellow, kReset, residual_dirs, MapStats->ResidualMask);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Payload reported success but performed no read-back "
-                        L"verification.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Payload Reported Success But Performed No Read-Back "
+                        L"Verification.\n", kYellow, kReset);
             }
             if (have_remote_nt && nt_data)
             {
@@ -5912,18 +5933,18 @@ LUID luid{};
                     dd[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0;
                 if (all_zero)
                 {
-                    wprintf(L"  %ls[+]%ls Remote directories confirmed zeroed post-clean.\n", kGreen, kReset);
+                    wprintf(L"  %ls[+]%ls Remote Directories Confirmed Zeroed Post-Clean.\n", kGreen, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls Remote directories retain entries post-clean.\n", kYellow, kReset);
+                    wprintf(L"  %ls[!]%ls Remote Directories Retain Entries Post-Clean.\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[*]%ls Cross-process re-read NOT PERFORMED: the header is intentionally "
-                        L"cloaked (PAGE_NOACCESS) by the mapper before control returns, so the host cannot "
-                        L"read the directory table back. This is a coverage gap, not a pass.\n",
+                wprintf(L"  %ls[*]%ls Cross-Process Re-Read Not Performed: The Header Is Intentionally "
+                        L"Cloaked (PAGE_NOACCESS) By The Mapper Before Control Returns, So The Host Cannot "
+                        L"Read The Directory Table Back. This Is A Coverage Gap, Not A Pass.\n",
                     kDim, kReset);
             }
         }
@@ -5934,14 +5955,25 @@ LUID luid{};
             {
                 return nt->OptionalHeader.DataDirectory[idx].Size == 0 ? 0 : 1;
             };
-            const int non_zero = present(IMAGE_DIRECTORY_ENTRY_IMPORT) +
-                present(IMAGE_DIRECTORY_ENTRY_BASERELOC) +
-                present(IMAGE_DIRECTORY_ENTRY_TLS) +
-                present(IMAGE_DIRECTORY_ENTRY_EXCEPTION) +
-                present(IMAGE_DIRECTORY_ENTRY_SECURITY) +
-                present(IMAGE_DIRECTORY_ENTRY_DEBUG) +
-                present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR);
-            wprintf(L"  %ls%s%ls Import=%ls%d%ls Reloc=%ls%d%ls TLS=%ls%d%ls Exception=%ls%d%ls Security=%ls%d%ls Debug=%ls%d%ls GlobalPtr=%ls%d%ls\n",
+            // The surveyed set is listed once so the "N Of M" denominator below is derived from it
+            // rather than restated as a literal that could drift from the sum.
+            const int surveyed_dirs[] =
+            {
+                IMAGE_DIRECTORY_ENTRY_IMPORT,
+                IMAGE_DIRECTORY_ENTRY_BASERELOC,
+                IMAGE_DIRECTORY_ENTRY_TLS,
+                IMAGE_DIRECTORY_ENTRY_EXCEPTION,
+                IMAGE_DIRECTORY_ENTRY_SECURITY,
+                IMAGE_DIRECTORY_ENTRY_DEBUG,
+                IMAGE_DIRECTORY_ENTRY_GLOBALPTR,
+            };
+            int non_zero = 0;
+            for (const int idx : surveyed_dirs)
+            {
+                non_zero += present(idx);
+            }
+            constexpr int kSurveyedDirs = static_cast<int>(sizeof(surveyed_dirs) / sizeof(surveyed_dirs[0]));
+            wprintf(L"  %ls%s%ls Import = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Exception = %ls%d%ls | Security = %ls%d%ls | Debug = %ls%d%ls | GlobalPtr = %ls%d%ls\n",
                 non_zero == 0 ? L"[+]" : L"[!]",
                 non_zero == 0 ? kGreen : kYellow, kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_IMPORT), kReset,
@@ -5953,14 +5985,15 @@ LUID luid{};
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR), kReset);
             // No mapper telemetry for this run: the numbers below come from a single header read,
             // not from an independent re-read, so this is weaker evidence than the branch above.
-            wprintf(L"  %ls[*]%ls %ls%d%ls of 7 surveyed directories non-zero (read from the remote header "
-                    L"only - no mapper telemetry this run, so no independent confirmation).\n",
-                kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset);
+            wprintf(L"  %ls[*]%ls %ls%d%ls Of %ls%d%ls Surveyed Directories Non-Zero (Read From The Remote Header "
+                    L"Only - No Mapper Telemetry This Run, So No Independent Confirmation).\n",
+                kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset,
+                kDim, kSurveyedDirs, kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls All data directories zeroed; no mapper telemetry and no readable header, "
-                    L"so the wipe is unverified this run.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls All Data Directories Zeroed; No Mapper Telemetry And No Readable Header, "
+                    L"So The Wipe Is Unverified This Run.\n", kYellow, kReset);
         }
     }
 
@@ -5969,7 +6002,7 @@ LUID luid{};
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set page protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set Page Protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         // Declared layout from local PE.
         WORD sec_count = 0;
         const IMAGE_SECTION_HEADER * secs = nullptr;
@@ -5992,7 +6025,7 @@ LUID luid{};
             }
         }
         wprintf(L"  %ls[=]%ls Target Section Layout & Verification:\n", kGreen, kReset);
-        wprintf(L"  %-8s %-11s %-11s %-11s %-13s %-13s %s\n", L"NAME", L"VIRT-ADDR", L"VIRT-SIZE", L"RAW-SIZE", L"DECLARED", L"QUERIED", L"VERIFICATION");
+        wprintf(L"  %-8s %-11s %-11s %-11s %-13s %-13s %s\n", L"Name", L"Virt-Addr", L"Virt-Size", L"Raw-Size", L"Declared", L"Queried", L"Verification");
         int rwx_count = 0;
         int mismatch = 0;
         if (secs && process)
@@ -6015,8 +6048,8 @@ LUID luid{};
                 wprintf(L"  %-8s 0x%08X  0x%08X  0x%08X  %-13s %-13s %ls\n",
                     wname, secs[s].VirtualAddress,
                     secs[s].Misc.VirtualSize, secs[s].SizeOfRawData,
-                    StealthPageDesc(declared), qok ? StealthPageDesc(queried) : L"UNQUERYABLE",
-                    match ? L"[MATCH / [+]]" : L"[MISMATCH / [x]]");
+                    StealthPageDesc(declared), qok ? StealthPageDesc(queried) : L"Unqueryable",
+                    match ? L"[Match / [+]]" : L"[Mismatch / [x]]");
             }
         }
         // Full-span W^X tally (two-pass: pre Dim, post assert).
@@ -6046,26 +6079,26 @@ LUID luid{};
             // A section-level mismatch is a real failure even when RWX==0, so it must not ride a
             // green marker. Header page (PAGE_NOACCESS) is intentionally excluded from the tally.
             const bool wx_clean = (rwx_count == 0 && mismatch == 0);
-            wprintf(L"  %ls%s%ls RWX=%ls%d%ls RO=%ls%d%ls RW=%ls%d%ls RX=%ls%d%ls PrivateExec=%ls%d%ls Mismatch=%ls%d%ls\n",
+            wprintf(L"  %ls%s%ls RWX = %ls%d%ls | RO = %ls%d%ls | RW = %ls%d%ls | RX = %ls%d%ls | PrivateExec = %ls%d%ls | Mismatch = %ls%d%ls\n",
                 wx_clean ? L"[+]" : L"[x]",
                 wx_clean ? kGreen : kRed, kReset, rwx_count ? kRed : kGreen, rwx_count, kReset,
                 kGreen, ro_count, kReset, kGreen, rw_count, kReset, kGreen, rx_count, kReset,
                 kGreen, priv_exec_count, kReset, mismatch ? kRed : kGreen, mismatch, kReset);
             if (wx_clean)
-                wprintf(L"  %ls[+]%ls Strict W^X posture enforced (RWX==0 and 0 section mismatches, "
-                        L"verified by VirtualQueryEx walk).\n", kGreen, kReset);
+                wprintf(L"  %ls[+]%ls Strict W^X Posture Enforced (RWX == 0 And 0 Section Mismatches, "
+                        L"Verified By VirtualQueryEx Walk).\n", kGreen, kReset);
             else
             {
                 if (rwx_count)
-                    wprintf(L"  %ls[x]%ls W^X VIOLATION: %d RWX region(s) (verified ground truth).\n", kRed, kReset, rwx_count);
+                    wprintf(L"  %ls[x]%ls W^X Violation: %d RWX Region(s) (Verified Ground Truth).\n", kRed, kReset, rwx_count);
                 if (mismatch)
-                    wprintf(L"  %ls[x]%ls %d section(s) whose queried protection differs from the declared "
-                            L"protection (see per-section VERIFICATION column).\n", kRed, kReset, mismatch);
+                    wprintf(L"  %ls[x]%ls %d Section(s) Whose Queried Protection Differs From The Declared "
+                            L"Protection (See Per-Section Verification Column).\n", kRed, kReset, mismatch);
             }
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Section protections UNVERIFIED: remote pages not queryable (hard gate failure).\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Section Protections Unverified: Remote Pages Not Queryable (Hard Gate Failure).\n", kRed, kReset);
         }
     }
 
@@ -6076,7 +6109,7 @@ LUID luid{};
         int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify forensic posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify Forensic Posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         const std::vector<BYTE> & posture_bytes = buffers.runtime_bytes;
         const bool posture_read = buffers.runtime_read;
@@ -6190,12 +6223,12 @@ LUID luid{};
         }
         if (!posture_read)
         {
-            wprintf(L"  %ls[x]%ls Runtime DLL unreadable; posture unverified.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Runtime DLL Unreadable; Posture Unverified.\n", kRed, kReset);
             posture_ok = false;
         }
         else if (!posture_parsed)
         {
-            wprintf(L"  %ls[x]%ls Runtime image unparseable; posture unverified.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Runtime Image Unparseable; Posture Unverified.\n", kRed, kReset);
             posture_ok = false;
         }
         else
@@ -6204,26 +6237,26 @@ LUID luid{};
             if (VerboseOutputEnabled())
             {
                 // Each line's marker follows its own value; the aggregate verdict is decided below.
-                wprintf(L"  %ls%s%ls Export names: %ls%zu%ls neutral, %ls%zu%ls foreign\n",
+                wprintf(L"  %ls%s%ls Export Names: %ls%zu%ls Neutral, %ls%zu%ls Foreign\n",
                     export_foreign ? L"[x]" : L"[+]", export_foreign ? kRed : kGreen, kReset,
                     kGreen, export_neutral, kReset,
                     export_foreign ? kRed : kGreen, export_foreign, kReset);
-                wprintf(L"  %ls%s%ls Standard section names remaining: %ls%zu%ls\n",
+                wprintf(L"  %ls%s%ls Standard Section Names Remaining: %ls%zu%ls\n",
                     standard_sections ? L"[x]" : L"[+]",
                     standard_sections ? kRed : kGreen, kReset,
                     kGreen, standard_sections, kReset);
-                wprintf(L"  %ls%s%ls Debug directory size: %ls0x%lX%ls\n",
+                wprintf(L"  %ls%s%ls Debug Directory Size = %ls0x%lX%ls\n",
                     debug_size ? L"[x]" : L"[+]", debug_size ? kRed : kGreen, kReset,
                     kGreen, static_cast<unsigned long>(debug_size), kReset);
             }
             if (export_foreign || standard_sections || debug_size)
             {
-                wprintf(L"  %ls[x]%ls Forensic posture regressed; rebuild with mutation enabled.\n", kRed, kReset);
+                wprintf(L"  %ls[x]%ls Forensic Posture Regressed; Rebuild With Mutation Enabled.\n", kRed, kReset);
                 posture_ok = false;
             }
             else if (!VerboseOutputEnabled())
             {
-                wprintf(XOR_STR_W(L"  %ls[+]%ls Forensic posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+                wprintf(XOR_STR_W(L"  %ls[+]%ls Forensic Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
             }
         }
 
@@ -6280,7 +6313,7 @@ LUID luid{};
 
     if (VerboseOutputEnabled())
     {
-        wprintf(L"  %ls[+]%ls Payload export names: %ls%zu%ls | standard sections: %ls%zu%ls | RWX sections: %ls%zu%ls | debug: %ls0x%lX%ls\n",
+        wprintf(L"  %ls[+]%ls Payload Export Names: %ls%zu%ls | Standard Sections: %ls%zu%ls | RWX Sections: %ls%zu%ls | Debug: %ls0x%lX%ls\n",
             kGreen, kReset,
             kGreen, payload_exports, kReset,
             kGreen, payload_standard_sections, kReset,
@@ -6289,16 +6322,16 @@ LUID luid{};
     }
     else if (payload_ok)
     {
-        wprintf(XOR_STR_W(L"  %ls[+]%ls Payload on-disk posture clean (detail suppressed; set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+        wprintf(XOR_STR_W(L"  %ls[+]%ls Payload On-Disk Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
     }
 
             if (!payload_ok)
             {
-                wprintf(L"  %ls[!]%ls Payload image could not be re-parsed for a posture report.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Payload Image Could Not Be Re-Parsed For A Posture Report.\n", kYellow, kReset);
             }
             else if (payload_rwx_sections)
             {
-                wprintf(L"  %ls[!]%ls Payload declares RWX section(s); mapped regions may inherit that.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Payload Declares RWX Section(s); Mapped Regions May Inherit That.\n", kYellow, kReset);
             }
         }
 
@@ -6326,12 +6359,12 @@ LUID luid{};
             }
             if (enum_ok && !listed)
             {
-                wprintf(L"  %ls[+]%ls Loader lists clean: image not enumerated as a module.\n", kGreen, kReset);
+                wprintf(L"  %ls[+]%ls Loader Lists Clean: Image Not Enumerated As A Module.\n", kGreen, kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Loader-list check inconclusive (enum %ls, listed %ls).\n", kYellow, kReset,
-                    enum_ok ? L"ok" : L"failed", listed ? L"yes" : L"no");
+                wprintf(L"  %ls[!]%ls Loader-List Check Inconclusive (Enum %ls, Listed %ls).\n", kYellow, kReset,
+                    enum_ok ? L"OK" : L"Failed", listed ? L"Yes" : L"No");
             }
         }
 
@@ -6341,13 +6374,13 @@ LUID luid{};
                 GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
             if (cfg_read)
             {
-                wprintf(L"  %ls[+]%ls Target CFG policy: enable %ls%lu%s strict %ls%lu%s.\n", kGreen, kReset,
+                wprintf(L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
                     kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
                     kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Target CFG policy unreadable.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
             }
         }
 
@@ -6363,7 +6396,7 @@ LUID luid{};
             if (!process || !GetRemoteMainModule(process, survey_name, survey_base, survey_size) ||
                 !survey_base || !survey_size)
             {
-                wprintf(L"  %ls[*]%ls Target image survey...... %lsskipped%ls (main module not enumerable; nothing read)\n",
+                wprintf(L"  %ls[*]%ls Target Image Survey...... %lsSkipped%ls (Main Module Not Enumerable; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else
@@ -6395,7 +6428,7 @@ LUID luid{};
                 }
                 if (!survey_nt_ok)
                 {
-                    wprintf(L"  %ls[!]%ls Target image survey...... headers unreadable at %ls%ls%ls base %p\n",
+                    wprintf(L"  %ls[!]%ls Target Image Survey...... Headers Unreadable At %ls%ls%ls Base %p\n",
                         kYellow, kReset, kYellow, survey_name.c_str(), kReset,
                         ReCa<void *>(survey_base));
                 }
@@ -6443,26 +6476,26 @@ LUID luid{};
                     }
                     if (imp_ok && imp_done)
                     {
-                        wprintf(L"  %ls[+]%ls Target imports.......... %ls%lu%ls descriptor(s) in %ls%ls%ls (read back)\n",
+                        wprintf(L"  %ls[+]%ls Target Imports.......... %ls%lu%ls Descriptor(s) In %ls%ls%ls (Read Back)\n",
                             kGreen, kReset, kGreen, imp_count, kReset, kGreen, survey_name.c_str(), kReset);
                         if (imp_count == 1)
                         {
-                            wprintf(L"      %ls[*]%ls single-import shape holds on this build (matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
+                            wprintf(L"      %ls[*]%ls Single-Import Shape Holds On This Build (Matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
                         }
                         else if (imp_count == 0)
                         {
-                            wprintf(L"      %ls[!]%ls zero imports: packed/demand-loaded shape (sec 12.7 heap-trampoline model?) - re-fingerprint\n",
+                            wprintf(L"      %ls[!]%ls Zero Imports: Packed/Demand-Loaded Shape (sec 12.7 heap-trampoline model?) - Re-Fingerprint\n",
                                 kYellow, kReset);
                         }
                         else
                         {
-                            wprintf(L"      %ls[*]%ls multi-import shape (%lu): Eidolon may be reverted/absent on this build (sec 12.2)\n",
+                            wprintf(L"      %ls[*]%ls Multi-Import Shape (%lu): Eidolon May Be Reverted/Absent On This Build (sec 12.2)\n",
                                 kDim, kReset, imp_count);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target imports.......... unreadable (dir rva 0x%08X size 0x%08X)\n",
+                        wprintf(L"  %ls[!]%ls Target Imports.......... Unreadable (Dir RVA 0x%08X Size 0x%08X)\n",
                             kYellow, kReset, static_cast<unsigned>(imp_rva), static_cast<unsigned>(imp_size));
                     }
 
@@ -6471,7 +6504,7 @@ LUID luid{};
                     const DWORD exp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
                     if (!exp_rva || !exp_size)
                     {
-                        wprintf(L"  %ls[+]%ls Target exports.......... none (no export directory)\n", kGreen, kReset);
+                        wprintf(L"  %ls[+]%ls Target Exports.......... None (No Export Directory)\n", kGreen, kReset);
                     }
                     else if (exp_rva < survey_size && IsSafeCodePage(process, survey_base + exp_rva, 40))
                     {
@@ -6480,19 +6513,19 @@ LUID luid{};
                         if (ReadProcessMemory(process, ReCa<LPCVOID>(survey_base + exp_rva),
                             &exp_dir, sizeof(exp_dir), &exp_got) && exp_got == sizeof(exp_dir))
                         {
-                            wprintf(L"  %ls[+]%ls Target exports.......... %ls%lu%ls funcs / %ls%lu%ls names (OP claimed 76 symbols; this build read back)\n",
+                            wprintf(L"  %ls[+]%ls Target Exports.......... %ls%lu%ls Funcs / %ls%lu%ls Names (OP Claimed 76 Symbols; This Build Read Back)\n",
                                 kGreen, kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfFunctions), kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfNames), kReset);
                         }
                         else
                         {
-                            wprintf(L"  %ls[!]%ls Target exports.......... directory unreadable\n", kYellow, kReset);
+                            wprintf(L"  %ls[!]%ls Target Exports.......... Directory Unreadable\n", kYellow, kReset);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target exports.......... directory out of image/safepage\n", kYellow, kReset);
+                        wprintf(L"  %ls[!]%ls Target Exports.......... Directory Out Of Image/Safepage\n", kYellow, kReset);
                     }
 
                     // Remote TLS callback count (bounded array RPM, in-image only).
@@ -6500,7 +6533,7 @@ LUID luid{};
                     const DWORD tls_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].Size;
                     if (!tls_rva || !tls_size)
                     {
-                        wprintf(L"  %ls[*]%ls Target TLS callbacks.... none (no TLS directory in remote headers)\n", kDim, kReset);
+                        wprintf(L"  %ls[*]%ls Target TLS Callbacks.... None (No TLS Directory In Remote Headers)\n", kDim, kReset);
                     }
                     else if (tls_rva < survey_size && IsSafeCodePage(process, survey_base + tls_rva, sizeof(IMAGE_TLS_DIRECTORY64)))
                     {
@@ -6540,26 +6573,26 @@ LUID luid{};
                             }
                             if (cb_ok && cb_done)
                             {
-                                wprintf(L"  %ls[+]%ls Target TLS callbacks.... %ls%lu%ls configured (remote array read; OP claimed 3 in exe)\n",
+                                wprintf(L"  %ls[+]%ls Target TLS Callbacks.... %ls%lu%ls Configured (Remote Array Read; OP Claimed 3 In EXE)\n",
                                     kGreen, kReset, kGreen, cb_count, kReset);
                             }
                             else
                             {
-                                wprintf(L"  %ls[!]%ls Target TLS callbacks.... array walk failed after %lu\n", kYellow, kReset, cb_count);
+                                wprintf(L"  %ls[!]%ls Target TLS Callbacks.... Array Walk Failed After %lu\n", kYellow, kReset, cb_count);
                             }
                         }
                         else if (!tls_dir.AddressOfCallBacks && tls_got == sizeof(tls_dir))
                         {
-                            wprintf(L"  %ls[*]%ls Target TLS callbacks.... directory present, zero callbacks\n", kDim, kReset);
+                            wprintf(L"  %ls[*]%ls Target TLS Callbacks.... Directory Present, Zero Callbacks\n", kDim, kReset);
                         }
                         else
                         {
-                            wprintf(L"  %ls[!]%ls Target TLS directory.... unreadable\n", kYellow, kReset);
+                            wprintf(L"  %ls[!]%ls Target TLS Directory.... Unreadable\n", kYellow, kReset);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target TLS directory.... out of image/safepage\n", kYellow, kReset);
+                        wprintf(L"  %ls[!]%ls Target TLS Directory.... Out Of Image/Safepage\n", kYellow, kReset);
                     }
                 }
             }
@@ -6571,7 +6604,7 @@ LUID luid{};
         const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE Header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         SIZE_T declared_headers = 0;
         if (have_local_nt)
@@ -6634,7 +6667,7 @@ LUID luid{};
 
         if (base)
         {
-            wprintf(L"  %ls[+]%ls Image base      : %ls0x%016llX%ls\n",
+            wprintf(L"  %ls[+]%ls Image Base      = %ls0x%016llX%ls\n",
                 kGreen, kReset, kGreen, base, kReset);
         }
 
@@ -6646,54 +6679,54 @@ LUID luid{};
             {
                 const bool commit_ok = (mbi.State == MEM_COMMIT);
                 const bool noaccess_ok = ((mbi.Protect & 0xFF) == PAGE_NOACCESS);
-                const wchar_t * protection = L"other";
+                const wchar_t * protection = L"Other";
                 switch (mbi.Protect & 0xFF)
                 {
-                case PAGE_READONLY: protection = L"READONLY"; break;
-                case PAGE_NOACCESS: protection = L"NOACCESS"; break;
-                case PAGE_READWRITE: protection = L"READWRITE (still writable)"; break;
-                case PAGE_EXECUTE_READ: protection = L"EXECUTE_READ"; break;
+                case PAGE_READONLY: protection = L"Readonly"; break;
+                case PAGE_NOACCESS: protection = L"Noaccess"; break;
+                case PAGE_READWRITE: protection = L"Readwrite (Still Writable)"; break;
+                case PAGE_EXECUTE_READ: protection = L"Execute Read"; break;
                 default: break;
                 }
                 if (commit_ok && noaccess_ok)
                 {
-                    wprintf(L"  %ls[+]%ls Page Protection Assertion: VirtualQueryEx verified 0x%llX [PAGE_NOACCESS] State=MEM_COMMIT\n",
+                    wprintf(L"  %ls[+]%ls Page Protection Assertion: VirtualQueryEx Verified 0x%llX [PAGE_NOACCESS] | State = MEM_COMMIT\n",
                         kGreen, kReset, base);
                 }
                 else
                 {
-                    wprintf(L"  %ls[x]%ls Page Protection MISMATCH: State=0x%X Protect=%ls (0x%08X) (required MEM_COMMIT+PAGE_NOACCESS)\n",
+                    wprintf(L"  %ls[x]%ls Page Protection Mismatch: State = 0x%X | Protect = %ls (0x%08X) (Required MEM_COMMIT+PAGE_NOACCESS)\n",
                         kRed, kReset, mbi.State, protection, mbi.Protect);
                 }
-                wprintf(L"  %ls[*]%ls Pre-Section Span Bound: Span=[0x00000000-0x%llX) Wiped=%llu bytes\n",
+                wprintf(L"  %ls[*]%ls Pre-Section Span Bound: Span = [0x00000000-0x%llX) | Wiped = %llu Bytes\n",
                     kDim, kReset, wiped, wiped);
             }
             else
             {
-                wprintf(L"  %ls[x]%ls Header page protection UNREADABLE: VirtualQueryEx failed (hard gate failure).\n", kRed, kReset);
+                wprintf(L"  %ls[x]%ls Header Page Protection Unreadable: VirtualQueryEx Failed (Hard Gate Failure).\n", kRed, kReset);
             }
 
             if (declared_headers)
             {
-                wprintf(L"  %ls[+]%ls Declared SizeOfHeaders : %ls0x%llX%ls (span the loader would have mapped)\n",
+                wprintf(L"  %ls[+]%ls Declared SizeOfHeaders = %ls0x%llX%ls (Span The Loader Would Have Mapped)\n",
                     kGreen, kReset, kGreen,
                     static_cast<unsigned long long>(declared_headers), kReset);
             }
 
             if (wiped)
             {
-                wprintf(L"  %ls[+]%ls Structural header span : %ls0x%llX%ls (DOS stub + NT headers + section table)\n",
+                wprintf(L"  %ls[+]%ls Structural Header Span = %ls0x%llX%ls (DOS Stub + NT Headers + Section Table)\n",
                     kGreen, kReset, kGreen, structural, kReset);
-                wprintf(L"  %ls[+]%ls Zeroed header span     : %ls0x%llX%ls (entire pre-section region; mapper telemetry)\n",
+                wprintf(L"  %ls[+]%ls Zeroed Header Span     = %ls0x%llX%ls (Entire Pre-Section Region; Mapper Telemetry)\n",
                     kGreen, kReset, kGreen, wiped, kReset);
-                wprintf(L"  %ls[+]%ls Page-protected span    : %ls0x%llX%ls @ %ls%s%ls\n",
+                wprintf(L"  %ls[+]%ls Page-Protected Span    = %ls0x%llX%ls @ %ls%s%ls\n",
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
 
                 // In-shell scan result. The image header page is NOACCESS by design after the cloak, so
                 // a host read-back is impossible; this mapper-side scan (run pre-NOACCESS) is the
                 // authoritative proof for the image allocation.
-                wprintf(L"  %ls[+]%ls MZ/PE scan (image)     : %ls%llu%ls hit(s) for MZ (0x4D5A) and %ls%llu%ls hit(s) for PE\\0\\0 (0x50450000) in the first %ls0x%llX%ls byte(s) of the mapped image (in-shell, pre-NOACCESS)\n",
+                wprintf(L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
 
                 if (exec)
@@ -6701,24 +6734,24 @@ LUID luid{};
                     const bool agree = (exec_span == wiped) && (exec_mz == scan_mz) && (exec_pe == scan_pe) && (exec_prot == wipe_protect);
                     if (agree)
                     {
-                        wprintf(L"  %ls[+]%ls Exec Telemetry Cross-Check: span=%llu MZ=%llu PE=%llu prot=0x%08X - agrees with MapStats\n",
+                        wprintf(L"  %ls[+]%ls Exec Telemetry Cross-Check: Span = %llu | MZ = %llu | PE = %llu | Prot = 0x%08llX - Agrees With MapStats\n",
                             kGreen, kReset, exec_span, exec_mz, exec_pe, exec_prot);
                     }
                     else
                     {
-                        wprintf(L"  %ls[x]%ls Exec Telemetry MISMATCH: span=%llu/0x%llX MZ=%llu/%llu PE=%llu/%llu prot=0x%08X/0x%08X\n",
+                        wprintf(L"  %ls[x]%ls Exec Telemetry Mismatch: Span = %llu/0x%llX | MZ = %llu/%llu | PE = %llu/%llu | Prot = 0x%08llX/0x%08llX\n",
                             kRed, kReset,
                             exec_span, wiped, exec_mz, scan_mz, exec_pe, scan_pe, exec_prot, wipe_protect);
                     }
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls Exec Telemetry unavailable: cloak cross-check skipped, host read-back failed.\n", kYellow, kReset);
+                    wprintf(L"  %ls[!]%ls Exec Telemetry Unavailable: Cloak Cross-Check Skipped, Host Read-Back Failed.\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Wiped span unavailable: mapper reported no header-wipe telemetry.\n",
+                wprintf(L"  %ls[!]%ls Wiped Span Unavailable: Mapper Reported No Header-Wipe Telemetry.\n",
                     kYellow, kReset);
             }
 
@@ -6737,25 +6770,25 @@ LUID luid{};
                     unsigned long long r_mz = 0;
                     unsigned long long r_pe = 0;
                     count_signatures(scan_buf.data(), got, r_mz, r_pe);
-                    wprintf(L"  %ls[+]%ls MZ/PE scan (host)      : %ls%llu%ls hit(s) for MZ (0x4D5A) and %ls%llu%ls hit(s) for PE\\0\\0 (0x50450000) in the first %ls%llu%ls byte(s) of retained allocation %ls0x%llX%ls\n",
+                    wprintf(L"  %ls[+]%ls MZ/PE Scan (Host)      = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls%llu%ls Byte(s) Of Retained Allocation %ls0x%llX%ls\n",
                         kGreen, kReset, kGreen, r_mz, kReset, kGreen, r_pe, kReset,
                         kGreen, static_cast<unsigned long long>(got), kReset, kGreen, retained_base, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls MZ/PE scan (host)      : retained allocation %ls0x%llX%ls not readable (protection changed).\n",
+                    wprintf(L"  %ls[!]%ls MZ/PE Scan (Host)      = Retained Allocation %ls0x%llX%ls Not Readable (Protection Changed).\n",
                         kYellow, kReset, kYellow, retained_base, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[+]%ls MZ/PE scan (host)      : no other injection allocation remains readable - the manual-map and thread-hijack staging regions are scrubbed and released before this stage, and the image header page is NOACCESS by design.\n",
+                wprintf(L"  %ls[+]%ls MZ/PE Scan (Host)      = No Other Injection Allocation Remains Readable - The Manual-Map And Thread-Hijack Staging Regions Are Scrubbed And Released Before This Stage, And The Image Header Page Is NOACCESS By Design.\n",
                     kGreen, kReset);
             }
         }
         else if (!process || !base)
         {
-            wprintf(L"  %ls[!]%ls Image base not readable; header state unknown.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls Image Base Not Readable; Header State Unknown.\n", kYellow, kReset);
         }
     }
 
@@ -6763,7 +6796,7 @@ LUID luid{};
     void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Survey target traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Survey Target Traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         ReportGameTraps(process, survey_pid, buffers);
         wprintf(L"\n");
     }
@@ -6965,7 +6998,7 @@ LUID luid{};
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            wprintf(L"  %ls[x]%ls Verification faulted; gate cannot be satisfied.\n", kRed, kReset);
+            wprintf(L"  %ls[x]%ls Verification Faulted; Gate Cannot Be Satisfied.\n", kRed, kReset);
             return false;
         }
     }
@@ -7481,7 +7514,7 @@ LUID luid{};
             if (chunk_buf.size() != kSurveyChunkBytes)
             {
 
-                wprintf(L"  %ls[!]%ls Survey read window unavailable; INT3 scan skipped.\n", kYellow, kReset);
+                wprintf(L"  %ls[!]%ls Survey Read Window Unavailable; INT3 Scan Skipped.\n", kYellow, kReset);
                 return;
             }
         }
@@ -7653,25 +7686,25 @@ LUID luid{};
             // The walk below spans the whole process, not one module, so the counts are process-wide.
             // The verdict states the two facts that were measured (guard pages, INT3 share) and does
             // not imply a per-module or pass/fail conclusion.
-            const wchar_t * Verdict = guarded ? L"guarded" : L"no guard pages";
+            const wchar_t * Verdict = guarded ? L"Guarded" : L"No Guard Pages";
             wchar_t VerdictNote[192]{};
             if (guarded == 0)
             {
                 if (sample_bytes == 0)
                 {
-                    swprintf_s(VerdictNote, L"no executable region was readable");
+                    swprintf_s(VerdictNote, L"No Executable Region Was Readable");
                 }
                 else if (cc_pct)
                 {
-                    swprintf_s(VerdictNote, L"INT3 %zu%% of sampled exec bytes (process-wide; not a per-module verdict)",
+                    swprintf_s(VerdictNote, L"INT3 %zu%% Of Sampled Exec Bytes (Process-Wide; Not A Per-Module Verdict)",
                         cc_pct);
                 }
                 else
                 {
-                    swprintf_s(VerdictNote, L"no INT3 in sampled exec bytes");
+                    swprintf_s(VerdictNote, L"No INT3 In Sampled Exec Bytes");
                 }
             }
-            wprintf(L"  %ls%ls%s%s (%ls%zu%s committed region(s) walked, process-wide)\n",
+            wprintf(L"  %ls%ls%s%s (%ls%zu%s Committed Region(s) Walked, Process-Wide)\n",
                 StageField(mod, 24).c_str(),
                 guarded ? kYellow : L"", Verdict, kReset,
                 kGreen, walked, kReset);
@@ -7682,26 +7715,26 @@ LUID luid{};
 
             wprintf(L"\n");
 
-            wprintf(L"      %ls%ls%zu%ls region(s), %ls%zu%ls KB\n",
-                StageField(L"guard:", 12).c_str(),
+            wprintf(L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
+                StageField(L"Guard:", 12).c_str(),
                 kGreen, guarded, kReset,
                 kGreen, static_cast<size_t>(guarded_bytes / 1024), kReset);
 
-            wprintf(L"      %ls%ls%zu%ls region(s), %ls%zu%ls KB\n",
-                StageField(L"no-access:", 12).c_str(),
+            wprintf(L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
+                StageField(L"No-Access:", 12).c_str(),
                 kGreen, noaccess, kReset,
                 kGreen, static_cast<size_t>(noaccess_bytes / 1024), kReset);
 
             if (eid_skipped)
             {
-                wprintf(L"      %ls%ls%zu%ls region(s) skipped (encrypted core, never read)\n",
-                    StageField(L"eid:", 12).c_str(),
+                wprintf(L"      %ls%ls%zu%ls Region(s) Skipped (Encrypted Core, Never Read)\n",
+                    StageField(L"EID:", 12).c_str(),
                     kGreen, eid_skipped, kReset);
             }
 
             if (sample_bytes)
             {
-                wprintf(L"      %ls%ls%zu%ls of %ls%zu%ls sampled bytes are INT3 (%ls0xCC%ls), %ls%zu%s%%, from %ls%zu%ls of %ls%zu%ls exec region(s)\n",
+                wprintf(L"      %ls%ls%zu%ls Of %ls%zu%ls Sampled Bytes Are INT3 (%ls0xCC%ls), %ls%zu%s%%, From %ls%zu%ls Of %ls%zu%ls Exec Region(s)\n",
                     StageField(L"INT3:", 12).c_str(),
                     kGreen, cc_bytes, kReset,
                     kGreen, sample_bytes, kReset,
@@ -7712,7 +7745,7 @@ LUID luid{};
                 if (sample_capped)
                 {
 
-                    wprintf(L"%*s%ls%zu%ls of %ls%zu%ls exec region(s) not sampled (cap %ls%zu%ls), so the INT3 count is a floor, not a total\n",
+                    wprintf(L"%*s%ls%zu%ls Of %ls%zu%ls Exec Region(s) Not Sampled (Cap %ls%zu%ls), So The INT3 Count Is A Floor, Not A Total\n",
                         static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
                         kGreen, sample_capped, kReset,
                         kGreen, exec_regions, kReset,
@@ -7721,7 +7754,7 @@ LUID luid{};
             }
             else
             {
-                wprintf(L"      %lsno executable region was readable\n",
+                wprintf(L"      %lsNo Executable Region Was Readable\n",
                     StageField(L"INT3:", 12).c_str());
             }
 
@@ -7770,22 +7803,22 @@ LUID luid{};
                     if (max_walk_regions)
                     {
                         wchar_t part[64] = {};
-                        swprintf_s(part, L"cap %ls%zu%ls regions", kGreen, max_walk_regions, kReset);
+                        swprintf_s(part, L"Cap %ls%zu%ls Regions", kGreen, max_walk_regions, kReset);
                         append(part);
                     }
                     if (max_walk_bytes)
                     {
                         wchar_t part[64] = {};
-                        swprintf_s(part, L"cap %ls%zu%ls MB", kGreen, static_cast<size_t>(max_walk_bytes >> 20), kReset);
+                        swprintf_s(part, L"Cap %ls%zu%ls MB", kGreen, static_cast<size_t>(max_walk_bytes >> 20), kReset);
                         append(part);
                     }
                 }
                 if (walk_aborted)
                 {
-                    append(unknown_extent ? L"module extent unknown" : L"query failed before module end");
+                    append(unknown_extent ? L"Module Extent Unknown" : L"Query Failed Before Module End");
                 }
 
-                wprintf(L"%*sregion walk stopped early (%ls); counts are partial\n",
+                wprintf(L"%*sRegion Walk Stopped Early (%ls); Counts Are Partial\n",
                     static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
                     reason);
             }
@@ -7795,7 +7828,7 @@ LUID luid{};
 
         if (!found)
         {
-            wprintf(L"  %ls[!]%ls No target module present; nothing to survey.\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls No Target Module Present; Nothing To Survey.\n", kYellow, kReset);
         }
     }
 
@@ -7937,19 +7970,19 @@ LUID luid{};
     void PrintHookScanResult(const wchar_t * Phase, const HookScanStats & stats,
         const std::vector<RestoredHook> & restored, const std::vector<std::wstring> & remaining)
     {
-        wprintf(L"  %s scan trace:\n\n", Phase);
+        wprintf(L"  %s Scan Trace:\n\n", Phase);
 
         if (!stats.scanned)
         {
 
             if (stats.patch_blocked)
             {
-                wprintf(L"    %ls%zu%s in list, hook patch not enabled - nothing was inspected\n",
+                wprintf(L"    %ls%zu%s In List, Hook Patch Not Enabled - Nothing Was Inspected\n",
                     StageField(L"Targets").c_str(), stats.targets, kReset);
             }
             else
             {
-                wprintf(L"    %ls%zu%s in list, no process handle - nothing was inspected\n",
+                wprintf(L"    %ls%zu%s In List, No Process Handle - Nothing Was Inspected\n",
                     StageField(L"Targets").c_str(), stats.targets, kReset);
             }
             return;
@@ -7957,13 +7990,13 @@ LUID luid{};
 
         wprintf(L"    %ls%ls%zu%s\n",
             StageField(L"Targets").c_str(), kGreen, stats.targets, kReset);
-        wprintf(L"    %ls%ls%zu%s of %ls%zu%s resolved in the target\n",
+        wprintf(L"    %ls%ls%zu%s Of %ls%zu%s Resolved In The Target\n",
             StageField(L"Resolved").c_str(),
             (stats.resolved == stats.targets ? kGreen : kYellow), stats.resolved, kReset,
             kGreen, stats.targets, kReset);
-        wprintf(L"    %ls%ls%zu%s already matched the local image\n",
+        wprintf(L"    %ls%ls%zu%s Already Matched The Local Image\n",
             StageField(L"Clean").c_str(), kGreen, stats.clean, kReset);
-        wprintf(L"    %ls%ls%zu%s differed, %s%zu%s left alone\n",
+        wprintf(L"    %ls%ls%zu%s Differed, %s%zu%s Left Alone\n",
             StageField(L"Hooked").c_str(), kGreen, stats.hooked, kReset,
             (stats.skipped ? kYellow : kGreen), stats.skipped, kReset);
 
@@ -7983,7 +8016,7 @@ LUID luid{};
 
         if (!remaining.empty())
         {
-            wprintf(L"    %ls%ls%zu%s still differ after the pass:\n",
+            wprintf(L"    %ls%ls%zu%s Still Differ After The Pass:\n",
                 StageField(L"Remaining").c_str(), kYellow, remaining.size(), kReset);
             for (const std::wstring & entry : remaining)
             {
@@ -8027,7 +8060,7 @@ LUID luid{};
         case 0xC000040Bu: return L"FAST_FAIL_FATAL_APP_EXIT";
         case 0xC000041Du: return L"COOKIE_INIT_FAILED";
         case 0xC00000A0u: return L"INTERNAL_ERROR";
-        default: return L"unknown";
+        default: return L"Unknown";
         }
     }
 
@@ -8035,78 +8068,78 @@ LUID luid{};
     {
         if (code == INJ_ERR_OUT_OF_MEMORY_EXT)
         {
-            wprintf(L"Reason: VirtualAllocEx failed in target (Adv 5=ACCESS_DENIED, 998/3E6=NOACCESS).\n");
-            wprintf(L"Target is likely protected or blocks remote RW/RX allocations.\n");
-            wprintf(L"Staging uses RW->RX (no RWX at birth); image uses RW->RX.\n");
-            wprintf(L"Try testing on notepad.exe.\n");
+            wprintf(L"Reason: VirtualAllocEx Failed In Target (Adv 5 = ACCESS_DENIED, 998/3E6 = NOACCESS).\n");
+            wprintf(L"Target Is Likely Protected Or Blocks Remote RW/RX Allocations.\n");
+            wprintf(L"Staging Uses RW->RX (No RWX At Birth); Image Uses RW->RX.\n");
+            wprintf(L"Try Testing On notepad.exe.\n");
         }
         else if (code == INJ_ERR_CANT_OPEN_PROCESS)
         {
-            wprintf(L"Reason: OpenProcess denied. Run elevated.\n");
+            wprintf(L"Reason: OpenProcess Denied. Run Elevated.\n");
         }
         else if (code == INJ_MM_ERR_DLLMAIN_FAILED)
         {
-            wprintf(L"Reason: the mapping, imports, TLS and loader-lock stages all succeeded; the payload's\n");
-            wprintf(L"own DllMain(DLL_PROCESS_ATTACH) returned FALSE, i.e. the payload refused to initialize.\n");
-            wprintf(L"This is state/thread dependent, not a mapping fault. Load earlier in the target's startup:\n");
-            wprintf(L"relaunch the game and load once the launcher reports its symbol download is complete.\n");
-            wprintf(L"A failed attempt also leaves loader bookkeeping in the target that cannot be reclaimed\n");
-            wprintf(L"(inverted-table entry, TLS index/block have no removal API and point into the freed\n");
-            wprintf(L"image), so relaunch the game before trying again.\n");
+            wprintf(L"Reason: The Mapping, Imports, TLS And Loader-Lock Stages All Succeeded; The Payload's\n");
+            wprintf(L"Own DllMain(DLL_PROCESS_ATTACH) Returned False, I.e. The Payload Refused To Initialize.\n");
+            wprintf(L"This Is State/Thread Dependent, Not A Mapping Fault. Load Earlier In The Target's Startup:\n");
+            wprintf(L"Relaunch The Game And Load Once The Launcher Reports Its Symbol Download Is Complete.\n");
+            wprintf(L"A Failed Attempt Also Leaves Loader Bookkeeping In The Target That Cannot Be Reclaimed\n");
+            wprintf(L"(Inverted-Table Entry, TLS Index/Block Have No Removal API And Point Into The Freed\n");
+            wprintf(L"Image), So Relaunch The Game Before Trying Again.\n");
         }
         else if (code == INJ_MM_ERR_TLS_CALLBACK_RANGE)
         {
-            wprintf(L"Reason: a payload TLS callback pointer/array fell outside the mapped image,\n");
-            wprintf(L"so only a prefix of its callbacks ran. This is payload-specific, not a mapping\n");
-            wprintf(L"fault. Relaunch the target before trying another payload.\n");
+            wprintf(L"Reason: A Payload TLS Callback Pointer/Array Fell Outside The Mapped Image,\n");
+            wprintf(L"So Only A Prefix Of Its Callbacks Ran. This Is Payload-Specific, Not A Mapping\n");
+            wprintf(L"Fault. Relaunch The Target Before Trying Another Payload.\n");
         }
         else if (code == INJ_ERR_HANDLE_HIJACK_FAILED)
         {
-            wprintf(L"Reason: handle acquisition found no donor; the path is donor-only and fails closed.\n");
-            wprintf(XOR_STR_W(L"Check the handle-acquisition settings in the deployed configuration, or run elevated so the\n").get());
-            wprintf(L"sponsor pre-open succeeds.\n");
+            wprintf(L"Reason: Handle Acquisition Found No Donor; The Path Is Donor-Only And Fails Closed.\n");
+            wprintf(XOR_STR_W(L"Check The Handle-Acquisition Settings In The Deployed Configuration, Or Run Elevated So The\n").get());
+            wprintf(L"Sponsor Pre-Open Succeeds.\n");
         }
         else if (code == SR_HT_ERR_OPEN_REFUSED)
         {
-            wprintf(L"Reason: thread handle acquisition found no donor; the path is donor-only and\n");
-            wprintf(L"fails closed (there is no direct OpenThread fallback). Run elevated so the sponsor\n");
-            wprintf(L"thread pre-open succeeds, or retry while the target is active.\n");
+            wprintf(L"Reason: Thread Handle Acquisition Found No Donor; The Path Is Donor-Only And\n");
+            wprintf(L"Fails Closed (There Is No Direct OpenThread Fallback). Run Elevated So The Sponsor\n");
+            wprintf(L"Thread Pre-Open Succeeds, Or Retry While The Target Is Active.\n");
         }
         else if (code == SR_HT_ERR_NO_THREADS)
         {
-            wprintf(L"Reason: no usable donor thread found. Retry while the target is active.\n");
+            wprintf(L"Reason: No Usable Donor Thread Found. Retry While The Target Is Active.\n");
         }
         else if (code == SR_ERR_TARGET_EXITED)
         {
-            wprintf(L"Reason: the target process exited during loading.\n");
+            wprintf(L"Reason: The Target Process Exited During Loading.\n");
         }
         else if (code == SR_HT_ERR_REMOTE_PENDING_TIMEOUT)
         {
-            wprintf(L"Note: the payload timed out, but the thread context was restored automatically.\n");
-            wprintf(L"Reason: the victim thread never scheduled the donor stub (State stayed Pending),\n");
-            wprintf(L"so the memory-loading shell never started. This is thread selection, not a verification issue:\n");
-            wprintf(XOR_STR_W(L"CleanDataDirectories and HookRestore are unrelated - keep them enabled.\n").get());
-            wprintf(L"The runtime now retries: each donor gets a short startup probe, an unscheduled\n");
-            wprintf(L"thread is rolled back and excluded, and the next candidate is tried inside the\n");
-            wprintf(L"same timeout budget. Raising the timeout widens how many donors get probed.\n");
+            wprintf(L"Note: The Payload Timed Out, But The Thread Context Was Restored Automatically.\n");
+            wprintf(L"Reason: The Victim Thread Never Scheduled The Donor Stub (State Stayed Pending),\n");
+            wprintf(L"So The Memory-Loading Shell Never Started. This Is Thread Selection, Not A Verification Issue:\n");
+            wprintf(XOR_STR_W(L"CleanDataDirectories And HookRestore Are Unrelated - Keep Them Enabled.\n").get());
+            wprintf(L"The Runtime Now Retries: Each Donor Gets A Short Startup Probe, An Unscheduled\n");
+            wprintf(L"Thread Is Rolled Back And Excluded, And The Next Candidate Is Tried Inside The\n");
+            wprintf(L"Same Timeout Budget. Raising The Timeout Widens How Many Donors Get Probed.\n");
         }
         else if (code == INJ_ERR_WINDOWS_VERSION)
         {
-            wprintf(L"Reason: the OS version gate could not identify the Windows release.\n");
-            wprintf(L"The runtime requires Windows 11 (build 22000+); this is an environment\n");
-            wprintf(L"issue, not a mapping or symbol failure.\n");
+            wprintf(L"Reason: The OS Version Gate Could Not Identify The Windows Release.\n");
+            wprintf(L"The Runtime Requires Windows 11 (Build 22000+); This Is An Environment\n");
+            wprintf(L"Issue, Not A Mapping Or Symbol Failure.\n");
         }
         else if (code == INJ_ERR_WINDOWS_BUILD_UNSUPPORTED)
         {
-            wprintf(L"Reason: the OS gate rejected the host - Windows 11 (build 22000+) is required\n");
-            wprintf(L"and this build is outside the supported families (21H2 22000+, 22H2/23H2 22621+,\n");
-            wprintf(L"24H2 26100+, 25H2 26200+, 26H2 26300+; newer builds are forward-mapped). This is an\n");
-            wprintf(L"environment issue, not a mapping or symbol failure. Update Windows.\n");
+            wprintf(L"Reason: The OS Gate Rejected The Host - Windows 11 (Build 22000+) Is Required\n");
+            wprintf(L"And This Build Is Outside The Supported Families (21H2 22000+, 22H2/23H2 22621+,\n");
+            wprintf(L"24H2 26100+, 25H2 26200+, 26H2 26300+; Newer Builds Are Forward-Mapped). This Is An\n");
+            wprintf(L"Environment Issue, Not A Mapping Or Symbol Failure. Update Windows.\n");
         }
         else
         {
 
-            wprintf(L"Reason: unclassified failure 0x%08lX; see the runtime error header.\n",
+            wprintf(L"Reason: Unclassified Failure 0x%08lX; See The Runtime Error Header.\n",
                 static_cast<unsigned long>(code));
         }
     }
@@ -8119,7 +8152,7 @@ LUID luid{};
             return;
         }
 
-        wprintf(L"\nPress Enter to exit...\n");
+        wprintf(L"\nPress Enter To Exit...\n");
         fflush(stdout);
 
         std::wcin.clear();
@@ -8194,45 +8227,45 @@ LUID luid{};
             }
             if (local_build)
             {
-                fwprintf(stderr, L"%lsUnsupported Windows build: local build %lu (code 0x%08X).%ls\n",
+                fwprintf(stderr, L"%lsUnsupported Windows Build: Local Build %lu (Code 0x%08X).%ls\n",
                     kRed, static_cast<unsigned long>(local_build), init_state, kReset);
             }
             else
             {
-                fwprintf(stderr, L"%lsUnsupported Windows version (code 0x%08X).%ls\n",
+                fwprintf(stderr, L"%lsUnsupported Windows Version (Code 0x%08X).%ls\n",
                     kRed, init_state, kReset);
             }
             PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+), 26H2 (26300+).");
-            PrintError(L"Windows 10 and older builds are not supported by this x64/Win11-only build.");
-            PrintError(L"Failed to initialize the runtime (OS gate, not a symbol download failure).");
+            PrintError(L"Windows 10 And Older Builds Are Not Supported By This x64/Win11-Only Build.");
+            PrintError(L"Failed To Initialize The Runtime (OS Gate, Not A Symbol Download Failure).");
             return;
         }
         if (symbol_state == INJ_ERR_SYMBOL_INIT_NOT_DONE)
         {
-            PrintError(L"Timeout waiting for symbol initialization (120s).");
-            PrintError(L"Check internet access and Windows symbol server reachability.");
+            PrintError(L"Timeout Waiting For Symbol Initialization (120s).");
+            PrintError(L"Check Internet Access And Windows Symbol Server Reachability.");
         }
         else if (symbol_state != INJ_ERR_SUCCESS)
         {
             if (init_state != INJ_ERR_SUCCESS)
             {
 
-                fwprintf(stderr, L"%lsFailed to initialize the runtime: 0x%08X%ls\n", kRed, init_state, kReset);
+                fwprintf(stderr, L"%lsFailed To Initialize The Runtime = 0x%08X%ls\n", kRed, init_state, kReset);
             }
             else
             {
-                fwprintf(stderr, L"%lsFailed to load symbols: 0x%08X%ls\n", kRed, symbol_state, kReset);
+                fwprintf(stderr, L"%lsFailed To Load Symbols = 0x%08X%ls\n", kRed, symbol_state, kReset);
             }
         }
         else if (import_state == INJ_ERR_IMPORT_HANDLER_NOT_DONE)
         {
-            PrintError(L"Timeout waiting for import resolution (120s).");
+            PrintError(L"Timeout Waiting For Import Resolution (120s).");
         }
         else if (import_state != INJ_ERR_SUCCESS)
         {
-            fwprintf(stderr, L"%lsFailed to resolve imports: 0x%08X%ls\n", kRed, import_state, kReset);
+            fwprintf(stderr, L"%lsFailed To Resolve Imports = 0x%08X%ls\n", kRed, import_state, kReset);
         }
-        PrintError(L"Failed to initialize the runtime or download symbols.");
+        PrintError(L"Failed To Initialize The Runtime Or Download Symbols.");
     }
 
     // Decide whether a failed injection may be retried by spawning a fresh,
@@ -8289,20 +8322,20 @@ LUID luid{};
         bool config_invalid = false;
         Trace::BeginSession();
 
-        Trace::Begin(L"Load + decrypt configuration");
+        Trace::Begin(L"Load + Decrypt Configuration");
         const bool config_loaded = LoadWizardConfig(config, config_path, config_invalid);
         if (!config_path.empty())
         {
-            Trace::Note(L"config path   : %ls", config_path.c_str());
+            Trace::Note(L"Config Path = %ls", config_path.c_str());
         }
         if (config_loaded)
         {
-            Trace::Note(L"schema=%d target=%ls timeout=%d ms", config.schema_version,
+            Trace::Note(L"Schema = %d | Target = %ls | Timeout = %d ms", config.schema_version,
                 config.target_name.c_str(), config.timeout);
-            Trace::Note(L"payload=%ls runtime=%ls dll_dir=%ls", config.payload_name.c_str(),
+            Trace::Note(L"Payload = %ls | Runtime = %ls | Dll Dir = %ls", config.payload_name.c_str(),
                 config.runtime_name.c_str(), config.dll_dir.c_str());
-            Trace::Note(L"payload pin=%ls", config.expected_payload_sha256.c_str());
-            Trace::Note(L"export map   : %zu entrie(s)", config.export_map.size());
+            Trace::Note(L"Payload Pin = %ls", config.expected_payload_sha256.c_str());
+            Trace::Note(L"Export Map = %zu Entries", config.export_map.size());
             for (const ExportNameMap & e : config.export_map)
             {
                 // The map is held as narrow std::string; printing it straight into a wide
@@ -8317,55 +8350,55 @@ LUID luid{};
         {
             if (config_path.empty())
             {
-                PrintError(XOR_STR_W(L"The deployed configuration is required but was not found. Place it next to the executable.").get());
+                PrintError(XOR_STR_W(L"The Deployed Configuration Is Required But Was Not Found. Place It Next To The Executable.").get());
             }
             else
             {
-                PrintError(XOR_STR_W(L"The deployed configuration is invalid; fix the schema, target or per-build deployment keys, or restore the file.").get());
+                PrintError(XOR_STR_W(L"The Deployed Configuration Is Invalid; Fix The Schema, Target Or Per-Build Deployment Keys, Or Restore The File.").get());
             }
-            Trace::Summary(L"FAILED at configuration");
+            Trace::Summary(L"Failed At Configuration");
             PauseBeforeExit();
             return 1;
         }
 
-        Trace::Begin(L"Load runtime DLL + resolve exports");
+        Trace::Begin(L"Load Runtime DLL + Resolve Exports");
         if (!LoadRuntime(runtime, config))
         {
             Trace::End();
-            Trace::Summary(L"FAILED at runtime load");
+            Trace::Summary(L"Failed At Runtime Load");
             PauseBeforeExit();
             return 1;
         }
-        Trace::Note(L"module base   : %p", reinterpret_cast<void *>(runtime.module));
-        Trace::Note(L"execution     : %ls", L"ThreadDonor");
-        Trace::Note(L"mode          : %ls", L"MemoryLoading");
+        Trace::Note(L"Module Base = %p", reinterpret_cast<void *>(runtime.module));
+        Trace::Note(L"Execution = %ls", L"ThreadDonor");
+        Trace::Note(L"Mode = %ls", L"MemoryLoading");
         Trace::End();
 
-        Trace::Begin(L"Decode load flags");
+        Trace::Begin(L"Decode Load Flags");
         const DWORD preflight_flags = BuildFlags(config);
         DescribeFlags(preflight_flags);
         Trace::End();
 
-        Trace::Begin(L"Resolve + hash payload");
+        Trace::Begin(L"Resolve + Hash Payload");
         std::vector<BYTE> raw_data;
         FileInformation fileInformation;
         if (!ResolveConfiguredPayload(config.dll_dir, config.payload_name, config.expected_payload_sha256,
             preflight_flags, fileInformation, raw_data))
         {
             Trace::End();
-            Trace::Summary(L"FAILED at payload resolution");
+            Trace::Summary(L"Failed At Payload Resolution");
             PauseBeforeExit();
             return 1;
         }
-        Trace::Note(L"payload size  : %zu bytes", raw_data.size());
-        Trace::Note(L"architecture  : %ls", ArchitectureName(fileInformation.architecture));
-        Trace::Note(L"managed (.NET): %ls", fileInformation.dotnet ? L"yes" : L"no");
+        Trace::Note(L"Payload Size = %zu Bytes", raw_data.size());
+        Trace::Note(L"Architecture = %ls", ArchitectureName(fileInformation.architecture));
+        Trace::Note(L"Managed (.NET) = %ls", fileInformation.dotnet ? L"Yes" : L"No");
         Trace::End();
 
         ReportPayloadCapabilities(raw_data, preflight_flags);
 
-        Trace::Begin(L"Runtime init: symbols + imports");
-        Trace::Note(L"resolving Windows symbols + import descriptors");
+        Trace::Begin(L"Runtime Init: Symbols + Imports");
+        Trace::Note(L"Resolving Windows Symbols + Import Descriptors");
         DWORD symbol_state = INJ_ERR_SYMBOL_INIT_NOT_DONE;
         DWORD import_state = INJ_ERR_IMPORT_HANDLER_NOT_DONE;
         DWORD init_state = INJ_ERR_SUCCESS;
@@ -8373,33 +8406,33 @@ LUID luid{};
         {
             Trace::End();
             PrintRuntimeFailure(symbol_state, import_state, init_state);
-            Trace::Summary(L"FAILED at runtime initialisation");
+            Trace::Summary(L"Failed At Runtime Initialisation");
             PauseBeforeExit();
             // Transient (network/symbol timeout): fresh-process retryable.
             return kResultRetryable;
         }
-        Trace::Note(L"symbol state  : 0x%08lX", static_cast<unsigned long>(symbol_state));
-        Trace::Note(L"import state  : 0x%08lX", static_cast<unsigned long>(import_state));
+        Trace::Note(L"Symbol State = 0x%08lX", static_cast<unsigned long>(symbol_state));
+        Trace::Note(L"Import State = 0x%08lX", static_cast<unsigned long>(import_state));
         Trace::End();
 
-        Trace::Begin(L"Operator confirmation");
+        Trace::Begin(L"Operator Confirmation");
         const ConfirmationResult confirmation = ConfirmBeforeDetection();
         if (confirmation == ConfirmationResult::Cancelled)
         {
             Trace::End();
             wprintf(L"Cancelled.\n");
-            Trace::Summary(L"cancelled by operator");
+            Trace::Summary(L"Cancelled By Operator");
             return 0;
         }
         if (confirmation == ConfirmationResult::Unavailable)
         {
             Trace::End();
-            Trace::Summary(L"FAILED at operator confirmation");
+            Trace::Summary(L"Failed At Operator Confirmation");
             return 1;
         }
         Trace::End();
 
-        Trace::Begin(L"Select target process");
+        Trace::Begin(L"Select Target Process");
         TargetSelection target;
         bool cancelled = false;
         if (!SelectTarget(config.target_name, target, cancelled, config.timeout))
@@ -8408,20 +8441,20 @@ LUID luid{};
             if (cancelled)
             {
                 wprintf(L"Cancelled.\n");
-                Trace::Summary(L"cancelled by operator");
+                Trace::Summary(L"Cancelled By Operator");
                 return 0;
             }
-            Trace::Summary(L"FAILED at target selection");
+            Trace::Summary(L"Failed At Target Selection");
             return 2;
         }
-        Trace::Note(L"pid           : %lu", target.pid);
-        Trace::Note(L"name          : %ls", target.name.c_str());
-        Trace::Note(L"architecture  : %ls", ArchitectureName(target.architecture));
+        Trace::Note(L"PID = %lu", target.pid);
+        Trace::Note(L"Name = %ls", target.name.c_str());
+        Trace::Note(L"Architecture = %ls", ArchitectureName(target.architecture));
         Trace::End();
 
         if (target.architecture == Architecture::X86)
         {
-            PrintError(L"x86 targets are not supported in this x64-only build.");
+            PrintError(L"x86 Targets Are Not Supported In This x64-Only Build.");
             PauseBeforeExit();
             return 1;
         }
@@ -8429,11 +8462,11 @@ LUID luid{};
         if (target.architecture != Architecture::Unknown &&
             fileInformation.architecture != target.architecture)
         {
-            wprintf(L"Warning: DLL is %ls but target is %ls.\n",
+            wprintf(L"Warning: DLL Is %ls But Target Is %ls.\n",
                 ArchitectureName(fileInformation.architecture),
                 ArchitectureName(target.architecture));
             bool proceed = false;
-            if (!ReadYesNo(L"Continue anyway?", false, proceed) || !proceed)
+            if (!ReadYesNo(L"Continue Anyway?", false, proceed) || !proceed)
             {
                 wprintf(L"Cancelled.\n");
                 return 0;
@@ -8446,14 +8479,14 @@ LUID luid{};
 
         if (config.detach_console)
         {
-            wprintf(L"%ls[+]%ls Detaching console; running headless from here.\n", kGreen, kReset);
+            wprintf(L"%ls[+]%ls Detaching Console; Running Headless From Here.\n", kGreen, kReset);
             fflush(stdout);
             DetachInterfaceConsole();
         }
 
         if (!RefreshTarget(target))
         {
-            PrintError(L"Target exited before loading. Re-run and choose faster.");
+            PrintError(L"Target Exited Before Loading. Re-Run And Choose Faster.");
             PauseBeforeExit();
             // Transient race (target restarted between select and load).
             return kResultRetryable;
@@ -8461,7 +8494,7 @@ LUID luid{};
 
         if (target.architecture == Architecture::X86)
         {
-            PrintError(L"x86 targets are not supported in this x64-only build.");
+            PrintError(L"x86 Targets Are Not Supported In This x64-Only Build.");
             PauseBeforeExit();
             return 1;
         }
@@ -8506,9 +8539,9 @@ LUID luid{};
             else
             {
                 const wchar_t * consequence = config.hijack_scan
-                    ? L"runtime will scan only (no direct fallback)."
-                    : L"no acquisition path remains; loading will fail closed.";
-                wprintf(L"  %ls[!]%ls Sponsor pre-open failed (0x%08X); %ls\n",
+                    ? L"Runtime Will Scan Only (No Direct Fallback)."
+                    : L"No Acquisition Path Remains; Loading Will Fail Closed.";
+                wprintf(L"  %ls[!]%ls Sponsor Pre-Open Failed (0x%08X); %ls\n",
                     kYellow, kReset, sponsor_err, consequence);
             }
         }
@@ -8553,32 +8586,32 @@ LUID luid{};
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Thread sponsor pre-open failed (0x%08X); runtime will search.\n",
+                wprintf(L"  %ls[!]%ls Thread Sponsor Pre-Open Failed (0x%08X); Runtime Will Search.\n",
                     kYellow, kReset, thread_sponsor_err);
             }
         }
         FileHandleGuard threadSponsorGuard(threadSponsorRaw);
 
-        Trace::Begin(L"Pre-open donor handles (sponsor)");
+        Trace::Begin(L"Pre-Open Donor Handles (Sponsor)");
         if (sponsorRaw)
         {
-            Trace::Note(L"process sponsor handle : 0x%08X (access 0x%08lX)",
+            Trace::Note(L"Process Sponsor Handle = 0x%08X (Access 0x%08lX)",
                 static_cast<unsigned>(ReCa<ULONG_PTR>(sponsorRaw)),
                 static_cast<unsigned long>(Context.SponsorAccess));
         }
         else
         {
-            Trace::Note(L"process sponsor handle : not obtained (runtime acquisition only)");
+            Trace::Note(L"Process Sponsor Handle = Not Obtained (Runtime Acquisition Only)");
         }
         if (threadSponsorRaw)
         {
-            Trace::Note(L"thread sponsor handle  : 0x%08X (TID 0x%04lX)",
+            Trace::Note(L"Thread Sponsor Handle = 0x%08X (TID 0x%04lX)",
                 static_cast<unsigned>(ReCa<ULONG_PTR>(threadSponsorRaw)),
                 static_cast<unsigned long>(Context.SponsorTid));
         }
         else
         {
-            Trace::Note(L"thread sponsor handle  : not obtained (runtime will search)");
+            Trace::Note(L"Thread Sponsor Handle = Not Obtained (Runtime Will Search)");
         }
         Trace::End();
 
@@ -8596,7 +8629,7 @@ LUID luid{};
             targetHandleGuard.reset(targetHandle);
             if (!targetHandle)
             {
-                wprintf(L"  %ls[!]%ls Could not open the target for hook scanning (0x%08X).\n",
+                wprintf(L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
                     kYellow, kReset, GetLastError());
             }
         }
@@ -8626,29 +8659,29 @@ LUID luid{};
             ScanAndRestoreHooks(targetHandle, pre_unhooked, pre_remaining, pre_stats);
             if (!config.quiet)
             {
-                PrintHookScanResult(L"Pre-load hook", pre_stats, pre_unhooked, pre_remaining);
+                PrintHookScanResult(L"Pre-Load Hook", pre_stats, pre_unhooked, pre_remaining);
             }
         }
 
         if (data.TargetTid)
         {
-            wprintf(L"Requested sponsor TID %ls0x%04lX%s, Timeout %ls%lu ms%s (runtime may reject it; hijacked thread reported on completion)...\n",
+            wprintf(L"Requested Sponsor TID %ls0x%04lX%s | Timeout %ls%lu ms%s (Runtime May Reject It; Hijacked Thread Reported On Completion)...\n",
                 kGreen, static_cast<unsigned long>(data.TargetTid), kReset,
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
         else
         {
-            wprintf(L"Working (runtime thread search, timeout %ls%lu ms%s)...\n",
+            wprintf(L"Working (Runtime Thread Search, Timeout %ls%lu ms%s)...\n",
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
 
-        Trace::Begin(L"Memory injection (manual map + thread hijack)");
-        Trace::Note(L"target pid    : %lu", static_cast<unsigned long>(data.ProcessID));
-        Trace::Note(L"payload bytes : %lu", static_cast<unsigned long>(data.RawSize));
-        Trace::Note(L"flags         : 0x%08lX", static_cast<unsigned long>(data.Flags));
-        Trace::Note(L"timeout       : %lu ms", static_cast<unsigned long>(data.Timeout));
-        Trace::Note(L"sponsor proc  : 0x%08X", static_cast<unsigned>(data.hHandleValue));
-        Trace::Note(L"sponsor tid   : 0x%08X (handle 0x%08X)",
+        Trace::Begin(L"Memory Injection (Manual Map + Thread Hijack)");
+        Trace::Note(L"Target PID = %lu", static_cast<unsigned long>(data.ProcessID));
+        Trace::Note(L"Payload Bytes = %lu", static_cast<unsigned long>(data.RawSize));
+        Trace::Note(L"Flags = 0x%08lX", static_cast<unsigned long>(data.Flags));
+        Trace::Note(L"Timeout = %lu ms", static_cast<unsigned long>(data.Timeout));
+        Trace::Note(L"Sponsor Proc = 0x%08X", static_cast<unsigned>(data.hHandleValue));
+        Trace::Note(L"Sponsor TID = 0x%08X (Handle 0x%08X)",
             static_cast<unsigned>(data.TargetTid),
             static_cast<unsigned>(data.hThreadHandleValue));
 
@@ -8659,19 +8692,19 @@ LUID luid{};
         if (runtime.clear_last_error_info)
         {
             runtime.clear_last_error_info();
-            Trace::Note(L"diagnostic ring cleared");
+            Trace::Note(L"Diagnostic Ring Cleared");
         }
 
         const DWORD result = runtime.memory_inject(&data);
         const ULONGLONG inject_window_ms = GetTickCount64() - inject_begin_ms;
 
-        Trace::Note(L"inject returned 0x%08lX after %llu ms", static_cast<unsigned long>(result),
+        Trace::Note(L"Return Value = 0x%08lX | Elapsed = %llu ms", static_cast<unsigned long>(result),
             static_cast<unsigned long long>(inject_window_ms));
         Trace::End();
 
         if (result != INJ_ERR_SUCCESS)
         {
-            wprintf(L"%ls[x]%ls Operation failed with code %08X%ls\n", kRed, kReset, result);
+            wprintf(L"%ls[x]%ls Operation Failed With Code %08X%ls\n", kRed, kReset, result);
             PrintFailureHint(result);
 
             if (runtime.get_last_error_info)
@@ -8681,11 +8714,11 @@ LUID luid{};
 
                 if (detail_status == INJ_ERR_NO_LAST_ERROR)
                 {
-                    wprintf(L"  Runtime recorded no diagnostic detail for this attempt.\n");
+                    wprintf(L"  Runtime Recorded No Diagnostic Detail For This Attempt.\n");
                 }
                 else if (detail_status == INJ_ERR_SUCCESS)
                 {
-                    wprintf(L"  Runtime detail: adv=%08X line=%d native=%d\n",
+                    wprintf(L"  Runtime Detail: Adv = %08X | Line = %d | Native = %d\n",
                         detail.AdvErrorCode, detail.Line, detail.bNative);
                     if (detail.DllFileName[0])
                     {
@@ -8694,7 +8727,7 @@ LUID luid{};
                     if (detail.AdvErrorCode >= 0xC0000000u)
                     {
 
-                        wprintf(L"  Adv is an NTSTATUS from the target: 0x%08X (%ls).\n",
+                        wprintf(L"  Adv Is An NTSTATUS From The Target: 0x%08X (%ls).\n",
                             detail.AdvErrorCode, DescribeNtStatus(detail.AdvErrorCode));
                     }
                 }
@@ -8702,14 +8735,14 @@ LUID luid{};
 
             if (result >= 0x00400000u && result < 0x00500000u)
             {
-                wprintf(L"  %ls[!]%ls Remote mapping reached the shell; unreclaimable loader state may remain.\n",
+                wprintf(L"  %ls[!]%ls Remote Mapping Reached The Shell; Unreclaimable Loader State May Remain.\n",
                     kYellow, kReset);
-                wprintf(L"      Relaunch the target before attempting another load.\n");
+                wprintf(L"      Relaunch The Target Before Attempting Another Load.\n");
             }
             targetHandleGuard.reset();
             threadSponsorGuard.reset();
             sponsorGuard.reset();
-            Trace::Summary(L"FAILED during injection");
+            Trace::Summary(L"Failed During Injection");
             PauseBeforeExit();
             // Only retry genuine pre-mapping misses. If the payload already
             // reached the target, retrying would load it a second time without
@@ -8731,18 +8764,18 @@ LUID luid{};
             targetHandleGuard.reset(targetHandle);
             if (!targetHandle)
             {
-                wprintf(L"  %ls[!]%ls Could not re-open the target read-only for verification (0x%08X).\n",
+                wprintf(L"  %ls[!]%ls Could Not Re-Open The Target Read-Only For Verification (0x%08X).\n",
                     kYellow, kReset, GetLastError());
             }
         }
 
-        Trace::Begin(L"Fetch runtime telemetry");
+        Trace::Begin(L"Fetch Runtime Telemetry");
         HijackStats ProcessHijackStats{};
         HijackStats ThreadHijackStats{};
         if (runtime.get_last_hijack_stats)
         {
             runtime.get_last_hijack_stats(&ProcessHijackStats, &ThreadHijackStats);
-            Trace::Note(L"process hijack: attempted=%u success=%u source=%u donor=%u",
+            Trace::Note(L"Process Hijack: Attempted = %u | Success = %u | Source = %u | Donor = %u",
                 ProcessHijackStats.Attempted, ProcessHijackStats.Success, ProcessHijackStats.Source,
                 ProcessHijackStats.DonorPid);
         }
@@ -8750,7 +8783,7 @@ LUID luid{};
         if (runtime.get_last_map_stats)
         {
             runtime.get_last_map_stats(&MapStats);
-            Trace::Note(L"map stats     : cleaned=0x%08X residual=0x%08X verified=%u",
+            Trace::Note(L"Map Stats: Cleaned = 0x%08X | Residual = 0x%08X | Verified = %u",
                 MapStats.CleanedMask, MapStats.ResidualMask, MapStats.Verified);
         }
 
@@ -8758,10 +8791,10 @@ LUID luid{};
         if (runtime.get_last_thread_exec_stats)
         {
             runtime.get_last_thread_exec_stats(&ThreadExec);
-            Trace::Note(L"thread exec   : tid=0x%04X success=%u ret=0x%08X iters=%u elapsed=%u ms",
+            Trace::Note(L"Thread Exec: TID = 0x%04X | Success = %u | Return Value = 0x%08X | Iterations = %u | Elapsed = %u ms",
                 ThreadExec.HijackedTid, ThreadExec.Success, ThreadExec.RoutineRet,
                 ThreadExec.PollIterations, ThreadExec.ExecMs);
-            Trace::Note(L"scrubbed=%llu bytes cycles=%llu",
+            Trace::Note(L"Scrubbed = %llu Bytes | Cycles = %llu",
                 static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
                 static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
         }
@@ -8769,7 +8802,7 @@ LUID luid{};
         if (runtime.get_last_exec_telemetry)
         {
             runtime.get_last_exec_telemetry(&ExecTelemetry);
-            Trace::Note(L"exec telemetry: dllmain=%d lock=0x%08X unlock=0x%08X tls=%u/%u/%u",
+            Trace::Note(L"Exec Telemetry: DllMain = %d | Lock = 0x%08X | Unlock = 0x%08X | TLS = %u/%u/%u",
                 (int)ExecTelemetry.DllMainResult,
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus,
                 ExecTelemetry.TlsCallbacksConfigured, ExecTelemetry.TlsCallbacksExecuted,
@@ -8780,7 +8813,7 @@ LUID luid{};
 
         bool stealth_gate_ok = false;
         bool wx_violated = false;
-        Trace::Begin(L"Stealth verification suite");
+        Trace::Begin(L"Stealth Verification Suite");
         if (targetHandle)
         {
 
@@ -8796,25 +8829,25 @@ LUID luid{};
         }
         else
         {
-            wprintf(L"%ls[x]%ls Verification could not run (no target handle); the result is unproven.\n",
+            wprintf(L"%ls[x]%ls Verification Could Not Run (No Target Handle); The Result Is Unproven.\n",
                 kRed, kReset);
         }
-        Trace::Note(L"verification gate: %s | wx_violated: %s",
-            stealth_gate_ok ? L"PASS" : L"FAIL", wx_violated ? L"YES" : L"NO");
+        Trace::Note(L"Verification Gate = %s | W^X Violated = %s",
+            stealth_gate_ok ? L"Pass" : L"Fail", wx_violated ? L"Yes" : L"No");
         Trace::End(stealth_gate_ok && !wx_violated);
 
         if (!runtime.get_last_thread_exec_stats || !ThreadExec.Attempted)
         {
-            wprintf(L"  %ls[!]%ls Thread context not reported (no telemetry, or no donor was attempted).\n", kYellow, kReset);
+            wprintf(L"  %ls[!]%ls Thread Context Not Reported (No Telemetry, Or No Donor Was Attempted).\n", kYellow, kReset);
         }
         else if (ThreadExec.Success)
         {
-            wprintf(L"  %ls[+]%ls Thread context restored to original on TID: %ls0x%04lX%s.\n",
+            wprintf(L"  %ls[+]%ls Thread Context Restored To Original On TID: %ls0x%04lX%s.\n",
                 kGreen, kReset, kGreen, static_cast<unsigned long>(ThreadExec.HijackedTid), kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Thread context %sNOT restored%s on TID: %s0x%04lX%s (code 0x%08lX) - it may still be running donor code.\n",
+            wprintf(L"  %ls[!]%ls Thread Context %sNOT Restored%s On TID: %s0x%04lX%s (Code 0x%08lX) - It May Still Be Running Donor Code.\n",
                 kYellow, kReset, kYellow, kReset, kYellow,
                 static_cast<unsigned long>(ThreadExec.HijackedTid), kReset,
                 static_cast<unsigned long>(ThreadExec.FailCode));
@@ -8822,14 +8855,14 @@ LUID luid{};
 
         if (ThreadExec.Attempted)
         {
-            wprintf(L"  %ls[+]%ls Donor-scan rounds: %ls%lu%ls (donor-thread rounds attempted before success or exhaustion).\n",
+            wprintf(L"  %ls[+]%ls Donor-Scan Rounds: %ls%lu%ls (Donor-Thread Rounds Attempted Before Success Or Exhaustion).\n",
                 kGreen, kReset, kGreen, static_cast<unsigned long>(ThreadExec.DonorRounds), kReset);
         }
 
         if (ThreadExec.Attempted && data.TargetTid && ThreadExec.HijackedTid
             && ThreadExec.HijackedTid != data.TargetTid)
         {
-            wprintf(L"  %ls[!]%ls Sponsor TID %ls0x%04lX%ls not usable; hijacked TID %ls0x%04lX%ls instead (donor scan fallback).\n",
+            wprintf(L"  %ls[!]%ls Sponsor TID %ls0x%04lX%ls Not Usable; Hijacked TID %ls0x%04lX%ls Instead (Donor Scan Fallback).\n",
                 kYellow, kReset,
                 kGreen, static_cast<unsigned long>(data.TargetTid), kReset,
                 kGreen, static_cast<unsigned long>(ThreadExec.HijackedTid), kReset);
@@ -8843,7 +8876,7 @@ LUID luid{};
             ScanAndRestoreHooks(targetHandle, unhooked, remaining, post_stats);
             if (!config.quiet)
             {
-                PrintHookScanResult(L"Post-load hook", post_stats, unhooked, remaining);
+                PrintHookScanResult(L"Post-Load Hook", post_stats, unhooked, remaining);
             }
         }
 
@@ -8927,38 +8960,38 @@ LUID luid{};
 
             if (walked)
             {
-                wprintf(L"\n  Post-state re-query of the mapped image (taken after the verification suite):\n");
-                wprintf(L"    [%ls%ls%ls] image base %p | first region protect %ls%s%s | state %s\n",
+                wprintf(L"\n  Post-State Re-Query Of The Mapped Image (Taken After The Verification Suite):\n");
+                wprintf(L"    [%ls%ls%ls] Image Base %p | First Region Protect %ls%s%s | State %s\n",
                     post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
                     data.hDllOut,
                     kGreen, StealthPageDesc(base_prot), kReset,
-                    head.State == MEM_COMMIT ? L"MEM_COMMIT" : L"NOT COMMITTED");
-                wprintf(L"    [%ls%ls%ls] committed extent %llu KB | RX=%d RW=%d RO=%d NOACCESS=%d RWX=%d\n",
+                    head.State == MEM_COMMIT ? L"MEM_COMMIT" : L"Not Committed");
+                wprintf(L"    [%ls%ls%ls] Committed Extent %llu KB | RX = %d | RW = %d | RO = %d | NOACCESS = %d | RWX = %d\n",
                     post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
                     static_cast<unsigned long long>(committed / 1024),
                     post_rx, post_rw, post_ro, post_noaccess, post_rwx);
-                wprintf(L"    [%ls%ls%ls] DllMain result read back at exit: %ls%s%s | TLS %u/%u executed "
-                        L"| loader lock 0x%08X/0x%08X | hijacked TID 0x%04X\n",
+                wprintf(L"    [%ls%ls%ls] DllMain Result Read Back At Exit: %ls%s%s | TLS %u/%u Executed "
+                        L"| Loader Lock 0x%08X/0x%08X | Hijacked TID 0x%04X\n",
                     L"+", kGreen, kReset,
-                    ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE",
+                    ExecTelemetry.DllMainResult ? L"True" : L"False",
                     ExecTelemetry.DllMainResult ? kGreen : kRed, kReset,
                     ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
                     (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus,
                     (unsigned)ThreadExec.HijackedTid);
                 if (post_rwx)
                 {
-                    wprintf(L"    [%lsx%s] WARNING: %d RWX region(s) observed in the post-state query.\n",
+                    wprintf(L"    [%lsx%s] Warning: %d RWX Region(s) Observed In The Post-State Query.\n",
                         kRed, kReset, post_rwx);
                 }
             }
             else
             {
-                wprintf(L"\n  [%lsx%s] Post-state re-query failed: image base not queryable.\n", kRed, kReset);
+                wprintf(L"\n  [%lsx%s] Post-State Re-Query Failed: Image Base Not Queryable.\n", kRed, kReset);
             }
         }
         else if (!had_target)
         {
-            wprintf(L"\n  [%ls*%s] Post-state re-read NOT PERFORMED: no target handle was retained.\n", kDim, kReset);
+            wprintf(L"\n  [%ls*%s] Post-State Re-Read Not Performed: No Target Handle Was Retained.\n", kDim, kReset);
         }
 
         targetHandleGuard.reset();
@@ -8977,12 +9010,12 @@ LUID luid{};
             }
             if (released.count)
             {
-                wprintf(L"  %ls[+]%ls Closed %ls%u%ls handle(s) before exit: %ls\n",
+                wprintf(L"  %ls[+]%ls Closed %ls%u%ls Handle(s) Before Exit: %ls\n",
                     kGreen, kReset, kGreen, released.count, kReset, list);
             }
             else
             {
-                wprintf(L"  %ls[*]%ls No handles were open at cleanup (none acquired this run).\n", kDim, kReset);
+                wprintf(L"  %ls[*]%ls No Handles Were Open At Cleanup (None Acquired This Run).\n", kDim, kReset);
             }
         }
 
@@ -8992,29 +9025,29 @@ LUID luid{};
             if (!had_target)
             {
 
-                wprintf(L"%ls[x] VERIFICATION NOT PERFORMED%s - the payload is mapped in the\n", kRed, kReset);
-                wprintf(L"    target, but no target handle was available, so neither the string-encryption\n");
-                wprintf(L"    gate nor the W^X posture could be checked. The result is unproven; do not\n");
-                wprintf(L"    treat it as a clean load until it can be verified.\n");
+                wprintf(L"%ls[x] Verification Not Performed%s - The Payload Is Mapped In The\n", kRed, kReset);
+                wprintf(L"    Target, But No Target Handle Was Available, So Neither The String-Encryption\n");
+                wprintf(L"    Gate Nor The W^X Posture Could Be Checked. The Result Is Unproven; Do Not\n");
+                wprintf(L"    Treat It As A Clean Load Until It Can Be Verified.\n");
             }
             else
             {
-                wprintf(L"%ls[x] VERIFICATION GATE FAILED%s - the payload is mapped in the target, but the\n", kRed, kReset);
-                wprintf(L"    runtime DLL does not pass verification (string-encryption or forensic posture).\n");
-                wprintf(L"    It must not be treated as a clean load: a plaintext symbol name in .rdata is\n");
-                wprintf(L"    scannable, and shipping it defeats the point of the string tiers.\n");
-                wprintf(L"    Fix the leak and rebuild before using this build.\n");
+                wprintf(L"%ls[x] Verification Gate Failed%s - The Payload Is Mapped In The Target, But The\n", kRed, kReset);
+                wprintf(L"    Runtime DLL Does Not Pass Verification (String-Encryption Or Forensic Posture).\n");
+                wprintf(L"    It Must Not Be Treated As A Clean Load: A Plaintext Symbol Name In .rdata Is\n");
+                wprintf(L"    Scannable, And Shipping It Defeats The Point Of The String Tiers.\n");
+                wprintf(L"    Fix The Leak And Rebuild Before Using This Build.\n");
             }
-            Trace::Summary(had_target ? L"FAILED at verification gate" : L"VERIFICATION NOT PERFORMED");
+            Trace::Summary(had_target ? L"Failed At Verification Gate" : L"Verification Not Performed");
             PauseBeforeExit();
             return 1;
         }
         if (wx_violated)
         {
-            wprintf(L"%ls[!] W^X advisory:%s the W^X posture was not confirmed (see the Verify W^X execution step).\n", kYellow, kReset);
-            wprintf(L"    Either a mapped page is not RX as expected, or the image could not be queried\n");
-            wprintf(L"    or bounded. The load is functional, but this weakens confidence in the\n");
-            wprintf(L"    W^X posture. Treat this build as suspect.\n\n");
+            wprintf(L"%ls[!] W^X Advisory:%s The W^X Posture Was Not Confirmed (See The Verify W^X Execution Step).\n", kYellow, kReset);
+            wprintf(L"    Either A Mapped Page Is Not RX As Expected, Or The Image Could Not Be Queried\n");
+            wprintf(L"    Or Bounded. The Load Is Functional, But This Weakens Confidence In The\n");
+            wprintf(L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
         // Verification coverage. The gate above is a boolean, so on its own it cannot distinguish
@@ -9042,16 +9075,19 @@ LUID luid{};
                 bool checked;
                 const wchar_t * note;
             };
+            // Stated from the marker-count constant, not a literal, so the note tracks the array.
+            wchar_t marker_coverage_note[64]{};
+            swprintf_s(marker_coverage_note, L"%zu Markers Absent From The Runtime DLL", kStringMarkerCount);
             const Coverage coverage[] =
             {
-                { L"in-shell execution telemetry", exec_telemetry_read, L"RDTSC timing, DllMain result, loader-lock, TLS" },
-                { L"data-directory wipe re-read",    map_stats_read, L"mapper-side re-read after header cloak" },
-                { L"cross-process header re-read",   false, L"impossible: mapper leaves the header PAGE_NOACCESS" },
-                { L"page protections / W^X",         !wx_violated, L"VirtualQueryEx walk of the mapped image" },
-                { L"forensic posture (runtime DLL)", stealth_gate_ok, L"exports, section names, debug directory" },
-                { L"string-encryption markers",      stealth_gate_ok, L"34 markers absent from the runtime DLL" },
-                { L"payload exception unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; SEH-table path" },
-                { L"target VEH first-chance (PEB)",  veh_checked, L"RPM-only CrossFlags PEB+80; installs nothing" },
+                { L"In-Shell Execution Telemetry", exec_telemetry_read, L"RDTSC Timing, DllMain Result, Loader-Lock, TLS" },
+                { L"Data-Directory Wipe Re-Read",    map_stats_read, L"Mapper-Side Re-Read After Header Cloak" },
+                { L"Cross-Process Header Re-Read",   false, L"Impossible: Mapper Leaves The Header PAGE_NOACCESS" },
+                { L"Page Protections / W^X",         !wx_violated, L"VirtualQueryEx Walk Of The Mapped Image" },
+                { L"Forensic Posture (Runtime DLL)", stealth_gate_ok, L"Exports, Section Names, Debug Directory" },
+                { L"String-Encryption Markers",      stealth_gate_ok, marker_coverage_note },
+                { L"Payload Exception Unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; SEH-Table Path" },
+                { L"Target VEH First-Chance (PEB)",  veh_checked, L"RPM-Only CrossFlags PEB+80; Installs Nothing" },
             };
 
             constexpr size_t kCoverageCount = sizeof(coverage) / sizeof(coverage[0]);
@@ -9063,7 +9099,7 @@ LUID luid{};
             }
 
             wprintf(L"\n");
-            wprintf(L"  Verification coverage (%ls%u of %zu capabilities externally checked%ls):\n",
+            wprintf(L"  Verification Coverage (%ls%u Of %zu Capabilities Externally Checked%ls):\n",
                 kGreen, checked, kCoverageCount, kReset);
             for (size_t i = 0; i < kCoverageCount; ++i)
             {
@@ -9074,9 +9110,9 @@ LUID luid{};
             }
             if (unchecked)
             {
-                wprintf(L"  %ls[*]%ls %ls%u%ls capabilit%s not checkable from outside the target - reported as\n",
-                    kDim, kReset, kYellow, unchecked, kReset, unchecked == 1 ? L"y is" : L"ies are");
-                wprintf(L"    observations, not passes. A green gate means every check that COULD run did.\n");
+                wprintf(L"  %ls[*]%ls %ls%u%ls Capabilit%s Not Checkable From Outside The Target - Reported As\n",
+                    kDim, kReset, kYellow, unchecked, kReset, unchecked == 1 ? L"y Is" : L"ies Are");
+                wprintf(L"    Observations, Not Passes. A Green Gate Means Every Check That Could Run Did.\n");
             }
         }
 
@@ -9084,7 +9120,7 @@ LUID luid{};
         // restatement of the configured flags, because the flags describe what was requested, not
         // what happened.
         wprintf(L"\n");
-        wprintf(L"Load result (every value below was read back during this run):\n");
+        wprintf(L"Load Result (Every Value Below Was Read Back During This Run):\n");
 
         // Single helper so the marker, its colour and the reset can never drift out of alignment
         // with the value that follows them again.
@@ -9093,46 +9129,46 @@ LUID luid{};
             wprintf(L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
         };
 
-        row(L"return code............... ", result == INJ_ERR_SUCCESS);
+        row(L"Return Code............... ", result == INJ_ERR_SUCCESS);
         wprintf(L"0x%08X (%s)\n", static_cast<unsigned>(result),
-            result == INJ_ERR_SUCCESS ? L"INJ_ERR_SUCCESS" : L"non-zero");
+            result == INJ_ERR_SUCCESS ? L"INJ_ERR_SUCCESS" : L"Non-Zero");
 
-        row(L"mapped image base......... ", data.hDllOut != nullptr);
+        row(L"Mapped Image Base......... ", data.hDllOut != nullptr);
         wprintf(L"%p\n", data.hDllOut);
 
-        row(L"inject call wall time..... ", true);
-        wprintf(L"%llu ms (timeout %lu ms)\n",
+        row(L"Inject Call Wall Time..... ", true);
+        wprintf(L"%llu ms (Timeout %lu ms)\n",
             static_cast<unsigned long long>(inject_window_ms),
             static_cast<unsigned long>(data.Timeout));
 
-        row(L"DllMain(DLL_PROCESS_ATTACH) returned ",
+        row(L"DllMain(DLL_PROCESS_ATTACH) Returned ",
             ExecTelemetry.DllMainCyclesDelta == 0 ? true : ExecTelemetry.DllMainResult != 0);
         if (ExecTelemetry.DllMainCyclesDelta == 0)
         {
-            wprintf(L"not entered (no entry point; cycle counter 0)\n");
+            wprintf(L"Not Entered (No Entry Point; Cycle Counter 0)\n");
         }
         else
         {
-            wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"TRUE" : L"FALSE");
+            wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"True" : L"False");
         }
 
         const bool tls_ok = ExecTelemetry.TlsCallbacksConfigured == ExecTelemetry.TlsCallbacksExecuted &&
             ExecTelemetry.TlsCallbacksFailed == 0;
-        row(L"TLS callbacks............. ", tls_ok);
-        wprintf(L"%u executed of %u configured (%u failed)\n",
+        row(L"TLS Callbacks............. ", tls_ok);
+        wprintf(L"%u Executed Of %u Configured (%u Failed)\n",
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
         // The loader-lock NTSTATUSes are only meaningful when DllMain was actually entered; the
         // lock is taken inside that step. Reporting 0xC0000001 as a failure in a run where the
-        // step never ran contradicted the SUCCESS return code above.
+        // step never ran contradicted the Success return code above.
         const bool lock_attempted = ExecTelemetry.DllMainCyclesDelta != 0;
         const bool lock_ok = !lock_attempted ||
             (ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0);
-        row(L"loader lock acquire/release  ", lock_ok);
+        row(L"Loader Lock Acquire/Release  ", lock_ok);
         if (!lock_attempted)
         {
-            wprintf(L"not attempted (inside the DllMain step; DllMain not entered)\n");
+            wprintf(L"Not Attempted (Inside The DllMain Step; DllMain Not Entered)\n");
         }
         else
         {
@@ -9140,33 +9176,35 @@ LUID luid{};
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
         }
 
-        row(L"thread hijack............. ", ThreadExec.Success != 0);
-        wprintf(L"TID 0x%04X, success=%u, routine ret 0x%08X, %u poll(s) over %u ms\n",
+        row(L"Thread Hijack............. ", ThreadExec.Success != 0);
+        wprintf(L"TID 0x%04X | Success = %u | Routine Return Value = 0x%08X | %u Poll(s) Over %u ms\n",
             (unsigned)ThreadExec.HijackedTid, (unsigned)ThreadExec.Success,
             (unsigned)ThreadExec.RoutineRet, (unsigned)ThreadExec.PollIterations,
             (unsigned)ThreadExec.ExecMs);
 
-        row(L"hijacked stack scrubbed... ", ThreadExec.StackScrubbedBytes != 0);
-        wprintf(L"%llu bytes in %llu cycles\n",
+        row(L"Hijacked Stack Scrubbed... ", ThreadExec.StackScrubbedBytes != 0);
+        wprintf(L"%llu Bytes In %llu Cycles\n",
             static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
             static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
 
-        row(L"data directories wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
-        wprintf(L"cleaned mask 0x%08X, residual 0x%08X, mapper re-read %s\n",
+        row(L"Data Directories Wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
+        wprintf(L"Cleaned Mask = 0x%08X | Residual = 0x%08X | Mapper Re-Read %s\n",
             (unsigned)MapStats.CleanedMask, (unsigned)MapStats.ResidualMask,
-            MapStats.Verified ? L"verified" : L"NOT verified");
+            MapStats.Verified ? L"Verified" : L"Not Verified");
 
         row(L"W^X....................... ", !wx_violated);
-        wprintf(L"RWX regions found: %d (%s)\n", wx_violated ? 1 : 0,
-            wx_violated ? L"VIOLATED" : L"enforced");
+        wprintf(L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,
+            wx_violated ? L"Violated" : L"Enforced");
 
-        row(L"verification gate......... ", true);
-        wprintf(L"PASS\n");
+        // The gate is read back rather than restated: this banner claims every value below was
+        // observed during the run, and the code only reaches here with stealth_gate_ok set.
+        row(L"Verification Gate......... ", stealth_gate_ok);
+        wprintf(L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
         wprintf(L"====================================================================================================\n");
-        wprintf(L"[RESULT]  [+] Mapped at %p in %ls (PID %lu)\n",
+        wprintf(L"[Result] [+] Mapped At %p In %ls (PID %lu)\n",
             data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
         wprintf(L"====================================================================================================\n");
-        Trace::Summary(L"SUCCESS");
+        Trace::Summary(L"Success");
         PauseBeforeExit();
         return 0;
     }
@@ -9233,7 +9271,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     }
     catch (const std::bad_alloc &)
     {
-        PrintError(L"Out of memory during loading; aborting.");
+        PrintError(L"Out Of Memory During Loading; Aborting.");
         PauseBeforeExit();
         result = 1;
     }
@@ -9267,7 +9305,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     if (result == kResultRetryable && retryIndex + 1 >= kMaxLaunchAttempts)
     {
-        LayeredNotify(L"Launcher", L"Operation failed after 3 attempts. The full log is on your clipboard.", 5000);
+        LayeredNotify(L"Launcher", L"Operation Failed After 3 Attempts. The Full Log Is On Your Clipboard.", 5000);
         result = 1;
     }
 

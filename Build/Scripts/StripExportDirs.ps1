@@ -14,11 +14,11 @@ if ($noColour) {
     $X = "$esc[0m"
 }
 
-if (-not (Test-Path -LiteralPath $Path)) { Write-Host "  $E[!]$X export strip: file not found: $Path"; exit 1 }
+if (-not (Test-Path -LiteralPath $Path)) { Write-Host "  $E[!]$X Export Strip: File Not Found: $Path"; exit 1 }
 
 $b = [IO.File]::ReadAllBytes($Path)
 $e = [BitConverter]::ToInt32($b, 0x3C)
-if ([Text.Encoding]::ASCII.GetString($b, $e, 4) -ne "PE`0`0") { Write-Host "  $E[!]$X export strip: not a PE"; exit 1 }
+if ([Text.Encoding]::ASCII.GetString($b, $e, 4) -ne "PE`0`0") { Write-Host "  $E[!]$X Export Strip: Not A PE"; exit 1 }
 
 $coff = $e + 4
 $opt = $coff + 20
@@ -28,7 +28,7 @@ $expRva = [BitConverter]::ToUInt32($b, $ddoff + 0)
 $expSz = [BitConverter]::ToUInt32($b, $ddoff + 4)
 
 if ($expRva -eq 0 -or $expSz -eq 0) {
-    Write-Host "  $G[+]$X Export directory already absent."
+    Write-Host "  $G[+]$X Export Directory Already Absent."
     exit 0
 }
 
@@ -54,7 +54,7 @@ function Convert-RvaToOffset([uint32]$rva) {
 }
 
 $eo = Convert-RvaToOffset $expRva
-if ($eo -lt 0) { Write-Host "  $E[!]$X export strip: export RVA 0x$($expRva.ToString('X')) outside every section"; exit 1 }
+if ($eo -lt 0) { Write-Host "  $E[!]$X Export Strip: Export RVA 0x$($expRva.ToString('X')) Outside Every Section"; exit 1 }
 
 $strings = New-Object System.Collections.Generic.List[int]
 $nameRva = [BitConverter]::ToUInt32($b, $eo + 12)
@@ -62,7 +62,7 @@ if ($nameRva -ne 0) { $strings.Add((Convert-RvaToOffset $nameRva)) }
 $nNames = [BitConverter]::ToUInt32($b, $eo + 24)
 $anOff = Convert-RvaToOffset ([BitConverter]::ToUInt32($b, $eo + 32))
 if ($nNames -gt 0 -and $anOff -ge 0) {
-    if ($nNames -gt 65536) { Write-Host "  $E[!]$X export strip: implausible name count $nNames"; exit 1 }
+    if ($nNames -gt 65536) { Write-Host "  $E[!]$X Export Strip: Implausible Name Count $nNames"; exit 1 }
     for ($i = 0; $i -lt $nNames; $i++) {
         $nr = Convert-RvaToOffset ([BitConverter]::ToUInt32($b, $anOff + 4 * $i))
         if ($nr -ge 0) { $strings.Add($nr) }
@@ -87,8 +87,8 @@ $ve = [BitConverter]::ToInt32($v, 0x3C)
 $vdd = if ($pe32p) { $ve + 4 + 20 + 112 } else { $ve + 4 + 20 + 96 }
 $vRva = [BitConverter]::ToUInt32($v, $vdd + 0)
 $vSz = [BitConverter]::ToUInt32($v, $vdd + 4)
-if ($vRva -ne 0 -or $vSz -ne 0) { Write-Host "  $E[x]$X export strip: data directory still set"; exit 1 }
-if ([Text.Encoding]::ASCII.GetString($v).Contains('ManualEntry')) { Write-Host "  $E[x]$X export strip: ManualEntry still present"; exit 1 }
+if ($vRva -ne 0 -or $vSz -ne 0) { Write-Host "  $E[x]$X Export Strip: Data Directory Still Set"; exit 1 }
+if ([Text.Encoding]::ASCII.GetString($v).Contains('ManualEntry')) { Write-Host "  $E[x]$X Export Strip: ManualEntry Still Present"; exit 1 }
 
-Write-Host "  $G[+]$X Export directory stripped ($G$zeroed$X name byte(s) zeroed, directory cleared)."
+Write-Host "  $G[+]$X Export Directory Stripped ($G$zeroed$X Name Byte(s) Zeroed, Directory Cleared)."
 exit 0

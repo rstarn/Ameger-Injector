@@ -16,20 +16,20 @@ SYMBOL_PARSER::~SYMBOL_PARSER()
 
 DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 {
-	LOG(1, XOR_STR_A("SYMBOL_PARSER::Initialize\n").get());
+	LOG(1, XOR_STR_A("SymbolParser::Initialize\n").get());
 
 	m_bReady = false;
 
 	if (!pSymbolObject)
 	{
-		LOG(1, XOR_STR_A("SYMBOL_PARSER: symbol object is NULL\n").get());
+		LOG(1, XOR_STR_A("SymbolParser: Symbol Object Is Null\n").get());
 
 		return SYMBOL_ERR_OBJECT_IS_NULL;
 	}
 
 	if (!pSymbolObject->IsReady())
 	{
-		LOG(1, XOR_STR_A("SYMBOL_PARSER: symbol object isn't ready\n").get());
+		LOG(1, XOR_STR_A("SymbolParser: Symbol Object Isn't Ready\n").get());
 
 		return SYMBOL_ERR_OBJECT_NOT_READY;
 	}
@@ -49,7 +49,7 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 		m_hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
 		if (!m_hProcess)
 		{
-			LOG(1, XOR_STR_A("SYMBOL_PARSER: can't open current process: 0x%08X\n").get(), GetLastError());
+			LOG(1, XOR_STR_A("SymbolParser: Can't Open Current Process = 0x%08X\n").get(), GetLastError());
 
 			return SYMBOL_ERR_CANT_OPEN_PROCESS;
 		}
@@ -61,7 +61,7 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 		{
 			m_Api = dyn::DbgHelpTable{};
 
-			LOG(1, XOR_STR_A("SYMBOL_PARSER: DbgHelp unavailable (module or symbol missing)\n").get());
+			LOG(1, XOR_STR_A("SymbolParser: DbgHelp Unavailable (Module Or Symbol Missing)\n").get());
 
 			CloseHandle(m_hProcess);
 			m_hProcess = nullptr;
@@ -80,7 +80,7 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 			m_hProcess = nullptr;
 			m_bInitialized = false;
 
-			LOG(1, XOR_STR_A("SYMBOL_PARSER: SymInitializeW failed: 0x%08X\n").get(), GetLastError());
+			LOG(1, XOR_STR_A("SymbolParser: SymInitializeW Failed = 0x%08X\n").get(), GetLastError());
 
 			return SYMBOL_ERR_SYM_INIT_FAIL;
 		}
@@ -112,14 +112,14 @@ DWORD SYMBOL_PARSER::Initialize(const SYMBOL_LOADER * pSymbolObject)
 		m_hProcess = nullptr;
 		m_bInitialized = false;
 
-		LOG(1, XOR_STR_A("SYMBOL_PARSER: SymLoadModuleExW failed: 0x%08X\n").get(), GetLastError());
+		LOG(1, XOR_STR_A("SymbolParser: SymLoadModuleExW Failed = 0x%08X\n").get(), GetLastError());
 
 		return SYMBOL_ERR_SYM_LOAD_TABLE;
 	}
 
 	m_bReady = true;
 
-	LOG(1, XOR_STR_A("SYMBOL_PARSER: initialization finished\n").get());
+	LOG(1, XOR_STR_A("SymbolParser: Initialization Finished\n").get());
 
 	return SYMBOL_ERR_SUCCESS;
 }
@@ -128,14 +128,14 @@ DWORD SYMBOL_PARSER::GetSymbolAddress(const char * szSymbolName, DWORD & RvaOut)
 {
 	if (!m_bReady)
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: not ready\n").get());
+		LOG(2, XOR_STR_A("SymbolParser: Not Ready\n").get());
 
 		return SYMBOL_ERR_NOT_INITIALIZED;
 	}
 
 	if (!szSymbolName)
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: invalid symbol name\n").get());
+		LOG(2, XOR_STR_A("SymbolParser: Invalid Symbol Name\n").get());
 
 		return SYMBOL_ERR_INVALID_SYMBOL_NAME;
 	}
@@ -146,21 +146,21 @@ DWORD SYMBOL_PARSER::GetSymbolAddress(const char * szSymbolName, DWORD & RvaOut)
 	si->MaxNameLen = MAX_SYM_NAME;
 	if (!m_Api.SymFromName(m_hProcess, szSymbolName, si))
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: search failed: %08X\n").get(), GetLastError());
+		LOG(2, XOR_STR_A("SymbolParser: Search Failed = %08X\n").get(), GetLastError());
 
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 
 	if (si->Address < si->ModBase || si->Address - si->ModBase > 0xFFFFFFFFull)
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: address outside module\n").get());
+		LOG(2, XOR_STR_A("SymbolParser: Address Outside Module\n").get());
 
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 
 	RvaOut = static_cast<DWORD>(si->Address - si->ModBase);
 
-	LOG(2, XOR_STR_A("SYMBOL_PARSER: RVA %08X -> %s\n").get(), RvaOut, szSymbolName);
+	LOG(2, XOR_STR_A("SymbolParser: RVA = %08X -> %s\n").get(), RvaOut, szSymbolName);
 
 	return SYMBOL_ERR_SUCCESS;
 }
@@ -182,7 +182,7 @@ DWORD SYMBOL_PARSER::GetTypeId(const char * szTypeName, DWORD64 & TypeIdOut)
 	si->MaxNameLen = MAX_SYM_NAME;
 	if (!m_Api.SymGetTypeFromName(m_hProcess, m_SymbolTable, szTypeName, si))
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: type not found: %s (%08X)\n").get(), szTypeName, GetLastError());
+		LOG(2, XOR_STR_A("SymbolParser: Type Not Found = %s (%08X)\n").get(), szTypeName, GetLastError());
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	if (!si->TypeIndex)
@@ -190,7 +190,7 @@ DWORD SYMBOL_PARSER::GetTypeId(const char * szTypeName, DWORD64 & TypeIdOut)
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	TypeIdOut = si->TypeIndex;
-	LOG(2, XOR_STR_A("SYMBOL_PARSER: type %s -> id %08X\n").get(), szTypeName, static_cast<DWORD>(TypeIdOut));
+	LOG(2, XOR_STR_A("SymbolParser: Type %s -> ID %08X\n").get(), szTypeName, static_cast<DWORD>(TypeIdOut));
 	return SYMBOL_ERR_SUCCESS;
 }
 
@@ -206,16 +206,16 @@ DWORD SYMBOL_PARSER::GetTypeSize(const char * szTypeName, ULONG64 & SizeOut)
 	ULONG64 length = 0;
 	if (!m_Api.SymGetTypeInfo(m_hProcess, m_SymbolTable, static_cast<ULONG>(type_id), TI_GET_LENGTH, &length))
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: TI_GET_LENGTH failed for %s (%08X)\n").get(), szTypeName, GetLastError());
+		LOG(2, XOR_STR_A("SymbolParser: TI_GET_LENGTH Failed For %s (%08X)\n").get(), szTypeName, GetLastError());
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	if (!length || length > 0x10000)
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: implausible size for %s: %llu\n").get(), szTypeName, length);
+		LOG(2, XOR_STR_A("SymbolParser: Implausible Size For %s = %llu\n").get(), szTypeName, length);
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	SizeOut = length;
-	LOG(2, XOR_STR_A("SYMBOL_PARSER: size %s = %llu\n").get(), szTypeName, length);
+	LOG(2, XOR_STR_A("SymbolParser: Size %s = %llu\n").get(), szTypeName, length);
 	return SYMBOL_ERR_SUCCESS;
 }
 
@@ -241,12 +241,12 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 	DWORD child_count = 0;
 	if (!m_Api.SymGetTypeInfo(m_hProcess, m_SymbolTable, type_id, TI_GET_CHILDRENCOUNT, &child_count))
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: TI_GET_CHILDRENCOUNT failed for %s\n").get(), szTypeName);
+		LOG(2, XOR_STR_A("SymbolParser: TI_GET_CHILDRENCOUNT Failed For %s\n").get(), szTypeName);
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	if (!child_count || child_count > 512)
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: bad child count %lu for %s\n").get(), child_count, szTypeName);
+		LOG(2, XOR_STR_A("SymbolParser: Bad Child Count %lu For %s\n").get(), child_count, szTypeName);
 		return SYMBOL_ERR_SYMBOL_SEARCH_FAILED;
 	}
 	const size_t alloc_size = sizeof(TI_FINDCHILDREN_PARAMS) + (static_cast<size_t>(child_count) - 1) * sizeof(ULONG);
@@ -292,19 +292,19 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 					continue;
 				}
 				OffsetOut = field_offset;
-				LOG(2, XOR_STR_A("SYMBOL_PARSER: %s::%s = 0x%X\n").get(), szTypeName, szFieldName, field_offset);
+				LOG(2, XOR_STR_A("SymbolParser: %s::%s = 0x%X\n").get(), szTypeName, szFieldName, field_offset);
 				result = SYMBOL_ERR_SUCCESS;
 				break;
 			}
 		}
 		if (result != SYMBOL_ERR_SUCCESS)
 		{
-			LOG(2, XOR_STR_A("SYMBOL_PARSER: field %s not found in %s\n").get(), szFieldName, szTypeName);
+			LOG(2, XOR_STR_A("SymbolParser: Field %s Not Found In %s\n").get(), szFieldName, szTypeName);
 		}
 	}
 	else
 	{
-		LOG(2, XOR_STR_A("SYMBOL_PARSER: TI_FINDCHILDREN failed for %s (%08X)\n").get(), szTypeName, GetLastError());
+		LOG(2, XOR_STR_A("SymbolParser: TI_FINDCHILDREN Failed For %s (%08X)\n").get(), szTypeName, GetLastError());
 	}
 	delete[] ReCa<BYTE *>(children);
 	return result;
@@ -328,7 +328,7 @@ DWORD SYMBOL_PARSER::GetFieldOffsetAny(const char * const * TypeNames, size_t Ty
 		if (GetFieldOffset(TypeNames[i], szFieldName, off) == SYMBOL_ERR_SUCCESS)
 		{
 			OffsetOut = off;
-			LOG(2, XOR_STR_A("SYMBOL_PARSER: %s::%s resolved via %s\n").get(), TypeNames[i], szFieldName, TypeNames[i]);
+			LOG(2, XOR_STR_A("SymbolParser: %s::%s Resolved Via %s\n").get(), TypeNames[i], szFieldName, TypeNames[i]);
 			return SYMBOL_ERR_SUCCESS;
 		}
 	}
@@ -433,7 +433,7 @@ DWORD SYMBOL_PARSER::GetEnumValueAny(const char * const * TypeNames, size_t Type
 						continue;
 					}
 					ValueOut = v;
-					LOG(2, XOR_STR_A("SYMBOL_PARSER: %s::%s = %lu\n").get(), TypeNames[t], szConstantName, v);
+					LOG(2, XOR_STR_A("SymbolParser: %s::%s = %lu\n").get(), TypeNames[t], szConstantName, v);
 					found = true;
 				}
 			}
@@ -449,7 +449,7 @@ DWORD SYMBOL_PARSER::GetEnumValueAny(const char * const * TypeNames, size_t Type
 
 void SYMBOL_PARSER::Cleanup()
 {
-	LOG(1, XOR_STR_A("SYMBOL_PARSER::Cleanup\n").get());
+	LOG(1, XOR_STR_A("SymbolParser::Cleanup\n").get());
 
 	m_bReady = false;
 

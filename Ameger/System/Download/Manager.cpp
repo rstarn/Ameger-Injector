@@ -38,7 +38,7 @@ bool Manager::StartWatchdog()
         m_hWatchdogWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!m_hWatchdogWake)
         {
-            LOG(2, "Manager: failed to create watchdog event: %08X\n", GetLastError());
+            LOG(2, "Manager: Failed To Create Watchdog Event = %08X\n", GetLastError());
 
             return false;
         }
@@ -49,7 +49,7 @@ bool Manager::StartWatchdog()
     const uintptr_t thread_handle = _beginthreadex(nullptr, 0, DownloadWatchdogEntry, this, 0, nullptr);
     if (!thread_handle)
     {
-        LOG(2, "Manager: failed to start download watchdog\n");
+        LOG(2, "Manager: Failed To Start Download Watchdog\n");
 
         return false;
     }

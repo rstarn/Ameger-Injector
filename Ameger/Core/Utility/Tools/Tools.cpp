@@ -106,7 +106,7 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_26H2;
 		if (build_number != g_Windows11_26H2)
 		{
-			LOG(1, "Forward-mapped Windows build %lu to 26H2 layout (known RTM %lu); recalibrate if loader drifts\n",
+			LOG(1, "Forward-Mapped Windows Build %lu To 26H2 Layout (Known RTM %lu); Recalibrate If Loader Drifts\n",
 				static_cast<unsigned long>(build_number), static_cast<unsigned long>(g_Windows11_26H2));
 		}
 	}
@@ -115,7 +115,7 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_25H2;
 		if (build_number != g_Windows11_25H2)
 		{
-			LOG(1, "Forward-mapped Windows build %lu to 25H2 layout (known RTM %lu); recalibrate if loader drifts\n",
+			LOG(1, "Forward-Mapped Windows Build %lu To 25H2 Layout (Known RTM %lu); Recalibrate If Loader Drifts\n",
 				static_cast<unsigned long>(build_number), static_cast<unsigned long>(g_Windows11_25H2));
 		}
 	}
@@ -124,7 +124,7 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_24H2;
 		if (build_number != g_Windows11_24H2)
 		{
-			LOG(1, "Forward-mapped Windows build %lu to 24H2 layout (known RTM %lu); recalibrate if loader drifts\n",
+			LOG(1, "Forward-Mapped Windows Build %lu To 24H2 Layout (Known RTM %lu); Recalibrate If Loader Drifts\n",
 				static_cast<unsigned long>(build_number), static_cast<unsigned long>(g_Windows11_24H2));
 		}
 	}
@@ -133,7 +133,7 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_22H2;
 		if (build_number != g_Windows11_22H2 && build_number != g_Windows11_23H2)
 		{
-			LOG(1, "Forward-mapped Windows build %lu to 22H2/23H2 layout; recalibrate if loader drifts\n",
+			LOG(1, "Forward-Mapped Windows Build %lu To 22H2/23H2 Layout; Recalibrate If Loader Drifts\n",
 				static_cast<unsigned long>(build_number));
 		}
 	}
@@ -142,7 +142,7 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_21H2;
 		if (build_number != g_Windows11_21H2)
 		{
-			LOG(1, "Forward-mapped Windows build %lu to 21H2 layout; recalibrate if loader drifts\n",
+			LOG(1, "Forward-Mapped Windows Build %lu To 21H2 Layout; Recalibrate If Loader Drifts\n",
 				static_cast<unsigned long>(build_number));
 		}
 	}
@@ -165,7 +165,7 @@ DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD
 	std::ifstream file(FilePath, std::ios::binary | std::ios::ate);
 	if (!file.good())
 	{
-		LOG(1, "Can't open file\n");
+		LOG(1, "Can't Open File\n");
 
 		return FILE_ERR_CANT_OPEN_FILE;
 	}
@@ -173,13 +173,13 @@ DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD
 	const std::streamoff file_size = file.tellg();
 	if (file_size <= 0)
 	{
-		LOG(1, "Specified file is too small\n");
+		LOG(1, "Specified File Is Too Small\n");
 
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
 	if (static_cast<unsigned long long>(file_size) > PE_IMAGE::MAX_IMAGE_SIZE)
 	{
-		LOG(1, "Specified file is too large\n");
+		LOG(1, "Specified File Is Too Large\n");
 
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
@@ -191,7 +191,7 @@ DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD
 		file.read(reinterpret_cast<char *>(data.data()), file_size);
 		if (!file || file.gcount() != file_size)
 		{
-			LOG(1, "Failed to read the complete file\n");
+			LOG(1, "Failed To Read The Complete File\n");
 
 			return FILE_ERR_INVALID_FILE_SIZE;
 		}
@@ -200,14 +200,14 @@ DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD
 		const DWORD validation_result = PE_IMAGE::Validate(data.data(), data.size(), target_machine, BuildPeValidationOptions(flags), view);
 		if (validation_result != FILE_ERR_SUCCESS)
 		{
-			LOG(1, "PE validation failed: %08X\n", validation_result);
+			LOG(1, "PE Validation Failed = %08X\n", validation_result);
 		}
 
 		return validation_result;
 	}
 	catch (const std::bad_alloc &)
 	{
-		LOG(1, "Memory allocation failed\n");
+		LOG(1, "Memory Allocation Failed\n");
 
 		return FILE_ERR_MEMORY_ALLOCATION_FAILED;
 	}
@@ -217,14 +217,14 @@ DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_
 {
 	if (!RawData || RawSize < sizeof(IMAGE_DOS_HEADER))
 	{
-		LOG(1, "Specified file is too small\n");
+		LOG(1, "Specified File Is Too Small\n");
 
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
 
 	if (RawSize > PE_IMAGE::MAX_IMAGE_SIZE)
 	{
-		LOG(1, "In-memory image exceeds the maximum supported size: %08X\n", RawSize);
+		LOG(1, "In-Memory Image Exceeds The Maximum Supported Size = %08X\n", RawSize);
 
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
@@ -233,7 +233,7 @@ DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_
 	const DWORD validation_result = PE_IMAGE::Validate(RawData, RawSize, target_machine, BuildPeValidationOptions(flags), view);
 	if (validation_result != FILE_ERR_SUCCESS)
 	{
-		LOG(1, "PE validation failed: %08X\n", validation_result);
+		LOG(1, "PE Validation Failed = %08X\n", validation_result);
 	}
 
 	return validation_result;
@@ -385,7 +385,7 @@ namespace
 
 					if (!DeleteFileW(child.c_str()))
 					{
-						LOG(1, "Failed to delete a file in scratch storage: 0x%08X (%ls)\n", GetLastError(), child.c_str());
+						LOG(1, "Failed To Delete A File In Scratch Storage = 0x%08X (%ls)\n", GetLastError(), child.c_str());
 
 						complete = false;
 					}
@@ -399,7 +399,7 @@ namespace
 				{
 					if (!RemoveDirectoryW(child.c_str()))
 					{
-						LOG(1, "Failed to remove a reparse point in scratch storage: 0x%08X (%ls)\n", GetLastError(), child.c_str());
+						LOG(1, "Failed To Remove A Reparse Point In Scratch Storage = 0x%08X (%ls)\n", GetLastError(), child.c_str());
 
 						complete = false;
 					}
@@ -409,7 +409,7 @@ namespace
 
 				if (current.Depth + 1 >= kMaxScratchTreeDepth)
 				{
-					LOG(1, "Scratch storage is deeper than the supported limit and was left in place: %ls\n", child.c_str());
+					LOG(1, "Scratch Storage Is Deeper Than The Supported Limit And Was Left In Place = %ls\n", child.c_str());
 
 					complete = false;
 
@@ -431,7 +431,7 @@ namespace
 
 				if (remove_error != ERROR_FILE_NOT_FOUND && remove_error != ERROR_PATH_NOT_FOUND)
 				{
-					LOG(1, "Failed to remove a directory in scratch storage: 0x%08X (%ls)\n", remove_error, directories[i - 1].c_str());
+					LOG(1, "Failed To Remove A Directory In Scratch Storage = 0x%08X (%ls)\n", remove_error, directories[i - 1].c_str());
 
 					complete = false;
 				}
@@ -455,7 +455,7 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 	// payload or the launcher.
 	if (!IsOwnedScratchRoot(root))
 	{
-		LOG(1, "Refusing to delete a path that is not owned scratch storage: %ls\n", root.c_str());
+		LOG(1, "Refusing To Delete A Path That Is Not Owned Scratch Storage = %ls\n", root.c_str());
 
 		return false;
 	}
@@ -814,7 +814,7 @@ void ErrorLog(const ERROR_INFO & info)
 	}
 	ReleaseSRWLockExclusive(&g_ErrorLogLock);
 
-	LOG(1, "Load failed: code=%08X adv=%08X flags=%08X\n",
+	LOG(1, "Load Failed: Code = %08X | Adv = %08X | Flags = %08X\n",
 		info.ErrorCode, info.AdvErrorCode, info.Flags);
 }
 
@@ -973,12 +973,12 @@ void __stdcall StartDownload()
 	const DWORD initialization_state = InitializeRuntime();
 	if (initialization_state != INJ_ERR_SUCCESS)
 	{
-		LOG(0, "Runtime initialization failed: %08X\n", initialization_state);
+		LOG(0, "Runtime Initialization Failed = %08X\n", initialization_state);
 
 		return;
 	}
 
-	LOG(0, "Beginning download(s)\n");
+	LOG(0, "Beginning Download(s)\n");
 
 	sym_ntdll_native.SetDownload(true);
 }

@@ -95,7 +95,7 @@ namespace
 		}
 		catch (...)
 		{
-			LOG(0, "SymbolWorkerEntry: unhandled exception\n");
+			LOG(0, "SymbolWorkerEntry: Unhandled Exception\n");
 			result = SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
 
@@ -120,7 +120,7 @@ namespace
 		}
 		catch (...)
 		{
-			LOG(0, "ImportWorkerEntry: unhandled exception\n");
+			LOG(0, "ImportWorkerEntry: Unhandled Exception\n");
 			result = INJ_ERR_UNHANDLED_EXCEPTION;
 		}
 
@@ -175,7 +175,7 @@ DWORD __stdcall InitializeRuntime()
 
 	if (!GetOwnModulePathW(g_RootPathW))
 	{
-		LOG(0, "Couldn't resolve own module path (unicode)\n");
+		LOG(0, "Couldn't Resolve Own Module Path (Unicode)\n");
 
 		return RuntimeInitializationFailed(INJ_ERR_CANT_GET_MODULE_PATH);
 	}
@@ -186,7 +186,7 @@ DWORD __stdcall InitializeRuntime()
 	g_hInterruptImport = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	if (!g_hRunningEvent || !g_hInterruptEvent || !g_hInterruptedEvent || !g_hInterruptImport)
 	{
-		LOG(0, "Failed to create synchronization events: %08X\n", GetLastError());
+		LOG(0, "Failed To Create Synchronization Events = %08X\n", GetLastError());
 
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_EXT);
 	}
@@ -194,7 +194,7 @@ DWORD __stdcall InitializeRuntime()
 	wchar_t * windows_directory = nullptr;
 	if (_wdupenv_s(&windows_directory, nullptr, XOR_STR_W(L"WINDIR").get()) || !windows_directory)
 	{
-		LOG(0, "Couldn't resolve %%WINDIR%%\n");
+		LOG(0, "Couldn't Resolve %%WINDIR%%\n");
 
 		return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 	}
@@ -218,7 +218,7 @@ DWORD __stdcall InitializeRuntime()
 
 		if (!CreateDirectoryW(symbol_cache_root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 		{
-			LOG(0, "Couldn't create the fallback symbol cache directory: %08X\n", GetLastError());
+			LOG(0, "Couldn't Create The Fallback Symbol Cache Directory = %08X\n", GetLastError());
 
 			return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 		}
@@ -244,13 +244,13 @@ DWORD __stdcall InitializeRuntime()
 			delete sym_params;
 		}
 
-		LOG(0, "Runtime initialization failed while launching worker threads\n");
+		LOG(0, "Runtime Initialization Failed While Launching Worker Threads\n");
 
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_NEW);
 	}
 
 	InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_READY);
-	LOG(0, "Runtime initialization started\n");
+	LOG(0, "Runtime Initialization Started\n");
 
 	return INJ_ERR_SUCCESS;
 }

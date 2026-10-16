@@ -31,7 +31,7 @@ set "STAGE=%~1"
 if /i "%STAGE%"=="/nopause" set "STAGE="
 if defined STAGE (
   if /i not "%STAGE%"=="dll" if /i not "%STAGE%"=="exe" (
-    echo %C_RED%ERROR: unknown stage "%STAGE%"; use dll or exe.%C_RESET%
+    echo %C_RED%Error: Unknown Stage "%STAGE%"; Use DLL Or EXE.%C_RESET%
     goto :usage_error
   )
 )
@@ -40,24 +40,24 @@ set "DLL_DIR_NAME="
 set "PAYLOAD_DEST="
 
 if not exist "%OUT_ROOT%" (
-  echo   %C_RED%ERROR: release folder not found: %OUT_ROOT%%C_RESET%
-  echo   %C_RED%       Run Create.bat before protecting anything.%C_RESET%
+  echo   %C_RED%Error: Release Folder Not Found: %OUT_ROOT%%C_RESET%
+  echo   %C_RED%       Run Create.bat Before Protecting Anything.%C_RESET%
   goto :failure
 )
 if not exist "%PROTECT_DLL%" (
-  echo   %C_RED%ERROR: missing stage script: %PROTECT_DLL%%C_RESET%
+  echo   %C_RED%Error: Missing Stage Script: %PROTECT_DLL%%C_RESET%
   goto :failure
 )
 if not exist "%PROTECT_EXE%" (
-  echo   %C_RED%ERROR: missing stage script: %PROTECT_EXE%%C_RESET%
+  echo   %C_RED%Error: Missing Stage Script: %PROTECT_EXE%%C_RESET%
   goto :failure
 )
 
 echo [%C_GREEN%1%C_RESET%/%C_GREEN%3%C_RESET%] Preparing...
 echo.
-echo   %C_GREEN%[+]%C_RESET% Release:   %C_GREEN%%OUT_ROOT%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Stages:    %STAGE_DIR%
-echo   %C_GREEN%[+]%C_RESET% Runtime:   %C_YELLOW%skipped by design (manual-mapped)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Release = %C_GREEN%%OUT_ROOT%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Stages = %STAGE_DIR%
+echo   %C_GREEN%[+]%C_RESET% Runtime =   %C_YELLOW%Skipped By Design (Manual-Mapped)%C_RESET%
 echo.
 echo.
 
@@ -66,7 +66,7 @@ set "EXE_RESULT=skipped"
 
 if defined STAGE if /i "%STAGE%"=="exe" goto :run_exe
 
-echo [%C_GREEN%2%C_RESET%/%C_GREEN%3%C_RESET%] Protecting payload...
+echo [%C_GREEN%2%C_RESET%/%C_GREEN%3%C_RESET%] Protecting Payload...
 echo.
 call "%PROTECT_DLL%" /nopause
 if errorlevel 1 (
@@ -77,7 +77,7 @@ set "DLL_RESULT=ok"
 
 :run_exe
 if defined STAGE if /i "%STAGE%"=="dll" goto :summarize
-echo [%C_GREEN%2%C_RESET%/%C_GREEN%3%C_RESET%] Protecting launcher...
+echo [%C_GREEN%2%C_RESET%/%C_GREEN%3%C_RESET%] Protecting Launcher...
 echo.
 call "%PROTECT_EXE%" /nopause
 if errorlevel 1 (
@@ -102,14 +102,14 @@ call :report "Launcher" "%EXE_RESULT%"
 echo.
 if /i "%DLL_RESULT%"=="failed" goto :stage_failed
 if /i "%EXE_RESULT%"=="failed" goto :stage_failed
-echo Protection completed successfully.
+echo Protection Completed Successfully.
 echo.
 if defined PAYLOAD_DEST (
   echo   Payload      = %C_GREEN%%PAYLOAD_DEST%%PAYLOAD_NAME%%C_RESET%
 ) else if defined PAYLOAD_NAME (
   echo   Payload      = %C_GREEN%%OUT_ROOT%\%PAYLOAD_NAME%%C_RESET%
 ) else (
-  echo   Payload      = %C_YELLOW%deployed name state unavailable; see the payload stage above%C_RESET%
+  echo   Payload      = %C_YELLOW%Deployed Name State Unavailable; See The Payload Stage Above%C_RESET%
 )
 if defined EXE_NAME (
   echo   Interface x64 = %C_GREEN%%OUT_ROOT%\%EXE_NAME%.exe%C_RESET%
@@ -130,12 +130,12 @@ if /i "%~2"=="skipped" (
   echo   %C_YELLOW%-  %C_RESET%   %~1 ^(skipped^)
   exit /b 0
 )
-echo   %C_RED%FAIL%C_RESET%  %~1
+echo   %C_RED%Fail%C_RESET%  %~1
 exit /b 0
 
 :stage_failed
 echo.
-echo %C_RED%Protection failed; the release is not shippable.%C_RESET%
+echo %C_RED%Protection Failed; The Release Is Not Shippable.%C_RESET%
 goto :failure
 
 :usage_error

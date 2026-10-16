@@ -24,7 +24,7 @@ function New-DeployedName($Rng) {
 try {
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 } catch {
-    Write-Host ("  [x] ERROR: name generation failed (RNG unavailable): " + $_.Exception.Message)
+    Write-Host ("  [x] Error: Name Generation Failed (RNG Unavailable): " + $_.Exception.Message)
     exit 1
 }
 
@@ -47,17 +47,17 @@ try {
     $rng.Dispose()
 }
 if ($magic.Length -ne 8 -or $magic -notmatch '^[A-Za-z][A-Za-z0-9]{7}$') {
-    Write-Host "  [x] ERROR: generated config magic has invalid shape"
+    Write-Host "  [x] Error: Generated Config Magic Has Invalid Shape"
     exit 1
 }
 
 foreach ($n in @($payload, $runtime, $exe, $dildir, $config, $magic, $wndclass)) {
     if ($n.Length -lt 8 -or $n.Length -gt 12) {
-        Write-Host "  [x] ERROR: generated name has invalid length"
+        Write-Host "  [x] Error: Generated Name Has Invalid Length"
         exit 1
     }
     if ($n -notmatch '^[A-Za-z][A-Za-z0-9]+$') {
-        Write-Host "  [x] ERROR: generated name has invalid characters"
+        Write-Host "  [x] Error: Generated Name Has Invalid Characters"
         exit 1
     }
 }
@@ -65,7 +65,7 @@ $all = @($payload, $runtime, $exe, $dildir, $config, $magic, $wndclass)
 for ($i = 0; $i -lt $all.Count; $i++) {
     for ($j = $i + 1; $j -lt $all.Count; $j++) {
         if ($all[$i] -eq $all[$j]) {
-            Write-Host "  [x] ERROR: generated names collide"
+            Write-Host "  [x] Error: Generated Names Collide"
             exit 1
         }
     }

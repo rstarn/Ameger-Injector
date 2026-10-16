@@ -84,7 +84,7 @@ namespace
 
 DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
 {
-	LOG(1, "Begin in-memory load\n");
+	LOG(1, "Begin In-Memory Load\n");
 
 	WINDOWS_LAYOUT_FAMILY layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_21H2;
 	if (!GetSupportedWindowsLayout(GetOSBuildVersion(), layout_family))
@@ -134,7 +134,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, validation_result);
 
-		LOG(1, "Strict PE validation failed: %08X\n", validation_result);
+		LOG(1, "Strict PE Validation Failed = %08X\n", validation_result);
 
 		return validation_result;
 	}
@@ -147,13 +147,13 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Dynamic OS offsets not ready, refusing in-memory load\n");
+		LOG(1, "Dynamic OS Offsets Not Ready, Refusing In-Memory Load\n");
 
 		return INJ_ERR_SYMBOL_INIT_NOT_DONE;
 	}
 	data.NtOffsets = g_DynamicOffsets;
 
-	LOG(1, "Shell data initialized\n");
+	LOG(1, "Shell Data Initialized\n");
 
 	ULONG_PTR ShellSize		= ReCa<ULONG_PTR>(MMAP_SEC_END) - ReCa<ULONG_PTR>(ManualMapping_Shell);
 
@@ -196,7 +196,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Allocation size overflow\n");
+			LOG(1, "Allocation Size Overflow\n");
 
 			return INJ_ERR_OUT_OF_MEMORY_NEW;
 		}
@@ -209,7 +209,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "memory allocation failed\n");
+		LOG(1, "Memory Allocation Failed\n");
 
 		return INJ_ERR_OUT_OF_MEMORY_EXT;
 	}
@@ -250,7 +250,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "operator new failed: %08X\n", error_data.AdvErrorCode);
+		LOG(1, "Operator New Failed = %08X\n", error_data.AdvErrorCode);
 
 		return INJ_ERR_OUT_OF_MEMORY_NEW;
 	}
@@ -286,7 +286,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_SYSCALL_RESOLVE_FAILED);
 
-			LOG(1, "Remote syscall stubs could not be built\n");
+			LOG(1, "Remote Syscall Stubs Could Not Be Built\n");
 
 			return INJ_ERR_SYSCALL_RESOLVE_FAILED;
 		}
@@ -313,7 +313,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Remote syscall stubs could not be staged\n");
+			LOG(1, "Remote Syscall Stubs Could Not Be Staged\n");
 
 			return INJ_ERR_WPM_FAIL;
 		}
@@ -323,7 +323,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Staging dispatch has unresolved entries\n");
+		LOG(1, "Staging Dispatch Has Unresolved Entries\n");
 
 		return INJ_ERR_GET_PROC_ADDRESS_FAIL;
 	}
@@ -377,8 +377,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		data.PayloadEncoded	= 1;
 	}
 
-	LOG(2, "Shellsize      = %08X\n", MDWD(ShellSize));
-	LOG(2, "Total size     = %08X\n", MDWD(AllocationSize));
+	LOG(2, "ShellSize      = %08X\n", MDWD(ShellSize));
+	LOG(2, "Total Size     = %08X\n", MDWD(AllocationSize));
 	LOG(2, "pArg           = %p\n", pArg);
 	LOG(2, "pShells        = %p\n", pShells);
 
@@ -388,35 +388,35 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory failed\n");
+		LOG(1, "WriteProcessMemory Failed\n");
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "Shelldata written to memory\n");
+	LOG(1, "ShellData Written To Memory\n");
 
 	if (!ScWriteProcessMemory(hTargetProc, pShells, mmap_sec_base, ShellSize, nullptr))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory failed\n");
+		LOG(1, "WriteProcessMemory Failed\n");
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "Shells written to memory\n");
+	LOG(1, "Shells Written To Memory\n");
 
 	if (!ScWriteProcessMemory(hTargetProc, pFunctionTable, table_local.get(), sizeof(MANUAL_MAPPING_FUNCTION_TABLE), nullptr))
 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory failed\n");
+		LOG(1, "WriteProcessMemory Failed\n");
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "Staging dispatch written to memory\n");
+	LOG(1, "Staging Dispatch Written To Memory\n");
 
 	if (!transfer_image.empty())
 	{
@@ -424,7 +424,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "WriteProcessMemory failed\n");
+			LOG(1, "WriteProcessMemory Failed\n");
 
 			return INJ_ERR_WPM_FAIL;
 		}
@@ -432,7 +432,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		SecureZeroMemory(transfer_image.data(), transfer_image.size());
 		std::vector<BYTE>().swap(transfer_image);
 
-		LOG(1, "Raw data written to memory\n");
+		LOG(1, "Raw Data Written To Memory\n");
 	}
 
 	if (data.PayloadEncoded && data.RawSize)
@@ -444,7 +444,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, (DWORD)protect_status);
 
-			LOG(1, "Protect(RO raw) failed: %08X span=%llx/%llx base=%p\n",
+			LOG(1, "Protect(RO Raw) Failed = %08X | Span = %llx/%llx | Base = %p\n",
 				protect_status,
 				(unsigned long long)protected_span,
 				(unsigned long long)raw_span,
@@ -464,7 +464,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			{
 				INIT_ERROR_DATA(error_data, (DWORD)protect_status);
 
-				LOG(1, "Protect(RX) failed: %08X span=%llx base=%p\n",
+				LOG(1, "Protect(RX) Failed = %08X | Span = %llx | Base = %p\n",
 					protect_status, (unsigned long long)protected_code, pShells);
 
 				return INJ_ERR_UPDATE_PROTECTION_FAILED;
@@ -472,20 +472,20 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 			if (!FlushInstructionCache(hTargetProc, pShells, ALIGN_UP(code_bytes, kStagePage)))
 			{
-				LOG(1, "FlushInstructionCache failed\n");
+				LOG(1, "FlushInstructionCache Failed\n");
 			}
-			LOG(1, "Staging code promoted RW->RX\n");
+			LOG(1, "Staging Code Promoted RW->RX\n");
 		}
 	}
 
 	DWORD remote_ret = 0;
 	DWORD dwRet = StartRoutine(hTargetProc, ReCa<f_Routine>(pShells), pArg, remote_flags, remote_ret, Timeout, SponsorThread, SponsorTid, error_data);
 
-	LOG(1, "Return from StartRoutine\n");
+	LOG(1, "Return From StartRoutine\n");
 
 	if (dwRet != SR_ERR_SUCCESS)
 	{
-		LOG(1, "StartRoutine failed: %08X\n", dwRet);
+		LOG(1, "StartRoutine Failed = %08X\n", dwRet);
 
 		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED ||
 			dwRet == SR_HT_ERR_REMOTE_PENDING_TIMEOUT ||
@@ -498,13 +498,13 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	}
 
-	LOG(1, "Fetching routine data\n");
+	LOG(1, "Fetching Routine Data\n");
 
 	if (!ScReadProcessMemory(hTargetProc, pAllocBase, &data, sizeof(MANUAL_MAPPING_DATA), nullptr))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "ReadProcessMemory failed\n");
+		LOG(1, "ReadProcessMemory Failed\n");
 
 		return INJ_ERR_VERIFY_RESULT_FAIL;
 	}
@@ -518,11 +518,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// nothing, which is not a successful relocation.
 	if (data.pImageBase && data.CachedSectionCount)
 	{
-		LOG(1, "[MMAP] [+] Image Relocation: base=%p sections=%u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
+		LOG(1, "[ManualMap] [+] Image Relocation: Base = %p | Sections = %u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
 	}
 	else
 	{
-		LOG(1, "[MMAP] [x] Image Relocation produced nothing (base=%p sections=%u)\n",
+		LOG(1, "[ManualMap] [x] Image Relocation Produced Nothing (Base = %p | Sections = %u)\n",
 			ReCa<void *>(data.pImageBase), data.CachedSectionCount);
 	}
 
@@ -535,17 +535,17 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		// Two very different causes produce a zero cycle counter: the image has no entry point
 		// (AddressOfEntryPoint == 0, so the shell skips DllMain by design), or an earlier stage
 		// aborted. Do not imply the second when the first is a normal, fully successful run.
-		LOG(1, "[MMAP] [*] DllMain: not entered (no entry point in image, or an earlier stage aborted)\n");
+		LOG(1, "[ManualMap] [*] DllMain: Not Entered (No Entry Point In Image, Or An Earlier Stage Aborted)\n");
 	}
 	else if (data.ExecTelemetry.DllMainResult == 0)
 	{
-		LOG(1, "[MMAP] [x] DllMain: result=0 (FALSE) win32=0x%08X cycles=%llu -- payload refused to initialize\n",
+		LOG(1, "[ManualMap] [x] DllMain: Result = 0 (False) | Win32 = 0x%08X | Cycles = %llu -- Payload Refused To Initialize\n",
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
 	}
 	else
 	{
-		LOG(1, "[MMAP] [+] DllMain: result=1 win32=0x%08X cycles=%llu\n",
+		LOG(1, "[ManualMap] [+] DllMain: Result = 1 | Win32 = 0x%08X | Cycles = %llu\n",
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
 	}
@@ -553,14 +553,14 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// Non-zero on either NTSTATUS means the lock was not taken/released as intended.
 	if (data.ExecTelemetry.LdrLockStatus == 0 && data.ExecTelemetry.LdrUnlockStatus == 0)
 	{
-		LOG(1, "[MMAP] [+] LoaderLock: lock=0x%08X state=%u cookie=0x%llX unlock=0x%08X\n",
+		LOG(1, "[ManualMap] [+] LoaderLock: Lock = 0x%08X | State = %u | Cookie = 0x%llX | Unlock = 0x%08X\n",
 			(unsigned)data.ExecTelemetry.LdrLockStatus, data.ExecTelemetry.LoaderLockState,
 			(unsigned long long)data.ExecTelemetry.LoaderLockCookie,
 			(unsigned)data.ExecTelemetry.LdrUnlockStatus);
 	}
 	else
 	{
-		LOG(1, "[MMAP] [x] LoaderLock NTSTATUS non-zero: lock=0x%08X unlock=0x%08X state=%u\n",
+		LOG(1, "[ManualMap] [x] LoaderLock NTSTATUS Non-Zero: Lock = 0x%08X | Unlock = 0x%08X | State = %u\n",
 			(unsigned)data.ExecTelemetry.LdrLockStatus,
 			(unsigned)data.ExecTelemetry.LdrUnlockStatus,
 			data.ExecTelemetry.LoaderLockState);
@@ -568,7 +568,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	const bool tls_ok = data.ExecTelemetry.TlsCallbacksConfigured == data.ExecTelemetry.TlsCallbacksExecuted &&
 		data.ExecTelemetry.TlsCallbacksFailed == 0;
-	LOG(1, "[MMAP] [%s] TLS: configured=%u executed=%u failed=%u last=%p\n",
+	LOG(1, "[ManualMap] [%s] TLS: Configured = %u | Executed = %u | Failed = %u | Last = %p\n",
 		tls_ok ? "+" : "x",
 		data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted,
 		data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
@@ -576,29 +576,29 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// Both tables absent means no exception coverage was installed. Green would claim a capability
 	// that does not exist in this configuration.
 	const bool seh_ok = data.ExecTelemetry.DynamicTableInstalled || data.ExecTelemetry.InvertedTableInstalled;
-	LOG(1, "[MMAP] [%s] SEH: dynamic=%d inverted=%d entry=%p%s\n",
+	LOG(1, "[ManualMap] [%s] SEH: Dynamic = %d | Inverted = %d | Entry = %p%s\n",
 		seh_ok ? "+" : "*",
 		(int)data.ExecTelemetry.DynamicTableInstalled, (int)data.ExecTelemetry.InvertedTableInstalled,
 		data.ExecTelemetry.InvertedTableEntryBase,
-		seh_ok ? "" : " (none installed - payload exceptions not covered)");
+		seh_ok ? "" : " (None Installed - Payload Exceptions Not Covered)");
 
 	// A zero span means the cloak stage was skipped, not that it found nothing to wipe.
 	if (data.ExecTelemetry.PreSectionSpanWiped == 0)
 	{
-		LOG(1, "[CLOAK] [*] Wipe: not executed (shell aborted before cloak)\n");
+		LOG(1, "[HeaderCloak] [*] Wipe: Not Executed (Shell Aborted Before Cloak)\n");
 	}
 	else
 	{
-		LOG(1, "[CLOAK] [+] Wipe: span=%llu mz=%u pe=%u prot=0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
+		LOG(1, "[HeaderCloak] [+] Wipe: Span = %llu | MZ = %u | PE = %u | Prot = 0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
 	}
 
 	if (data.SectionProtCount == 0)
 	{
-		LOG(1, "[MMAP] [*] PageProtections: not applied (shell aborted before protections)\n");
+		LOG(1, "[ManualMap] [*] PageProtections: Not Applied (Shell Aborted Before Protections)\n");
 	}
 	else
 	{
-		LOG(1, "[MMAP] [+] PageProtections: %u section records\n", data.SectionProtCount);
+		LOG(1, "[ManualMap] [+] PageProtections: %u Section Records\n", data.SectionProtCount);
 	}
 
 	if (remote_ret != INJ_ERR_SUCCESS)
@@ -607,11 +607,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		if (remote_ret == INJ_MM_ERR_TLS_CALLBACK_RANGE)
 		{
-			LOG(1, "TLS callback #%u rejected (address %p)\n",
+			LOG(1, "TLS Callback #%u Rejected (Address %p)\n",
 				data.TlsCallbackIndex, ReCa<void *>(data.TlsCallbackAddress));
 		}
 
-		LOG(1, "Shell failed: %08X\n", remote_ret);
+		LOG(1, "Shell Failed = %08X\n", remote_ret);
 
 		return remote_ret;
 	}
@@ -620,16 +620,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Shell failed\n");
+		LOG(1, "Shell Failed\n");
 
 		return INJ_ERR_FAILED_TO_LOAD_DLL;
 	}
 
-	LOG(1, "Shell returned successfully\n");
+	LOG(1, "Shell Returned Successfully\n");
 
 	hOut = data.hRet;
 
-	LOG(1, "Imagebase = %p\n", ReCa<void *>(hOut));
+	LOG(1, "ImageBase = %p\n", ReCa<void *>(hOut));
 
 	return INJ_ERR_SUCCESS;
 }
@@ -2393,7 +2393,7 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 
 	if (!unlinked)
 	{
-		LOG(1, "MMI_RunTlsCallbacks: loader TLS entry not found; released the fake nodes only\n");
+		LOG(1, "MMI_RunTlsCallbacks: Loader TLS Entry Not Found; Released The Fake Nodes Only\n");
 	}
 
 	DeleteObject(f, pDummyLdrRaw);

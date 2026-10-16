@@ -30,12 +30,12 @@ if ([string]::IsNullOrEmpty($ConfigMagic)) {
         }
     }
     if ([string]::IsNullOrEmpty($ConfigMagic)) {
-        Write-Host "ProtectConfig: no config magic supplied and neither file carries one; refusing a static fallback"
+        Write-Host "ProtectConfig: No Config Magic Supplied And Neither File Carries One; Refusing A Static Fallback"
         exit 1
     }
 }
 if ($ConfigMagic -notmatch '^[A-Za-z0-9]{8}$') {
-    Write-Host "ProtectConfig: config magic must be 8 ASCII alphanumerics"
+    Write-Host "ProtectConfig: Config Magic Must Be 8 ASCII Alphanumerics"
     exit 1
 }
 $magic = [Text.Encoding]::ASCII.GetBytes($ConfigMagic)
@@ -111,12 +111,12 @@ function Set-IniKeys([string]$Text, $Pairs) {
     return ($lines -join "`r`n")
 }
 
-if (-not (Test-Path -LiteralPath $Source)) { Write-Host "ProtectConfig: source not found: $Source"; exit 1 }
+if (-not (Test-Path -LiteralPath $Source)) { Write-Host "ProtectConfig: Source Not Found: $Source"; exit 1 }
 
 $pinOverride = $null
 if (-not [string]::IsNullOrEmpty($PinPayload)) {
     if (-not (Test-Path -LiteralPath $PinPayload)) {
-        Write-Host "ProtectConfig: pin payload not found: $PinPayload"
+        Write-Host "ProtectConfig: Pin Payload Not Found: $PinPayload"
         exit 1
     }
     $pinOverride = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($PinPayload))) -replace "-", "")
@@ -138,14 +138,14 @@ if ($existing.Length -gt $magic.Length) {
 }
 if ($isEncrypted) {
     if ($null -ne $pinOverride) {
-        Write-Host "ProtectConfig: cannot apply a pin override to an already-encrypted source"
+        Write-Host "ProtectConfig: Cannot Apply A Pin Override To An Already-Encrypted Source"
         exit 1
     }
     if ($hasNewKeys) {
-        Write-Host "ProtectConfig: cannot inject deployment keys into an already-encrypted source"
+        Write-Host "ProtectConfig: Cannot Inject Deployment Keys Into An Already-Encrypted Source"
         exit 1
     }
-    Write-Host "ProtectConfig: source is already encrypted; copying verbatim."
+    Write-Host "ProtectConfig: Source Is Already Encrypted; Copying Verbatim."
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
     exit 0
 }
@@ -155,7 +155,7 @@ $modified = $false
 
 if ($null -ne $pinOverride) {
     if ($text -notmatch '(?m)^PayloadSha256\s*=.*$') {
-        Write-Host "ProtectConfig: source has no PayloadSha256 line to override"
+        Write-Host "ProtectConfig: Source Has No PayloadSha256 Line To Override"
         exit 1
     }
     $text = [regex]::Replace($text, '(?m)^PayloadSha256\s*=.*$', 'PayloadSha256 = ' + $pinOverride)
@@ -227,7 +227,7 @@ if ($modified) {
 if ($Plaintext) {
 
     [IO.File]::WriteAllBytes($Destination, $plain)
-    Write-Host "ProtectConfig: wrote plaintext (opt-out)."
+    Write-Host "ProtectConfig: Wrote Plaintext (Opt-Out)."
     exit 0
 }
 
@@ -236,7 +236,7 @@ try {
     $blob = [Security.Cryptography.ProtectedData]::Protect(
         $plain, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
 } catch {
-    Write-Host ("ProtectConfig: DPAPI failed: " + $_.Exception.Message)
+    Write-Host ("ProtectConfig: DPAPI Failed: " + $_.Exception.Message)
     exit 1
 }
 

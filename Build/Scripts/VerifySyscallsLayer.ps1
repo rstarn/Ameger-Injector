@@ -47,7 +47,7 @@ function Get-ByteMatches([byte[]]$Hay, [int[]]$Needle) {
 }
 
 if (-not (Test-Path -LiteralPath $Path)) {
-    Write-Fail ("Not found: " + $Path)
+    Write-Fail ("Not Found: " + $Path)
     exit 1
 }
 
@@ -75,26 +75,26 @@ $keystreamAlt2     = [int[]](0xEB, 0x11, 0x31, 0x13, 0xBB, 0x49, 0xD0, 0x94)  # 
 if ($Check -eq "Stub") {
     $stubCount = Get-ByteMatches $data $stubTemplate
     if ($stubCount -lt 1) {
-        Write-Fail "Direct-syscall stub template (mov r10,rcx; mov eax,imm; syscall; ret) not present"
+        Write-Fail "Direct-Syscall Stub Template (mov r10,rcx; mov eax,imm; syscall; ret) Not Present"
         exit 1
     }
-    Write-Ok ("Direct-syscall stub template present (" + $stubCount + " match)")
+    Write-Ok ("Direct-Syscall Stub Template Present (" + $stubCount + " Match)")
 
     $prologueCount = Get-ByteMatches $data $healthyPrologue
     if ($prologueCount -lt 1) {
-        Write-Fail "ntdll healthy-prologue comparison constant not present"
+        Write-Fail "ntdll Healthy-Prologue Comparison Constant Not Present"
         exit 1
     }
-    Write-Ok ("Resolver prologue constant present (" + $prologueCount + " match)")
+    Write-Ok ("Resolver Prologue Constant Present (" + $prologueCount + " Match)")
 
     # A syscall dispatcher needs the two-byte opcode 0F 05 to be issued; without it the layer is inert.
     $syscallOp = [int[]](0x0F, 0x05)
     $opCount = Get-ByteMatches $data $syscallOp
     if ($opCount -lt 1) {
-        Write-Fail "syscall opcode 0F 05 not found; direct-syscall layer would be inert"
+        Write-Fail "Syscall Opcode 0F 05 Not Found; Direct-Syscall Layer Would Be Inert"
         exit 1
     }
-    Write-Ok ("syscall opcode issued (" + $opCount + " match)")
+    Write-Ok ("Syscall Opcode Issued (" + $opCount + " Match)")
 }
 
 if ($Check -eq "Payload") {
@@ -104,10 +104,10 @@ if ($Check -eq "Payload") {
     $k2 = Get-ByteMatches $data $keystreamAlt
     $k3 = Get-ByteMatches $data $keystreamAlt2
     if (($k1 + $k2 + $k3) -lt 1) {
-        Write-Fail "Payload keystream mixer constants not present; transfer obfuscation appears disabled"
+        Write-Fail "Payload Keystream Mixer Constants Not Present; Transfer Obfuscation Appears Disabled"
         exit 1
     }
-    Write-Ok ("Payload keystream mixer present (k1=" + $k1 + " k2=" + $k2 + " k3=" + $k3 + ")")
+    Write-Ok ("Payload Keystream Mixer Present (K1 = " + $k1 + " | K2 = " + $k2 + " | K3 = " + $k3 + ")")
 }
 
 if ($Check -eq "Stealth") {
@@ -127,16 +127,16 @@ if ($Check -eq "Stealth") {
     $rwx = (Get-ByteMatches $data ([int[]]($shadow + $r9rwx))) + (Get-ByteMatches $data ([int[]]($r9rwx + $shadow)))
 
     if (($rx -lt 1) -or ($na -lt 1)) {
-        Write-Fail "W^X protection sequences missing (PAGE_EXECUTE_READ / PAGE_NOACCESS into NtProtectVirtualMemory)"
+        Write-Fail "W^X Protection Sequences Missing (PAGE_EXECUTE_READ / PAGE_NOACCESS Into NtProtectVirtualMemory)"
         exit 1
     }
     if ($rwx -gt 0) {
-        Write-Fail "NtProtectVirtualMemory requests PAGE_EXECUTE_READWRITE (0x40); W^X regression"
+        Write-Fail "NtProtectVirtualMemory Requests PAGE_EXECUTE_READWRITE (0x40); W^X Regression"
         exit 1
     }
-    Write-Ok ("W^X protect sequences present (rx=" + $rx + " noaccess=" + $na + " rwx=" + $rwx + ")")
+    Write-Ok ("W^X Protect Sequences Present (RX = " + $rx + " | NOACCESS = " + $na + " | RWX = " + $rwx + ")")
 
-    Write-Host ("  " + (Get-Painted $script:C_Dim "static verification only; live properties are checked by the runtime verify tool"))
+    Write-Host ("  " + (Get-Painted $script:C_Dim "Static Verification Only; Live Properties Are Checked By The Runtime Verify Tool"))
 }
 
 if ($Check -eq "MmapSections") {
@@ -151,20 +151,20 @@ if ($Check -eq "MmapSections") {
     # ".mmap_sec" base, which is what a successful merge leaves behind. Any leftover per-part sections
     # ("$01", "$02", ... appear verbatim in the name field) mean the merge did not happen.
     if ($data.Length -lt 64 -or $data[0] -ne 0x4D -or $data[1] -ne 0x5A) {
-        Write-Fail "not an MZ image"
+        Write-Fail "Not An MZ Image"
         exit 1
     }
 
     $e = [BitConverter]::ToInt32($data, 0x3C)
-    if ($e -le 0 -or ($e + 24) -gt $data.Length) { Write-Fail "bad e_lfanew"; exit 1 }
-    if ([BitConverter]::ToUInt32($data, $e) -ne 0x00004550) { Write-Fail "not PE"; exit 1 }
+    if ($e -le 0 -or ($e + 24) -gt $data.Length) { Write-Fail "Bad e_lfanew"; exit 1 }
+    if ([BitConverter]::ToUInt32($data, $e) -ne 0x00004550) { Write-Fail "Not PE"; exit 1 }
 
     $coff = $e + 4
     $nsec = [BitConverter]::ToUInt16($data, $coff + 2)
     $optSize = [BitConverter]::ToUInt16($data, $coff + 16)
     $opt = $e + 24
-    if ($nsec -le 0 -or $nsec -gt 96) { Write-Fail "bad section count"; exit 1 }
-    if ([BitConverter]::ToUInt16($data, $opt) -ne 0x20B) { Write-Fail "not PE32+"; exit 1 }
+    if ($nsec -le 0 -or $nsec -gt 96) { Write-Fail "Bad Section Count"; exit 1 }
+    if ([BitConverter]::ToUInt16($data, $opt) -ne 0x20B) { Write-Fail "Not PE32+"; exit 1 }
 
     $secBase = $opt + $optSize
     $names = New-Object System.Collections.ArrayList
@@ -193,38 +193,38 @@ if ($Check -eq "MmapSections") {
     $dollarParts = @($chars | Where-Object { $_.Name -match "\`$" })
 
     if ($mmapExact.Count -eq 0 -and $mmapTrunc.Count -eq 0) {
-        Write-Fail "no .mmap_sec section present at all; the remote shell was not emitted"
-        Write-Host ("      sections: " + ($names -join ", "))
+        Write-Fail "No .mmap_sec Section Present At All; The Remote Shell Was Not Emitted"
+        Write-Host ("      Sections: " + ($names -join ", "))
         exit 1
     }
 
     $mergedCount = $mmapExact.Count + $mmapTrunc.Count
     if ($mergedCount -ne 1) {
-        Write-Fail ("expected exactly one merged .mmap_sec section, found " + $mergedCount)
+        Write-Fail ("Expected Exactly One Merged .mmap_sec Section, Found " + $mergedCount)
         exit 1
     }
 
     if ($dollarParts.Count -ne 0) {
-        Write-Fail ("per-part code_seg sections with a `$ discriminator survived the link (" + $dollarParts.Count + ")")
-        Write-Host ("      found: " + (($dollarParts | ForEach-Object { $_.Name }) -join ", "))
+        Write-Fail ("Per-Part code_seg Sections With A `$ Discriminator Survived The Link (" + $dollarParts.Count + ")")
+        Write-Host ("      Found: " + (($dollarParts | ForEach-Object { $_.Name }) -join ", "))
         exit 1
     }
 
-    Write-Ok ("remote mapping shell is a single merged section (" + ($mmapExact + $mmapTrunc)[0].Name + ")")
+    Write-Ok ("Remote Mapping Shell Is A Single Merged Section (" + ($mmapExact + $mmapTrunc)[0].Name + ")")
 
     # The merged block must be executable and non writable: the shell is staged RW, written, then
     # promoted to RX, and the dispatch table that points into it is what the trampoline calls through.
     $entry = ($mmapExact + $mmapTrunc)[0]
     $characteristics = [BitConverter]::ToUInt32($data, $entry.Offset + 36)
     if (($characteristics -band 0x20000000) -eq 0) {
-        Write-Fail "merged .mmap_sec section is not executable"
+        Write-Fail "Merged .mmap_sec Section Is Not Executable"
         exit 1
     }
     if (($characteristics -band 0x80000000) -ne 0) {
-        Write-Fail "merged .mmap_sec section is writable; W^X regression in the staged image"
+        Write-Fail "Merged .mmap_sec Section Is Writable; W^X Regression In The Staged Image"
         exit 1
     }
-    Write-Ok ("merged shell section is execute+read (characteristics 0x" + $characteristics.ToString("X8") + ")")
+    Write-Ok ("Merged Shell Section Is Execute+Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")
 }
 
 exit 0

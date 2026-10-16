@@ -101,7 +101,7 @@ DWORD ResolveDynamicOffsets()
 		DWORD _off = 0; \
 		DWORD _r = sym_parser.GetFieldOffsetAny(types, _countof(types), field, _off); \
 		if (_r != SYMBOL_ERR_SUCCESS) { \
-			LOG(1, "DynamicOffsets: missing %s (tried %s)\n", field, types[0]); \
+			LOG(1, "DynamicOffsets: Missing %s (Tried %s)\n", field, types[0]); \
 			return SYMBOL_ERR_SYMBOL_SEARCH_FAILED; \
 		} \
 		(out) = _off; \
@@ -110,7 +110,7 @@ DWORD ResolveDynamicOffsets()
 #define REQUIRE_FIELD_ALT(types, primary, alternate, out) \
 	do { \
 		if (ResolveFieldEither(types, _countof(types), primary, alternate, out) != SYMBOL_ERR_SUCCESS) { \
-			LOG(1, "DynamicOffsets: missing %s/%s (tried %s)\n", primary, alternate, types[0]); \
+			LOG(1, "DynamicOffsets: Missing %s/%s (Tried %s)\n", primary, alternate, types[0]); \
 			return SYMBOL_ERR_SYMBOL_SEARCH_FAILED; \
 		} \
 	} while (0)
@@ -119,7 +119,7 @@ DWORD ResolveDynamicOffsets()
 	do { \
 		ULONG64 _sz = 0; \
 		if (sym_parser.GetTypeSizeAny(types, _countof(types), _sz) != SYMBOL_ERR_SUCCESS || !_sz || _sz > 0x2000) { \
-			LOG(1, "DynamicOffsets: bad size for %s\n", types[0]); \
+			LOG(1, "DynamicOffsets: Bad Size For %s\n", types[0]); \
 			return SYMBOL_ERR_SYMBOL_SEARCH_FAILED; \
 		} \
 		(out) = static_cast<DWORD>(_sz); \
@@ -130,7 +130,7 @@ DWORD ResolveDynamicOffsets()
 		DWORD _off = 0; \
 		DWORD _r = sym_parser.GetFieldOffsetAny(types, _countof(types), field, _off); \
 		if (_r != SYMBOL_ERR_SUCCESS) { \
-			LOG(1, "DynamicOffsets: optional %s absent (tried %s); leaving 0\n", field, types[0]); \
+			LOG(1, "DynamicOffsets: Optional %s Absent (Tried %s); Leaving 0\n", field, types[0]); \
 		} else { \
 			(out) = _off; \
 		} \
@@ -140,7 +140,7 @@ DWORD ResolveDynamicOffsets()
 	do { \
 		ULONG64 _sz = 0; \
 		if (sym_parser.GetTypeSizeAny(types, _countof(types), _sz) != SYMBOL_ERR_SUCCESS || !_sz || _sz > 0x2000) { \
-			LOG(1, "DynamicOffsets: optional size for %s unavailable; leaving 0\n", types[0]); \
+			LOG(1, "DynamicOffsets: Optional Size For %s Unavailable; Leaving 0\n", types[0]); \
 		} else { \
 			(out) = static_cast<DWORD>(_sz); \
 		} \
@@ -149,7 +149,7 @@ DWORD ResolveDynamicOffsets()
 #define OPTIONAL_FIELD_ALT(types, primary, alternate, out) \
 	do { \
 		if (ResolveFieldEither(types, _countof(types), primary, alternate, out) != SYMBOL_ERR_SUCCESS) { \
-			LOG(1, "DynamicOffsets: optional %s/%s absent (tried %s); leaving 0\n", primary, alternate, types[0]); \
+			LOG(1, "DynamicOffsets: Optional %s/%s Absent (Tried %s); Leaving 0\n", primary, alternate, types[0]); \
 		} \
 	} while (0)
 
@@ -199,7 +199,7 @@ DWORD ResolveDynamicOffsets()
 		else
 		{
 			tmp.TlsEntryModuleEntry = static_cast<DWORD>(offsetof(TLS_ENTRY, ModuleEntry));
-			LOG(1, "DynamicOffsets: TLS slot via documented struct 0x%X (PDB type absent)\n", tmp.TlsEntryModuleEntry);
+			LOG(1, "DynamicOffsets: TLS Slot Via Documented Struct 0x%X (PDB Type Absent)\n", tmp.TlsEntryModuleEntry);
 		}
 		ULONG64 tls_sz = 0;
 		if (sym_parser.GetTypeSizeAny(kTls, _countof(kTls), tls_sz) == SYMBOL_ERR_SUCCESS && tls_sz && tls_sz < 0x400)
@@ -209,7 +209,7 @@ DWORD ResolveDynamicOffsets()
 		else
 		{
 			tmp.TlsEntrySize = static_cast<DWORD>(sizeof(TLS_ENTRY));
-			LOG(1, "DynamicOffsets: TLS size via documented struct %lu\n", tmp.TlsEntrySize);
+			LOG(1, "DynamicOffsets: TLS Size Via Documented Struct %lu\n", tmp.TlsEntrySize);
 		}
 	}
 
@@ -226,7 +226,7 @@ DWORD ResolveDynamicOffsets()
 		{
 
 			tmp.LdrpPathSearchContextSize = static_cast<DWORD>(sizeof(FALLBACK_CTX));
-			LOG(1, "DynamicOffsets: path context size via fallback %lu\n", tmp.LdrpPathSearchContextSize);
+			LOG(1, "DynamicOffsets: Path Context Size Via Fallback %lu\n", tmp.LdrpPathSearchContextSize);
 		}
 		DWORD ctx_off = 0;
 		if (sym_parser.GetFieldOffsetAny(kPathCtx, _countof(kPathCtx), f_orig_full_dll.get(), ctx_off) == SYMBOL_ERR_SUCCESS && ctx_off < 0x400)
@@ -236,7 +236,7 @@ DWORD ResolveDynamicOffsets()
 		else
 		{
 			tmp.LdrpPathSearchOriginalFullDllName = static_cast<DWORD>(offsetof(FALLBACK_CTX, c));
-			LOG(1, "DynamicOffsets: path context name via fallback 0x%X\n", tmp.LdrpPathSearchOriginalFullDllName);
+			LOG(1, "DynamicOffsets: Path Context Name Via Fallback 0x%X\n", tmp.LdrpPathSearchOriginalFullDllName);
 		}
 	}
 
@@ -249,7 +249,7 @@ DWORD ResolveDynamicOffsets()
 		else
 		{
 			tmp.ThreadStateRunning = 2;
-			LOG(2, "DynamicOffsets: Running via stable fallback 2\n");
+			LOG(2, "DynamicOffsets: Running Via Stable Fallback 2\n");
 		}
 	}
 
@@ -257,7 +257,7 @@ DWORD ResolveDynamicOffsets()
 	g_DynamicOffsets = tmp;
 
 	g_DynamicOffsetsReady.store(1, std::memory_order_release);
-	LOG(1, "DynamicOffsets ready: t0=0x%X t1=0x%X t2=0x%X p0=0x%X p1=0x%X k0=0x%X l0=0x%X sz=%lu i0=0x%X i1=0x%X\n",
+	LOG(1, "DynamicOffsets Ready: T0 = 0x%X | T1 = 0x%X | T2 = 0x%X | P0 = 0x%X | P1 = 0x%X | K0 = 0x%X | L0 = 0x%X | Size = %lu | I0 = 0x%X | I1 = 0x%X\n",
 		tmp.TebSameTebFlags, tmp.TebLastErrorValue, tmp.TebProcessEnvironmentBlock,
 		tmp.PebOsBuildNumber, tmp.PebLdr, tmp.KuserCookie, tmp.LdrEntryDllBase, tmp.LdrEntrySize,
 		tmp.InvertedTableCount, tmp.InvertedTableEntries);

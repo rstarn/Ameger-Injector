@@ -21,7 +21,7 @@ ProcessInformation::ProcessInformation()
 	m_BufferSize	= 0x10000;
 	m_pFirstProcess = nullptr;
 
-	LOG(3, "ProcessInformation initialized\n");
+	LOG(3, "ProcessInformation Initialized\n");
 
 }
 

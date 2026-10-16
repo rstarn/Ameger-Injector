@@ -336,7 +336,7 @@ namespace
 
 bool BuildPool()
 {
-	SC_LOG_INFO("Building syscall stub pool (%zu entries, %u bytes each)...", kSyscallTableCount, SC_STUB_SIZE);
+	SC_LOG_INFO("Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...", kSyscallTableCount, SC_STUB_SIZE);
 
 	// Re-resolution (e.g. an incomplete pool whose readiness flag was left false) re-enters this
 	// function via SyscallResolveAll, which holds the syscall lock the whole time. To avoid leaking the
@@ -357,7 +357,7 @@ bool BuildPool()
 	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
-		SC_LOG_ERR("VirtualAlloc failed for stub pool");
+		SC_LOG_ERR("VirtualAlloc Failed For Stub Pool");
 		return false;
 	}
 
@@ -380,7 +380,7 @@ bool BuildPool()
 	if (!Written)
 	{
 		VirtualFree(Pool, 0, MEM_RELEASE);
-		SC_LOG_ERR("No valid syscall entries to write");
+		SC_LOG_ERR("No Valid Syscall Entries To Write");
 		return false;
 	}
 
@@ -388,13 +388,13 @@ bool BuildPool()
 	if (!VirtualProtect(Pool, kStubAreaSize, PAGE_EXECUTE_READ, &OldProtect))
 	{
 		VirtualFree(Pool, 0, MEM_RELEASE);
-		SC_LOG_ERR("VirtualProtect RX failed");
+		SC_LOG_ERR("VirtualProtect RX Failed");
 		return false;
 	}
 
 	g_SyscallPool.store(Pool, std::memory_order_release);
 
-	SC_LOG_OK("Stub pool built: %u/%zu stubs at %p (RX)", Written, kSyscallTableCount, Pool);
+	SC_LOG_OK("Stub Pool Built: %u/%zu Stubs At %p (RX)", Written, kSyscallTableCount, Pool);
 	return true;
 }
 }
@@ -415,17 +415,17 @@ DWORD SyscallResolveAll()
 			}
 		}
 
-		SC_LOG_OK("Syscall pool already ready (%u/%zu stubs)", Ready, kSyscallTableCount);
+		SC_LOG_OK("Syscall Pool Already Ready (%u/%zu Stubs)", Ready, kSyscallTableCount);
 		return Ready;
 	}
 
-	SC_LOG_INFO("Resolving syscall service numbers from ntdll...");
+	SC_LOG_INFO("Resolving Syscall Service Numbers From ntdll...");
 
 	auto ntdll_name = XOR_STR_W(L"ntdll.dll");
 	const BYTE * Ntdll = ReCa<const BYTE *>(GetModuleHandleW(ntdll_name.get()));
 	if (!Ntdll)
 	{
-		SC_LOG_ERR("ntdll.dll not loaded");
+		SC_LOG_ERR("ntdll.dll Not Loaded");
 		return 0;
 	}
 
@@ -433,11 +433,11 @@ DWORD SyscallResolveAll()
 	const IMAGE_EXPORT_DIRECTORY * Export = LocateExportDirectory(Ntdll, ImageSize);
 	if (!Export)
 	{
-		SC_LOG_ERR("Failed to locate ntdll export directory");
+		SC_LOG_ERR("Failed To Locate ntdll Export Directory");
 		return 0;
 	}
 
-	SC_LOG_INFO("ntdll base: %p, ImageSize: 0x%X, Exports: %u", Ntdll, ImageSize, Export->NumberOfNames);
+	SC_LOG_INFO("ntdll Base: %p | ImageSize: 0x%X | Exports: %u", Ntdll, ImageSize, Export->NumberOfNames);
 
 	// Pass 1: read every matching entry point that has not been rerouted, and remember the address it
 	// was read from so that a rerouted neighbour can be reconstructed.
@@ -450,7 +450,7 @@ DWORD SyscallResolveAll()
 	}
 	catch (...)
 	{
-		SC_LOG_ERR("Failed to reserve harvest buffer");
+		SC_LOG_ERR("Failed To Reserve Harvest Buffer");
 		return 0;
 	}
 	HARVESTED_ENTRY * Harvested = nullptr;
@@ -572,7 +572,7 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	SC_LOG_INFO("Pass 1: scanned %u exports, matched %u, healthy %u, rerouted %u, unreadable %u",
+	SC_LOG_INFO("Pass 1: Scanned %u Exports | Matched %u | Healthy %u | Rerouted %u | Unreadable %u",
 		Export->NumberOfNames, matched, healthy, rerouted, oob);
 
 	// Pass 2: reconstruct anything that could not be read directly. Service numbers on the thunks are
@@ -671,7 +671,7 @@ DWORD SyscallResolveAll()
 					{
 						g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
 						g_Resolution[i].Reconstructed = true;
-						SC_LOG_INFO("Recovered %s via SSN 0x%04X + %u | Distance: 0x%X bytes | Stride %u bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
+						SC_LOG_INFO("Recovered %s Via SSN 0x%04X + %u | Distance: 0x%X Bytes | Stride %u Bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
 					}
 				}
 			}
@@ -688,11 +688,11 @@ DWORD SyscallResolveAll()
 			++reconstructed;
 		}
 	}
-	SC_LOG_INFO("Pass 2: reconstructed %u/%zu services", reconstructed, kSyscallTableCount);
+	SC_LOG_INFO("Pass 2: Reconstructed %u/%zu Services", reconstructed, kSyscallTableCount);
 
 	if (!BuildPool())
 	{
-		SC_LOG_ERR("Failed to build syscall stub pool");
+		SC_LOG_ERR("Failed To Build Syscall Stub Pool");
 		return 0;
 	}
 
@@ -710,15 +710,15 @@ DWORD SyscallResolveAll()
 	}
 
 	// Forensic resolution table: two-pass verification output.
-	SC_LOG_INFO("[SYSCALL] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
-	SC_LOG_INFO("[SYSCALL] [*] Export Census: %u total exports harvested (%u healthy)\n", Export->NumberOfNames, healthy);
-	SC_LOG_INFO("[SYSCALL] [=] System Service Resolution Table:\n");
-	SC_LOG_INFO("  IDX  SERVICE NAME              SSN      STATUS        PROLOGUE      ADDRESS               METHOD\n");
+	SC_LOG_INFO("[Syscall] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
+	SC_LOG_INFO("[Syscall] [*] Export Census: %u Total Exports Harvested (%u Healthy)\n", Export->NumberOfNames, healthy);
+	SC_LOG_INFO("[Syscall] [=] System Service Resolution Table:\n");
+	SC_LOG_INFO("  Idx  Service Name              SSN      Status        Prologue      Address               Method\n");
 	for (size_t ti = 0; ti < kSyscallTableCount; ++ti)
 	{
 		const DWORD svc = g_SyscallTable[ti].Service;
 		const bool valid = (svc != kServiceUnknown && svc != static_cast<DWORD>(kInvalidService));
-		const char * status = !valid ? "FAILED" : (g_Resolution[ti].Reconstructed ? "HOOKED" : (g_Resolution[ti].Hooked ? "HOOKED" : "CLEAN"));
+		const char * status = !valid ? "Failed" : (g_Resolution[ti].Reconstructed ? "Hooked" : (g_Resolution[ti].Hooked ? "Hooked" : "Clean"));
 		const char * method = !valid ? "Unresolved" : (g_Resolution[ti].Reconstructed ? "Neighbor Interp" : "Direct Export");
 		const void * addr = valid ? ReCa<const void *>(Ntdll + g_Resolution[ti].Rva) : nullptr;
 		SC_LOG_INFO("  [%02zu] %-24s 0x%04X   %-8s    %02X %02X %02X %02X  %p  %s\n",
@@ -739,21 +739,21 @@ DWORD SyscallResolveAll()
 			}
 			if (is_rx)
 			{
-				SC_LOG_OK("[SYSCALL] [+] Stub Pool Staging: VA=%p Size=0x%X bytes\n", pool, kStubAreaSize);
+				SC_LOG_OK("[Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n", pool, kStubAreaSize);
 				// rwx_count is printed from the query result rather than hardcoded: in this branch it is
 				// necessarily 0 (it is only raised for PAGE_EXECUTE_READWRITE, which is the else),
 				// but a literal here would still be a claim rather than a reported value.
-				SC_LOG_OK("[SYSCALL] [+] Memory Protection Query: protect=0x%08X (%s) | RWX Count: %u\n",
+				SC_LOG_OK("[Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n",
 					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
 			}
 			else
 			{
-				SC_LOG_ERR("[SYSCALL] [x] Stub pool protection mismatch: 0x%08X (RWX=%u)\n", mbi.Protect, rwx_count);
+				SC_LOG_ERR("[Syscall] [x] Stub Pool Protection Mismatch = 0x%08X (RWX = %u)\n", mbi.Protect, rwx_count);
 			}
 		}
 		else
 		{
-			SC_LOG_ERR("[SYSCALL] [x] Stub pool not queryable; protection unverified\n");
+			SC_LOG_ERR("[Syscall] [x] Stub Pool Not Queryable; Protection Unverified\n");
 		}
 	}
 
@@ -763,11 +763,11 @@ DWORD SyscallResolveAll()
 	if (Ready == kSyscallTableCount)
 	{
 		g_SyscallPoolReady.store(true, std::memory_order_release);
-		SC_LOG_OK("Syscall layer ready: %u/%zu stubs built\n", Ready, kSyscallTableCount);
+		SC_LOG_OK("Syscall Layer Ready: %u/%zu Stubs Built\n", Ready, kSyscallTableCount);
 	}
 	else
 	{
-		SC_LOG_WARN("Syscall layer INCOMPLETE: %u/%zu stubs built - %zu unresolved\n",
+		SC_LOG_WARN("Syscall Layer Incomplete: %u/%zu Stubs Built - %zu Unresolved\n",
 			Ready, kSyscallTableCount, static_cast<size_t>(kSyscallTableCount - Ready));
 	}
 	return Ready;

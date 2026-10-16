@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path -LiteralPath $Project)) { Write-Host "  [!] project not found: $Project"; exit 1 }
+if (-not (Test-Path -LiteralPath $Project)) { Write-Host "  [!] Project Not Found: $Project"; exit 1 }
 
 $text = [IO.File]::ReadAllText($Project)
 
@@ -17,7 +17,7 @@ $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
 $name = '.' + (-join (1..4 | ForEach-Object { $alphabet[[int](Get-Random -Maximum $alphabet.Length)] }))
 
 if ($text -notmatch 'VMCodeSectionName="[^"]*"') {
-    Write-Host "  [!] no VMCodeSectionName attribute in $Project"
+    Write-Host "  [!] No VMCodeSectionName Attribute In $Project"
     exit 1
 }
 
@@ -25,7 +25,7 @@ $rewritten = [regex]::Replace($text, 'VMCodeSectionName="[^"]*"', 'VMCodeSection
 
 $before = ([regex]::Match($text, 'InputFileName="([^"]+)"')).Groups[1].Value
 $after = ([regex]::Match($rewritten, 'InputFileName="([^"]+)"')).Groups[1].Value
-if ($before -ne $after) { Write-Host '  [!] InputFileName changed during rewrite'; exit 1 }
+if ($before -ne $after) { Write-Host '  [!] InputFileName Changed During Rewrite'; exit 1 }
 
 if ($PackOnly) {
     if ($rewritten -match '(?s)<Procedures>.*?</Procedures>') {
@@ -40,16 +40,16 @@ if ($PackOnly) {
 elseif ($Target -and (Test-Path -LiteralPath $Target)) {
     try {
         $b = [IO.File]::ReadAllBytes($Target)
-        if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { throw 'not MZ' }
+        if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { throw 'Not MZ' }
         $e = [BitConverter]::ToInt32($b, 0x3C)
-        if ($e -lt 0 -or ($e + 24) -gt $b.Length) { throw 'bad e_lfanew' }
-        if ([BitConverter]::ToUInt32($b, $e) -ne 0x00004550) { throw 'not PE' }
+        if ($e -lt 0 -or ($e + 24) -gt $b.Length) { throw 'Bad e_lfanew' }
+        if ([BitConverter]::ToUInt32($b, $e) -ne 0x00004550) { throw 'Not PE' }
         $coff = $e + 4
         $nsec = [BitConverter]::ToUInt16($b, $coff + 2)
         $optSize = [BitConverter]::ToUInt16($b, $coff + 16)
         $opt = $e + 24
         $magic = [BitConverter]::ToUInt16($b, $opt)
-        $dd = if ($magic -eq 0x20B) { $opt + 112 } elseif ($magic -eq 0x10B) { $opt + 96 } else { throw 'not PE32/PE32+' }
+        $dd = if ($magic -eq 0x20B) { $opt + 112 } elseif ($magic -eq 0x10B) { $opt + 96 } else { throw 'Not PE32/PE32+' }
         $secBase = $opt + $optSize
         $sizeOfImage = [BitConverter]::ToUInt32($b, $opt + 56)
         $expRva = [BitConverter]::ToUInt32($b, $dd + 0)
@@ -125,12 +125,12 @@ elseif ($Target -and (Test-Path -LiteralPath $Target)) {
     }
     catch {
 
-        Write-Host ("  [!] procedure reconciliation skipped (target parse failed): " + $_.Exception.Message)
+        Write-Host ("  [!] Procedure Reconciliation Skipped (Target Parse Failed): " + $_.Exception.Message)
     }
 }
 
 [IO.File]::WriteAllText($Out, $rewritten, (New-Object Text.UTF8Encoding($false)))
-if (-not (Test-Path -LiteralPath $Out)) { Write-Host '  [!] failed to write rewritten project'; exit 1 }
+if (-not (Test-Path -LiteralPath $Out)) { Write-Host '  [!] Failed To Write Rewritten Project'; exit 1 }
 
 Write-Host ("SEG_NAME={0}" -f $name)
 exit 0

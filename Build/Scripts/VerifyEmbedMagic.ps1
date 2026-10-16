@@ -38,7 +38,7 @@ function Write-Fail([string]$Text) {
 }
 
 if (-not (Test-Path -LiteralPath $Path)) {
-    Write-Fail ("Not found: " + $Path)
+    Write-Fail ("Not Found: " + $Path)
     exit 1
 }
 
@@ -48,7 +48,7 @@ if ($Check -eq "Embed") {
     $wordList = @()
     if (-not [string]::IsNullOrWhiteSpace($Words)) { $wordList = $Words -split ',' }
     if ($wordList.Count -ne 8) {
-        Write-Fail ("Expected 8 runtime hash words, got " + $wordList.Count)
+        Write-Fail ("Expected 8 Runtime Hash Words, Got " + $wordList.Count)
         exit 1
     }
 
@@ -69,23 +69,23 @@ if ($Check -eq "Embed") {
             }
         }
         if ($found -lt 0) {
-            Write-Fail ("Runtime hash word " + $i + " not found in order: " + (Get-Painted $script:C_Dim $Path))
+            Write-Fail ("Runtime Hash Word " + $i + " Not Found In Order: " + (Get-Painted $script:C_Dim $Path))
             exit 1
         }
         $pos = $found + 4
     }
 
-    Write-Ok ("Embedded runtime hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " dwords in order (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Embedded Runtime Hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " Dwords In Order (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 
 if ($Check -eq "PayloadHash") {
     if ([string]::IsNullOrEmpty($Config)) {
-        Write-Fail "Expected a master config path"
+        Write-Fail "Expected A Master Config Path"
         exit 1
     }
     if (-not (Test-Path -LiteralPath $Config)) {
-        Write-Fail ("Master config not found: " + (Get-Painted $script:C_Dim $Config))
+        Write-Fail ("Master Config Not Found: " + (Get-Painted $script:C_Dim $Config))
         exit 1
     }
 
@@ -101,26 +101,26 @@ if ($Check -eq "PayloadHash") {
         }
     }
     if ([string]::IsNullOrEmpty($pin)) {
-        Write-Fail ("PayloadSha256 pin missing in " + (Get-Painted $script:C_Dim $Config))
+        Write-Fail ("PayloadSha256 Pin Missing In " + (Get-Painted $script:C_Dim $Config))
         exit 1
     }
 
     $actual = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($data)) -replace "-", "")
     if ($actual -ine $pin) {
-        Write-Fail ("Payload hash mismatch: expected " + $pin + ", got " + $actual + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+        Write-Fail ("Payload Hash Mismatch: Expected " + $pin + ", Got " + $actual + " (" + (Get-Painted $script:C_Dim $Path) + ")")
         exit 1
     }
-    Write-Ok ("Payload SHA-256: " + (Get-Painted $script:C_Green $actual) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Payload SHA-256 = " + (Get-Painted $script:C_Green $actual) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 
 if ($Check -eq "DeployedPin") {
     if ([string]::IsNullOrEmpty($ExpectPin)) {
-        Write-Fail "Expected a payload SHA-256"
+        Write-Fail "Expected A Payload SHA-256"
         exit 1
     }
     if ([string]::IsNullOrEmpty($Magic)) {
-        Write-Fail "Expected a config magic"
+        Write-Fail "Expected A Config Magic"
         exit 1
     }
 
@@ -139,7 +139,7 @@ if ($Check -eq "DeployedPin") {
             [Array]::Copy($data, $magicBytes.Length, $blob, 0, $blob.Length)
             $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
         } catch {
-            Write-Fail ("DPAPI decrypt failed: " + $_.Exception.Message)
+            Write-Fail ("DPAPI Decrypt Failed: " + $_.Exception.Message)
             exit 1
         }
         $text = [Text.Encoding]::UTF8.GetString($plainBytes)
@@ -159,20 +159,20 @@ if ($Check -eq "DeployedPin") {
         }
     }
     if ([string]::IsNullOrEmpty($pin)) {
-        Write-Fail ("Deployed config pins no PayloadSha256 (" + (Get-Painted $script:C_Dim $Path) + ")")
+        Write-Fail ("Deployed Config Pins No PayloadSha256 (" + (Get-Painted $script:C_Dim $Path) + ")")
         exit 1
     }
     if ($pin -ine $ExpectPin) {
-        Write-Fail ("Deployed config pin mismatch: config pins " + $pin + ", deployed payload is " + $ExpectPin + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+        Write-Fail ("Deployed Config Pin Mismatch: Config Pins " + $pin + ", Deployed Payload Is " + $ExpectPin + " (" + (Get-Painted $script:C_Dim $Path) + ")")
         exit 1
     }
-    Write-Ok ("Deployed config pin: " + (Get-Painted $script:C_Green $pin) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Deployed Config Pin = " + (Get-Painted $script:C_Green $pin) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 
 if ($Check -eq "ConfigKeys") {
     if ([string]::IsNullOrEmpty($Magic)) {
-        Write-Fail "Expected a config magic"
+        Write-Fail "Expected A Config Magic"
         exit 1
     }
 
@@ -191,7 +191,7 @@ if ($Check -eq "ConfigKeys") {
             [Array]::Copy($data, $magicBytes.Length, $blob, 0, $blob.Length)
             $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
         } catch {
-            Write-Fail ("DPAPI decrypt failed: " + $_.Exception.Message)
+            Write-Fail ("DPAPI Decrypt Failed: " + $_.Exception.Message)
             exit 1
         }
         $text = [Text.Encoding]::UTF8.GetString($plainBytes)
@@ -211,28 +211,28 @@ if ($Check -eq "ConfigKeys") {
     }
     foreach ($k in @("PayloadName", "RuntimeName", "ExportMap", "DllDir")) {
         if (-not $present.ContainsKey($k) -or [string]::IsNullOrEmpty($present[$k])) {
-            Write-Fail ("Deployed config is missing required key: " + $k + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+            Write-Fail ("Deployed Config Is Missing Required Key: " + $k + " (" + (Get-Painted $script:C_Dim $Path) + ")")
             exit 1
         }
     }
-    Write-Ok ("Deployed config carries per-build keys: PayloadName, RuntimeName, ExportMap, DllDir (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Deployed Config Carries Per-Build Keys: PayloadName, RuntimeName, ExportMap, DllDir (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 
 if ([string]::IsNullOrEmpty($Magic)) {
-    Write-Fail "Expected a config magic string"
+    Write-Fail "Expected A Config Magic String"
     exit 1
 }
 $expected = [Text.Encoding]::ASCII.GetBytes($Magic)
 if ($data.Length -lt $expected.Length) {
-    Write-Fail ("Encrypted config magic '" + $Magic + "' missing: " + (Get-Painted $script:C_Dim $Path))
+    Write-Fail ("Encrypted Config Magic '" + $Magic + "' Missing: " + (Get-Painted $script:C_Dim $Path))
     exit 1
 }
 for ($i = 0; $i -lt $expected.Length; $i++) {
     if ($data[$i] -ne $expected[$i]) {
-        Write-Fail ("Encrypted config magic '" + $Magic + "' missing: " + (Get-Painted $script:C_Dim $Path))
+        Write-Fail ("Encrypted Config Magic '" + $Magic + "' Missing: " + (Get-Painted $script:C_Dim $Path))
         exit 1
     }
 }
-Write-Ok ("Encrypted config magic: " + (Get-Painted $script:C_Green $Magic) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+Write-Ok ("Encrypted Config Magic = " + (Get-Painted $script:C_Green $Magic) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
 exit 0

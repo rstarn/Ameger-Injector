@@ -175,7 +175,7 @@ function Invoke-MutateRichHeader([byte[]]$Data, $Layout) {
             break
         }
     }
-    if ($rich -lt 0) { return "Rich Header - not found (skipped)" }
+    if ($rich -lt 0) { return "Rich Header - Not Found (Skipped)" }
     $xorKey = Read-UInt32 $Data ($rich + 4)
 
     $dansXored = 0x536E6144 -bxor $xorKey
@@ -190,7 +190,7 @@ function Invoke-MutateRichHeader([byte[]]$Data, $Layout) {
     $size = ($rich + 8) - $dans
     $rnd = Get-RandomBytes $size
     [Array]::Copy($rnd, 0, $Data, $dans, $size)
-    return ("Rich Header - destroyed ({0} bytes randomized)" -f $size)
+    return ("Rich Header - Destroyed ({0} Bytes Randomized)" -f $size)
 }
 
 function Invoke-MutateSectionNames([byte[]]$Data, $Layout) {
@@ -222,15 +222,15 @@ function Invoke-MutateSectionNames([byte[]]$Data, $Layout) {
         Set-SectionName $Data $sec $choice
         $renamed++
     }
-    return ("Section Names - {0} sections renamed" -f $renamed)
+    return ("Section Names - {0} Sections Renamed" -f $renamed)
 }
 
 function Invoke-MutateDebugDirectory([byte[]]$Data, $Layout) {
     $rva = Read-UInt32 $Data ($Layout.DataDirOffset + 48)
     $size = Read-UInt32 $Data ($Layout.DataDirOffset + 52)
-    if ($rva -eq 0 -or $size -eq 0) { return "Debug Directory - none present (skipped)" }
+    if ($rva -eq 0 -or $size -eq 0) { return "Debug Directory - None Present (Skipped)" }
     $off = Convert-RvaToOffset $Data $Layout $rva
-    if ($off -lt 0) { return "Debug Directory - could not resolve RVA (skipped)" }
+    if ($off -lt 0) { return "Debug Directory - Could Not Resolve RVA (Skipped)" }
     $wiped = 0
     for ($e = $off; ($e + 28) -le ($off + $size); $e += 28) {
         if (($e + 28) -gt $Data.Length) { break }
@@ -244,7 +244,7 @@ function Invoke-MutateDebugDirectory([byte[]]$Data, $Layout) {
     }
     Write-UInt32 $Data ($Layout.DataDirOffset + 48) 0
     Write-UInt32 $Data ($Layout.DataDirOffset + 52) 0
-    return ("Debug Directory - {0} entries wiped" -f $wiped)
+    return ("Debug Directory - {0} Entries Wiped" -f $wiped)
 }
 
 function Invoke-MutateLinkerVersion([byte[]]$Data, $Layout) {
@@ -350,7 +350,7 @@ function Invoke-MutatePolymorphicJunk([byte[]]$Data, $Layout) {
             }
         }
     }
-    return ("Polymorphic Junk - {0} bytes filled in code caves" -f $filled)
+    return ("Polymorphic Junk - {0} Bytes Filled In Code Caves" -f $filled)
 }
 
 function Set-CaveBytes([byte[]]$Data, [int]$From, [int]$To, $Patterns) {
@@ -376,10 +376,10 @@ function Invoke-MutateBuildGUID([byte[]]$Data, $Layout) {
     $rawPtr = Read-UInt32 $Data ($last + 20)
     $rawSize = Read-UInt32 $Data ($last + 16)
     if ($rawSize -lt 16 -or ($rawPtr + $rawSize) -gt $Data.Length) {
-        return "Build GUID - no room in last section (skipped)"
+        return "Build GUID - No Room In Last Section (Skipped)"
     }
     for ($i = $rawPtr + $rawSize - 16; $i -lt $rawPtr + $rawSize; $i++) {
-        if ($Data[$i] -ne 0) { return "Build GUID - slack not zeroed (skipped)" }
+        if ($Data[$i] -ne 0) { return "Build GUID - Slack Not Zeroed (Skipped)" }
     }
     $guid = Get-RandomBytes 16
     [Array]::Copy($guid, 0, $Data, ($rawPtr + $rawSize - 16), 16)
@@ -391,39 +391,39 @@ function Invoke-MutateDOSStub([byte[]]$Data, $Layout) {
     $e = $Layout.NtOffset
     $from = 0x40
     $to = $e
-    if (($to - $from) -lt 16) { return "DOS Stub - too small to randomize (skipped)" }
+    if (($to - $from) -lt 16) { return "DOS Stub - Too Small To Randomize (Skipped)" }
     $rnd = Get-RandomBytes ($to - $from)
     [Array]::Copy($rnd, 0, $Data, $from, ($to - $from))
-    return ("DOS Stub - {0} bytes randomized" -f ($to - $from))
+    return ("DOS Stub - {0} Bytes Randomized" -f ($to - $from))
 }
 
 function Invoke-MutateExportName([byte[]]$Data, $Layout) {
 
     $rva = Read-UInt32 $Data ($Layout.DataDirOffset + 0)
     $size = Read-UInt32 $Data ($Layout.DataDirOffset + 4)
-    if ($rva -eq 0 -or $size -lt 40) { return "Export Name - none present (skipped)" }
+    if ($rva -eq 0 -or $size -lt 40) { return "Export Name - None Present (Skipped)" }
     $off = Convert-RvaToOffset $Data $Layout $rva
-    if ($off -lt 0 -or ($off + 40) -gt $Data.Length) { return "Export Name - could not resolve RVA (skipped)" }
+    if ($off -lt 0 -or ($off + 40) -gt $Data.Length) { return "Export Name - Could Not Resolve RVA (Skipped)" }
     $nameRva = Read-UInt32 $Data ($off + 12)
     $nameOff = Convert-RvaToOffset $Data $Layout $nameRva
-    if ($nameOff -lt 0 -or $nameOff -ge $Data.Length) { return "Export Name - could not resolve name (skipped)" }
+    if ($nameOff -lt 0 -or $nameOff -ge $Data.Length) { return "Export Name - Could Not Resolve Name (Skipped)" }
     $len = 0
     while (($nameOff + $len) -lt $Data.Length -and $Data[$nameOff + $len] -ne 0) { $len++ }
-    if ($len -lt 5) { return "Export Name - name too short (skipped)" }
+    if ($len -lt 5) { return "Export Name - Name Too Short (Skipped)" }
     $letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     $alnum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     $Data[$nameOff] = [byte][char]$letters[(Get-Random -Maximum $letters.Length)]
     for ($i = 1; $i -lt $len; $i++) {
         $Data[$nameOff + $i] = [byte][char]$alnum[(Get-Random -Maximum $alnum.Length)]
     }
-    return ("Export Name - {0} chars randomized" -f $len)
+    return ("Export Name - {0} Chars Randomized" -f $len)
 }
 
 $failed = $false
 try {
     foreach ($f in $Files) {
         if (-not (Test-Path -LiteralPath $f)) {
-            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] File not found: " + $f)))
+            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] File Not Found: " + $f)))
             $failed = $true
             continue
         }
@@ -440,7 +440,7 @@ try {
                 if ($chain -and $attempt -lt 20) {
                     Start-Sleep -Milliseconds 500
                 } else {
-                    Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Read failed: " + $f + " : " + $_.Exception.Message)))
+                    Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Read Failed: " + $f + " : " + $_.Exception.Message)))
                     $failed = $true
                     break
                 }
@@ -451,7 +451,7 @@ try {
         try {
             $layout = Get-PeLayout $bytes
         } catch {
-            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Not a valid PE32+ file: " + $f + " : " + $_.Exception.Message)))
+            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Not A Valid PE32+ File: " + $f + " : " + $_.Exception.Message)))
             $failed = $true
             continue
         }
@@ -482,21 +482,21 @@ try {
             try {
                 $r = & $s.F
                 $tint = $script:C_Dim
-                if ($r -like "*skipped*") { $tint = $script:C_Yellow; $skipped++ }
+                if ($r -like "*Skipped*") { $tint = $script:C_Yellow; $skipped++ }
                 else { $applied++ }
                 Write-Host ("    " + (Get-StepCounter $s.N $total) + " " + (Get-Painted $tint $r))
             } catch {
                 $failedSteps++
                 $failed = $true
-                Write-Host ("    " + (Get-StepCounter $s.N $total) + " " + (Get-Painted $script:C_Red ("FAILED: " + $_.Exception.Message)))
+                Write-Host ("    " + (Get-StepCounter $s.N $total) + " " + (Get-Painted $script:C_Red ("Failed: " + $_.Exception.Message)))
             }
         }
 
         try {
             $check = Get-PeLayout $bytes
-            if ($check.NumSections -ne $layout.NumSections) { throw "section count changed" }
+            if ($check.NumSections -ne $layout.NumSections) { throw "Section Count Changed" }
         } catch {
-            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Post-mutation validation failed: " + $_.Exception.Message)))
+            Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Post-Mutation Validation Failed: " + $_.Exception.Message)))
             $failed = $true
             continue
         }
@@ -512,7 +512,7 @@ try {
                 if ($chain -and $attempt -lt 20) {
                     Start-Sleep -Milliseconds 500
                 } else {
-                    Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Write failed: " + $f + " : " + $_.Exception.Message)))
+                    Write-Host ("  " + (Get-Painted $script:C_Red ("[x] Write Failed: " + $f + " : " + $_.Exception.Message)))
                     $failed = $true
                     break
                 }
@@ -521,9 +521,9 @@ try {
         if ($written) {
 
             $tail = (Get-Painted $script:C_Green ("{0}" -f $applied)) + "/" +
-                    (Get-Painted $script:C_Green ("{0}" -f $total)) + " mutations applied"
-            if ($skipped -gt 0) { $tail += (", " + $skipped + " skipped") }
-            if ($failedSteps -gt 0) { $tail += (", " + $failedSteps + " failed") }
+                    (Get-Painted $script:C_Green ("{0}" -f $total)) + " Mutations Applied"
+            if ($skipped -gt 0) { $tail += (", " + $skipped + " Skipped") }
+            if ($failedSteps -gt 0) { $tail += (", " + $failedSteps + " Failed") }
             Write-Host ""
             Write-Host ("  " + (Get-Painted $script:C_Green "[+]") + " " + $tail + " " + (Get-Painted $script:C_Dim $f))
         }

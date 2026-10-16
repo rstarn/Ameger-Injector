@@ -40,16 +40,16 @@ set "VMP_PROJECT="
 set "TARGET_NAME="
 set "VMP_CON="
 
-echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Locating VMProtect console...
+echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Locating VMProtect Console...
 echo.
 call :find_vmp_con
 if errorlevel 2 goto :vmp_wrapper
 if errorlevel 1 goto :vmp_missing
-echo   %C_GREEN%[+]%C_RESET% Console: %C_GREEN%%VMP_CON%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Console = %C_GREEN%%VMP_CON%%C_RESET%
 echo.
 echo.
 
-echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Resolving payload target...
+echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Resolving Payload Target...
 echo.
 call :read_names_state
 if errorlevel 1 goto :names_missing
@@ -64,7 +64,7 @@ if defined CONFIG_NAME (
   set "DEPLOYED_CONFIG=%OUT_ROOT%\Configuration.ini"
 )
 if not exist "%DLL_DIR%" (
-  echo   %C_RED%ERROR: release DLL folder not found: %DLL_DIR%%C_RESET%
+  echo   %C_RED%Error: Release DLL Folder Not Found: %DLL_DIR%%C_RESET%
   goto :failure
 )
 set "TARGET="
@@ -75,20 +75,20 @@ if not exist "%TARGET%" goto :target_missing
 if not "%DLL_CANDIDATES%"=="1" goto :target_ambiguous
 for %%N in ("%TARGET%") do set "TARGET_NAME=%%~nxN"
 echo   %C_GREEN%[+]%C_RESET% Target      = %C_GREEN%%TARGET%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Skipped     = %C_YELLOW%%RUNTIME_NAME% (manual-mapped)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Skipped     = %C_YELLOW%%RUNTIME_NAME% (Manual-Mapped)%C_RESET%
 echo.
 call :check_already_protected
 if defined VMP_PRESENT (
   if /i not "%AMEGER_FORCE_VMP%"=="1" (
-    echo   %C_GREEN%[+]%C_RESET% Already protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); skipping.
-    echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 to virtualize anyway.%C_RESET%
+    echo   %C_GREEN%[+]%C_RESET% Already Protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); Skipping.
+    echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 To Virtualize Anyway.%C_RESET%
     goto :already_protected
   )
 )
 echo.
 echo.
 
-echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Resolving VMProtect project...
+echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Resolving VMProtect Project...
 echo.
 call :find_project
 if errorlevel 1 goto :project_missing
@@ -101,18 +101,18 @@ echo.
 call :read_state
 echo.
 if /i "%STATE_MATCH%"=="output" (
-  echo   %C_GREEN%[+]%C_RESET% Already protected; nothing to do.
+  echo   %C_GREEN%[+]%C_RESET% Already Protected; Nothing To Do.
   goto :already_done
 )
 if /i "%STATE_MATCH%"=="unknown" (
-  echo   %C_YELLOW%[+]%C_RESET% No prior state recorded; protecting now.
+  echo   %C_YELLOW%[+]%C_RESET% No Prior State Recorded; Protecting Now.
 ) else (
-  echo   %C_GREEN%[+]%C_RESET% Source matches recorded build; protecting.
+  echo   %C_GREEN%[+]%C_RESET% Source Matches Recorded Build; Protecting.
 )
 echo.
 echo.
 
-echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Virtualizing payload...
+echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Virtualizing Payload...
 echo.
 call :clean_work
 if errorlevel 1 goto :work_error
@@ -121,10 +121,10 @@ if not exist "%WORK_DIR%" goto :work_error
 call :sha256_of "%TARGET%" SRC_SHA
 if errorlevel 1 goto :hash_error
 if not defined SRC_SHA goto :hash_error
-echo   Source SHA-256:  %C_GREEN%%SRC_SHA%%C_RESET%
+echo   Source SHA-256 = %C_GREEN%%SRC_SHA%%C_RESET%
 call :prepare_project
 if errorlevel 1 goto :project_error
-echo   %C_GREEN%[+]%C_RESET% Segment name: %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(randomized per build)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Segment Name = %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(Randomized Per Build)%C_RESET%
 call :run_vmp
 if errorlevel 1 goto :pack_only_fallback
 goto :vmp_done
@@ -133,10 +133,10 @@ echo   %C_YELLOW%[!]%C_RESET% Function virtualization failed; falling back to pa
 call :tail_log
 call :prepare_project -PackOnly
 if errorlevel 1 goto :project_error
-echo   %C_GREEN%[+]%C_RESET% Segment name: %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%^(pack-only, refreshed^)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Segment Name = %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(Pack-Only, Refreshed)%C_RESET%
 call :run_vmp
 if errorlevel 1 (
-  echo   %C_RED%ERROR: VMProtect reported a failure; see the log tail below.%C_RESET%
+  echo   %C_RED%Error: VMProtect Reported A Failure; See The Log Tail Below.%C_RESET%
   call :tail_log
   goto :failure
 )
@@ -145,16 +145,16 @@ call :validate_output
 if errorlevel 2 goto :fc_error
 if errorlevel 1 goto :output_invalid
 echo.
-echo   %C_GREEN%OK%C_RESET% Protected output validated.
+echo   %C_GREEN%OK%C_RESET% Protected Output Validated.
 call :verify_segment "%WORK_DIR%\out.dll"
 if errorlevel 1 goto :segment_error
-echo   %C_GREEN%[+]%C_RESET% VM segment: %C_GREEN%%VM_SEG%%C_RESET% (verified)
+echo   %C_GREEN%[+]%C_RESET% VM Segment = %C_GREEN%%VM_SEG%%C_RESET% (Verified)
 call :strip_exports "%WORK_DIR%\out.dll"
 if errorlevel 1 goto :strip_error
 echo.
 echo.
 
-echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Re-pinning payload hash...
+echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Re-pinning Payload Hash...
 echo.
 copy /y "%WORK_DIR%\out.dll" "%TARGET%" > nul
 if errorlevel 1 goto :deploy_error
@@ -181,7 +181,7 @@ if not exist "%PIN_SRC%" goto :pin_error
 echo   %C_GREEN%[+]%C_RESET% PayloadSha256 = %C_GREEN%%OUT_SHA%%C_RESET%
 if not exist "%CONFIG_SCRIPT%" goto :pin_error
 if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
-  echo   %C_RED%ERROR: AMEGER_ENCRYPT_CONFIG=0 is refused; the launcher rejects plaintext configs.%C_RESET%
+  echo   %C_RED%Error: AMEGER_ENCRYPT_CONFIG=0 Is Refused; The Launcher Rejects Plaintext Configs.%C_RESET%
   goto :pin_error
 )
 if not exist "%DEPLOYED_CONFIG%" goto :pin_error
@@ -197,7 +197,7 @@ call :write_state
 echo.
 echo.
 
-echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping protection artifacts...
+echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping Protection Artifacts...
 echo.
 call :clean_work
 if errorlevel 1 goto :cleanup_error
@@ -205,7 +205,7 @@ call :assert_clean
 if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%DLL_DIR%%C_RESET%.
 echo.
-echo Payload protection completed.
+echo Payload Protection Completed.
 echo   Payload    = %C_GREEN%%TARGET%%C_RESET%
 echo.
 echo.
@@ -214,7 +214,7 @@ exit /b 0
 
 :already_protected
 echo.
-echo Payload is already VMProtect-protected; release unchanged.
+echo Payload Is Already VMProtect-Protected; Release Unchanged.
 echo.
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
@@ -248,7 +248,7 @@ exit /b 0
 
 :already_done
 echo.
-echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping protection artifacts...
+echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping Protection Artifacts...
 echo.
 call :clean_work
 if errorlevel 1 goto :cleanup_error
@@ -256,10 +256,10 @@ call :assert_clean
 if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%DLL_DIR%%C_RESET%.
 echo.
-echo Payload already protected; release unchanged.
+echo Payload Already Protected; Release Unchanged.
 echo.
-if defined VMSEG echo VM segment: %C_GREEN%%VMSEG%%C_RESET% (recorded)
-echo Payload: %C_GREEN%%TARGET%%C_RESET%
+if defined VMSEG echo VM Segment = %C_GREEN%%VMSEG%%C_RESET% (Recorded)
+echo Payload = %C_GREEN%%TARGET%%C_RESET%
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
 
@@ -281,8 +281,8 @@ for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile
 if not exist "%PROJ_WORK%" exit /b 1
 if not defined SEG_NAME exit /b 1
 if defined VMP_DROP (
-  echo   %C_YELLOW%[!]%C_RESET% .vmp procedure^(s^) absent from payload, dropped: %C_YELLOW%%VMP_DROP%%C_RESET%
-  echo   %C_YELLOW%      Virtualizing only what the payload exposes: %VMP_KEEP%%C_RESET%
+  echo   %C_YELLOW%[!]%C_RESET% .vmp Procedure^(s^) Absent From Payload, Dropped: %C_YELLOW%%VMP_DROP%%C_RESET%
+  echo   %C_YELLOW%      Virtualizing Only What The Payload Exposes: %VMP_KEEP%%C_RESET%
 )
 exit /b 0
 
@@ -454,12 +454,12 @@ if exist "%VMSEG_B64%" del /f /q "%VMSEG_B64%" >nul 2>&1
 if exist "%VMSEG_OUT%" del /f /q "%VMSEG_OUT%" >nul 2>&1
 if /i "%VM_SEG_STATUS%"=="ok" exit /b 0
 if /i "%VM_SEG_STATUS%"=="missing" (
-  echo   %C_RED%ERROR: no VMProtect segment found in the protected output.%C_RESET%
+  echo   %C_RED%Error: No VMProtect Segment Found In The Protected Output.%C_RESET%
 ) else (
-  echo   %C_RED%ERROR: VMProtect segment name mismatch in the protected output.%C_RESET%
+  echo   %C_RED%Error: VMProtect Segment Name Mismatch In The Protected Output.%C_RESET%
 )
-echo   %C_RED%       expected: %SEG_NAME% (optionally followed by digits)%C_RESET%
-echo   %C_RED%       observed: %VM_SEG%%C_RESET%
+echo   %C_RED%       Expected = %SEG_NAME% (Optionally Followed By Digits)%C_RESET%
+echo   %C_RED%       Observed = %VM_SEG%%C_RESET%
 exit /b 1
 
 :assert_master_pin
@@ -511,95 +511,95 @@ exit /b 0
 
 :assert_clean
 for %%F in ("%DLL_DIR%\*.vmp" "%DLL_DIR%\*.log" "%DLL_DIR%\*.bak" "%DLL_DIR%\*.tmp") do if exist "%%~F" (
-  echo   %C_RED%ERROR: protection artifact left in the release folder: %%~nxF%C_RESET%
+  echo   %C_RED%Error: Protection Artifact Left In The Release Folder: %%~nxF%C_RESET%
   exit /b 1
 )
 exit /b 0
 
 :vmp_wrapper
-echo   %C_RED%ERROR: AMEGER_VMP_CON points at a batch/cmd wrapper: %VMP_CON%%C_RESET%
-echo   %C_RED%       A wrapper transfers control and never returns; use the real console.%C_RESET%
+echo   %C_RED%Error: AMEGER_VMP_CON Points At A Batch/CMD Wrapper: %VMP_CON%%C_RESET%
+echo   %C_RED%       A Wrapper Transfers Control And Never Returns; Use The Real Console.%C_RESET%
 goto :failure
 
 :vmp_missing
-echo   %C_RED%ERROR: VMProtect console not found.%C_RESET%
+echo   %C_RED%Error: VMProtect Console Not Found.%C_RESET%
 echo   %C_YELLOW%       Searched:%C_RESET%
 echo         %PROGRAMFILES%\VMProtect*\VMProtect_Con.exe
 echo         %PROGRAMW6432%\VMProtect*\VMProtect_Con.exe
 echo         %PROGRAMFILES(X86)%\VMProtect*\VMProtect_Con.exe
 echo         %LOCALAPPDATA%\VMProtect*\VMProtect_Con.exe
 echo         PATH ^(VMProtect_Con.exe, vmpconsole.exe^)
-echo   %C_YELLOW%       Fix: set AMEGER_VMP_CON to the full path, with no surrounding quotes,%C_RESET%
+echo   %C_YELLOW%       Fix: Set AMEGER_VMP_CON to the full path, with no surrounding quotes,%C_RESET%
 echo   %C_YELLOW%             e.g. set AMEGER_VMP_CON=C:\Program Files\VMProtect Ultimate\VMProtect_Con.exe%C_RESET%
-echo   %C_YELLOW%       Leaving it unset is fine if VMProtect is installed normally.%C_RESET%
-echo   %C_YELLOW%       Note: the console build is not included in the Lite edition.%C_RESET%
+echo   %C_YELLOW%       Leaving It Unset Is Fine If VMProtect Is Installed Normally.%C_RESET%
+echo   %C_YELLOW%       Note: The Console Build Is Not Included In The Lite Edition.%C_RESET%
 goto :failure
 
 :names_missing
-echo   %C_RED%ERROR: per-build name state not found or incomplete: %NAMES_STATE%%C_RESET%
-echo   %C_RED%       Run Create.bat first; the deployed payload and runtime DLL cannot be resolved.%C_RESET%
+echo   %C_RED%Error: Per-Build Name State Not Found Or Incomplete: %NAMES_STATE%%C_RESET%
+echo   %C_RED%       Run Create.bat First; The Deployed Payload And Runtime DLL Cannot Be Resolved.%C_RESET%
 goto :failure
 
 :target_missing
-echo   %C_RED%ERROR: no virtualizable payload DLL found in the release folder.%C_RESET%
+echo   %C_RED%Error: No Virtualizable Payload DLL Found In The Release Folder.%C_RESET%
 goto :failure
 
 :target_ambiguous
-echo   %C_RED%ERROR: expected exactly one virtualizable payload DLL in %DLL_DIR%, found %DLL_CANDIDATES%.%C_RESET%
-echo   %C_RED%       Refusing to guess which DLL to protect.%C_RESET%
+echo   %C_RED%Error: Expected Exactly One Virtualizable Payload DLL In %DLL_DIR%, found %DLL_CANDIDATES%.%C_RESET%
+echo   %C_RED%       Refusing To Guess Which DLL To Protect.%C_RESET%
 goto :failure
 
 :project_missing
-echo   %C_RED%ERROR: no .vmp project found; set AMEGER_VMP_PROJECT_DLL.%C_RESET%
+echo   %C_RED%Error: No .vmp Project Found; Set AMEGER_VMP_PROJECT_DLL.%C_RESET%
 goto :failure
 
 :project_mismatch
-echo   %C_RED%ERROR: the project does not target this binary.%C_RESET%
-echo   %C_RED%       Refusing to protect with a crossed project.%C_RESET%
+echo   %C_RED%Error: The Project Does Not Target This Binary.%C_RESET%
+echo   %C_RED%       Refusing To Protect With A Crossed Project.%C_RESET%
 goto :failure
 
 :work_error
-echo   %C_RED%ERROR: unable to prepare the protection staging directory.%C_RESET%
+echo   %C_RED%Error: Unable To Prepare The Protection Staging Directory.%C_RESET%
 goto :failure
 
 :hash_error
-echo   %C_RED%ERROR: unable to calculate the payload SHA-256.%C_RESET%
+echo   %C_RED%Error: Unable To Calculate The Payload SHA-256.%C_RESET%
 goto :failure
 
 :output_invalid
-echo   %C_RED%ERROR: VMProtect output failed validation; release left untouched.%C_RESET%
+echo   %C_RED%Error: VMProtect Output Failed Validation; Release Left Untouched.%C_RESET%
 goto :failure
 
 :segment_error
-echo   %C_RED%ERROR: the protected payload does not carry the generated VMProtect segment.%C_RESET%
-echo   %C_RED%       Release left untouched; the output was not deployed.%C_RESET%
+echo   %C_RED%Error: The Protected Payload Does Not Carry The Generated VMProtect Segment.%C_RESET%
+echo   %C_RED%       Release Left Untouched; The Output Was Not Deployed.%C_RESET%
 goto :failure
 
 :fc_error
-echo   %C_RED%ERROR: unable to compare the protected output against the source.%C_RESET%
-echo   %C_RED%       fc failed; the output is unverified and will not ship.%C_RESET%
+echo   %C_RED%Error: Unable To Compare The Protected Output Against The Source.%C_RESET%
+echo   %C_RED%       fc Failed; The Output Is Unverified And Will Not Ship.%C_RESET%
 goto :failure
 
 :project_error
-echo   %C_RED%ERROR: unable to prepare the randomized project copy.%C_RESET%
+echo   %C_RED%Error: Unable To Prepare The Randomized Project Copy.%C_RESET%
 goto :failure
 
 :strip_error
-echo   %C_RED%ERROR: unable to strip the payload export directory.%C_RESET%
+echo   %C_RED%Error: Unable To Strip The Payload Export Directory.%C_RESET%
 echo   %C_RED%       The release payload would ship its only named symbol.%C_RESET%
 goto :failure
 
 :deploy_error
-echo   %C_RED%ERROR: unable to deploy the protected payload.%C_RESET%
+echo   %C_RED%Error: Unable To Deploy The Protected Payload.%C_RESET%
 goto :failure
 
 :pin_error
-echo   %C_RED%ERROR: unable to re-pin the release config or re-encrypt it.%C_RESET%
+echo   %C_RED%Error: Unable To Re-Pin The Release Config Or Re-Encrypt It.%C_RESET%
 echo   %C_RED%       The release payload and its shipped pin now disagree.%C_RESET%
 goto :failure
 
 :cleanup_error
-echo   %C_RED%ERROR: unable to remove generated protection artifacts.%C_RESET%
+echo   %C_RED%Error: Unable To Remove Generated Protection Artifacts.%C_RESET%
 goto :failure
 
 :failure

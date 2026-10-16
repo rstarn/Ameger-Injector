@@ -67,15 +67,15 @@ if defined AMEGER_WINDOWS_SDK_VERSION echo   %C_GREEN%[+]%C_RESET% Windows SDK: 
 echo.
 echo.
 
-echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Checking projects...
+echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Checking Projects...
 echo.
 if not exist "%LIBRARY_PROJ%" goto :source_error
 if not exist "%INTERFACE_PROJ%" goto :source_error
-echo   %C_GREEN%[+]%C_RESET% Runtime and Interface projects present.
+echo   %C_GREEN%[+]%C_RESET% Runtime And Interface Projects Present.
 echo.
 echo.
 
-echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Cleaning Release and Cache...
+echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Cleaning Release And Cache...
 echo.
 call :clean_directory "%OUT_ROOT%"
 if errorlevel 1 goto :clean_error
@@ -83,7 +83,7 @@ call :clean_directory "%BUILD_DIR%\obj"
 if errorlevel 1 goto :clean_error
 call :prepare_cache
 if errorlevel 1 goto :clean_error
-echo   %C_GREEN%[+]%C_RESET% Clean layout prepared in %C_GREEN%%RELEASE_CACHE%%C_RESET%.
+echo   %C_GREEN%[+]%C_RESET% Clean Layout Prepared In %C_GREEN%%RELEASE_CACHE%%C_RESET%.
 echo.
 echo.
 call :generate_names
@@ -91,16 +91,16 @@ if errorlevel 1 goto :names_error
 set "DLL_DIR=%OUT_ROOT%\%DLLDIR_NAME%"
 if not exist "%DLL_DIR%" mkdir "%DLL_DIR%"
 if not exist "%DLL_DIR%" (
-  echo   %C_RED%ERROR: unable to create the per-build DLL folder; refusing to deploy stable names.%C_RESET%
+  echo   %C_RED%Error: Unable To Create The Per-Build DLL Folder; Refusing To Deploy Stable Names.%C_RESET%
   goto :clean_error
 )
 set "DEPLOYED_CONFIG=%OUT_ROOT%\%CONFIG_NAME%.ini"
 set "PAYLOAD_DEST=%DLL_DIR%\%PAYLOAD_NAME%"
 set "INTERFACE_EXE=%OUT64%\%EXE_NAME%.exe"
-echo   %C_GREEN%[+]%C_RESET% Deployed payload name: %C_GREEN%%PAYLOAD_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Deployed runtime name: %C_GREEN%%RUNTIME_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Deployed launcher name: %C_GREEN%%EXE_NAME%.exe%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Deployed DLL folder: %C_GREEN%%DLLDIR_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Deployed Payload Name = %C_GREEN%%PAYLOAD_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Deployed Runtime Name = %C_GREEN%%RUNTIME_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Deployed Launcher Name = %C_GREEN%%EXE_NAME%.exe%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Deployed DLL Folder = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo.
 echo.
 
@@ -123,14 +123,14 @@ if not defined AmegerStubSeed goto :seeds_missing
 if "%AmegerStubSeed%"=="0" goto :seeds_missing
     set "MUTATE_ARGS=/p:AmegerMmapSentinel=%AmegerMmapSentinel% /p:AmegerStringSeed=%AmegerStringSeed% /p:AmegerStubSeed=%AmegerStubSeed%"
 echo.
-echo   %C_GREEN%[+]%C_RESET% Per-build sentinel: %C_GREEN%%AmegerMmapSentinel%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Per-build string seed: %C_GREEN%%AmegerStringSeed%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Per-Build Sentinel = %C_GREEN%%AmegerMmapSentinel%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Per-Build String Seed = %C_GREEN%%AmegerStringSeed%%C_RESET%
 echo.
 goto :seeds_ready
 
 :seeds_missing
 echo.
-echo   %C_RED%ERROR: per-build seed generation failed; refusing to build with fixed seeds.%C_RESET%
+echo   %C_RED%Error: Per-Build Seed Generation Failed; Refusing To Build With Fixed Seeds.%C_RESET%
 goto :failure
 
 :seeds_ready
@@ -154,7 +154,7 @@ if errorlevel 1 goto :mutate_fatal
 goto :runtime_mutate_ready
 
 :runtime_mutate_missing
-echo   %C_RED%ERROR: BuildPE.ps1 was not found; refusing to continue with an unmutated runtime DLL.%C_RESET%
+echo   %C_RED%Error: BuildPE.ps1 Was Not Found; Refusing To Continue With An Unmutated Runtime DLL.%C_RESET%
 goto :failure
 
 :runtime_mutate_ready
@@ -195,16 +195,16 @@ set "RUNTIME_DLL=%DLL_DIR%\%RUNTIME_DLL_NAME%"
 if not exist "%DLL_DIR%" mkdir "%DLL_DIR%"
 move /y "%RUNTIME_STOCK_DLL%" "%RUNTIME_DLL%" >nul
 if not exist "%RUNTIME_DLL%" goto :runtime_rename_error
-echo   %C_GREEN%[+]%C_RESET% Runtime SHA-256:        %RUNTIME_SHA256%
+echo   %C_GREEN%[+]%C_RESET% Runtime SHA-256 = %RUNTIME_SHA256%
 echo.
 call :build_project "%INTERFACE_PROJ%" x64 "%OUT64%" "%INTERFACE64_OBJ%" "%TOOLSET_ARG%" "%SDK_ARG%" "%RUNTIME_HASH_ARGS%"
 if errorlevel 1 goto :build_error
 echo.
 echo.
 
-echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Deploying release binaries...
+echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Deploying Release Binaries...
 echo.
-echo   %C_GREEN%[+]%C_RESET% Runtime binaries are in %C_GREEN%%OUT_ROOT%%C_RESET%.
+echo   %C_GREEN%[+]%C_RESET% Runtime Binaries Are In %C_GREEN%%OUT_ROOT%%C_RESET%.
 call :deploy_payload
 if errorlevel 1 goto :payload_error
 call :protect_config
@@ -212,16 +212,16 @@ if errorlevel 1 goto :config_error
 echo.
 echo.
 
-echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping intermediates into Cache and verifying...
+echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping Intermediates Into Cache And Verifying...
 echo.
 set "EXE_COUNT=0"
 for %%F in ("%OUT64%\*.exe") do set /a "EXE_COUNT+=1"
 if not "%EXE_COUNT%"=="1" (
-  echo   %C_RED%ERROR: expected exactly one launcher EXE in %OUT64%, found %EXE_COUNT%.%C_RESET%
+  echo   %C_RED%Error: Expected Exactly One Launcher EXE In %OUT64%, Found %EXE_COUNT%.%C_RESET%
   goto :verify_error
 )
 if not exist "%INTERFACE_EXE%" (
-  echo   %C_RED%ERROR: expected launcher missing: %INTERFACE_EXE%%C_RESET%
+  echo   %C_RED%Error: Expected Launcher Missing: %INTERFACE_EXE%%C_RESET%
   goto :verify_error
 )
 call :verify "%INTERFACE_EXE%" "x64 Interface"
@@ -254,7 +254,7 @@ if errorlevel 1 goto :cleanup_error
 call :sweep_artifacts
 if errorlevel 1 goto :cleanup_error
 echo.
-echo   %C_GREEN%[+]%C_RESET% Cache groups: Runtime, Injector.
+echo   %C_GREEN%[+]%C_RESET% Cache Groups = Runtime, Injector.
 echo.
 echo.
 
@@ -270,12 +270,12 @@ if errorlevel 1 goto :verify_content_error
 call :write_section_manifest
 if errorlevel 1 goto :manifest_error
 echo.
-echo Build completed successfully.
+echo Build Completed Successfully.
 echo.
-echo Cache:   %C_GREEN%%RELEASE_CACHE%%C_RESET%
-echo Payload:     %C_GREEN%%PAYLOAD_DEST%%C_RESET%
-echo Interface x64: %C_GREEN%%INTERFACE_EXE%%C_RESET%
-echo Runtime DLL: %C_GREEN%%RUNTIME_DLL%%C_RESET%
+echo Cache = %C_GREEN%%RELEASE_CACHE%%C_RESET%
+echo Payload = %C_GREEN%%PAYLOAD_DEST%%C_RESET%
+echo Interface x64 = %C_GREEN%%INTERFACE_EXE%%C_RESET%
+echo Runtime DLL = %C_GREEN%%RUNTIME_DLL%%C_RESET%
 
 echo.
 call :scrub_build_cache
@@ -330,12 +330,12 @@ exit /b 0
 
 :generate_names
 if not exist "%NAMES_SCRIPT%" (
-  echo   %C_RED%ERROR: ShuffleNaming.ps1 not found; refusing to deploy stable names.%C_RESET%
+  echo   %C_RED%Error: ShuffleNaming.ps1 Not Found; Refusing To Deploy Stable Names.%C_RESET%
   exit /b 1
 )
 where powershell.exe >nul 2>&1
 if errorlevel 1 (
-  echo   %C_RED%ERROR: PowerShell unavailable; refusing to deploy stable names.%C_RESET%
+  echo   %C_RED%Error: PowerShell Unavailable; Refusing To Deploy Stable Names.%C_RESET%
   exit /b 1
 )
 set "PAYLOAD_NAME="
@@ -381,26 +381,26 @@ exit /b 0
 
 :rename_exports
 if not exist "%RENAME_SCRIPT%" (
-  echo   %C_RED%ERROR: ShuffleExports.ps1 not found; refusing to ship stable export names.%C_RESET%
+  echo   %C_RED%Error: ShuffleExports.ps1 Not Found; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
 where powershell.exe >nul 2>&1
 if errorlevel 1 (
-  echo   %C_RED%ERROR: PowerShell unavailable; refusing to ship stable export names.%C_RESET%
+  echo   %C_RED%Error: PowerShell Unavailable; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
 set "RENAME_STATUS="
 set "EXPORT_MAP="
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%RENAME_SCRIPT%" -Path "%RUNTIME_STOCK_DLL%"`) do set "%%A=%%B"
 if /i not "%RENAME_STATUS%"=="ok" (
-  echo   %C_RED%ERROR: runtime export rename failed; refusing to ship stable export names.%C_RESET%
+  echo   %C_RED%Error: Runtime Export Rename Failed; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
 if not defined EXPORT_MAP (
-  echo   %C_RED%ERROR: runtime export rename produced no map; refusing to ship stable export names.%C_RESET%
+  echo   %C_RED%Error: Runtime Export Rename Produced No Map; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
-echo   %C_GREEN%[+]%C_RESET% Runtime exports renamed (map captured).
+echo   %C_GREEN%[+]%C_RESET% Runtime Exports Renamed (Map Captured).
 exit /b 0
 
 :write_names_state
@@ -433,7 +433,7 @@ exit /b %ERRORLEVEL%
 
 :verify
 if not exist "%~1" exit /b 1
-echo   %C_GREEN%OK%C_RESET% %~2: %C_GREEN%"%~1"%C_RESET%
+echo   %C_GREEN%OK%C_RESET% %~2 = %C_GREEN%"%~1"%C_RESET%
 exit /b 0
 
 :verify_embed
@@ -502,53 +502,53 @@ exit /b 0
 
 :protect_config
 if not defined DEPLOYED_SHA (
-  echo   %C_RED%ERROR: deployed payload SHA-256 unavailable; refusing to ship an unpinned config.%C_RESET%
+  echo   %C_RED%Error: Deployed Payload SHA-256 Unavailable; Refusing To Ship An Unpinned Config.%C_RESET%
   exit /b 1
 )
 if not defined PAYLOAD_NAME (
-  echo   %C_RED%ERROR: deployed payload name unavailable; refusing to ship an unstamped config.%C_RESET%
+  echo   %C_RED%Error: Deployed Payload Name Unavailable; Refusing To Ship An Unstamped Config.%C_RESET%
   exit /b 1
 )
 if not defined RUNTIME_NAME (
-  echo   %C_RED%ERROR: deployed runtime name unavailable; refusing to ship an unstamped config.%C_RESET%
+  echo   %C_RED%Error: Deployed Runtime Name Unavailable; Refusing To Ship An Unstamped Config.%C_RESET%
   exit /b 1
 )
 if not defined DLLDIR_NAME (
-  echo   %C_RED%ERROR: deployed DLL folder name unavailable; refusing to ship an unstamped config.%C_RESET%
+  echo   %C_RED%Error: Deployed DLL Folder Name Unavailable; Refusing To Ship An Unstamped Config.%C_RESET%
   exit /b 1
 )
 if not defined EXPORT_MAP (
-  echo   %C_RED%ERROR: runtime export map unavailable; refusing to ship an unstamped config.%C_RESET%
+  echo   %C_RED%Error: Runtime Export Map Unavailable; Refusing To Ship An Unstamped Config.%C_RESET%
   exit /b 1
 )
 if not defined CONFIG_MAGIC (
-  echo   %C_RED%ERROR: per-build config magic unavailable; refusing to ship a static-magic config.%C_RESET%
+  echo   %C_RED%Error: Per-Build Config Magic Unavailable; Refusing To Ship A Static-Magic Config.%C_RESET%
   exit /b 1
 )
 if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
-  echo   %C_RED%ERROR: AMEGER_ENCRYPT_CONFIG=0 is refused; the launcher rejects plaintext configs, so this would ship an unloadable release.%C_RESET%
+  echo   %C_RED%Error: AMEGER_ENCRYPT_CONFIG=0 Is Refused; The Launcher Rejects Plaintext Configs, So This Would Ship An Unloadable Release.%C_RESET%
   echo   %C_RED%Rebuild without the opt-out to ship the encrypted config.%C_RESET%
   exit /b 1
 )
 if not exist "%CONFIG_MASTER%" (
-  echo   %C_RED%ERROR: master config not found: %CONFIG_MASTER%%C_RESET%
+  echo   %C_RED%Error: Master Config Not Found: %CONFIG_MASTER%%C_RESET%
   exit /b 1
 )
 if not exist "%CONFIG_SCRIPT%" (
-  echo   %C_RED%ERROR: ProtectConfig.ps1 not found; refusing to ship a plaintext config.%C_RESET%
+  echo   %C_RED%Error: ProtectConfig.ps1 Not Found; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
 where powershell.exe >nul 2>&1
 if errorlevel 1 (
-  echo   %C_RED%ERROR: PowerShell unavailable; refusing to ship a plaintext config.%C_RESET%
+  echo   %C_RED%Error: PowerShell Unavailable; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%PAYLOAD_DEST%" -PayloadName "%PAYLOAD_NAME%" -RuntimeName "%RUNTIME_NAME%" -ExportMap "%EXPORT_MAP%" -DllDir "%DLLDIR_NAME%" -ConfigMagic "%CONFIG_MAGIC%"
 if errorlevel 1 (
-  echo   %C_RED%ERROR: config encryption failed; refusing to ship a plaintext config.%C_RESET%
+  echo   %C_RED%Error: Config Encryption Failed; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
-echo   %C_GREEN%[+]%C_RESET% Config encrypted  = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Config Encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 exit /b 0
 
 :deploy_payload
@@ -562,13 +562,13 @@ if defined AMEGER_PAYLOAD (
   set "PAYLOAD_IS_PREPARED=1"
 )
 if not exist "%PAYLOAD_SRC%" (
-  echo   %C_RED%ERROR: payload asset not found: %PAYLOAD_SRC%%C_RESET%
+  echo   %C_RED%Error: Payload Asset Not Found: %PAYLOAD_SRC%%C_RESET%
   exit /b 1
 )
 if defined PAYLOAD_IS_PREPARED echo   %C_YELLOW%[+]%C_RESET% Prepared payload: %C_YELLOW%%PAYLOAD_SRC%%C_RESET%
 copy /y "%PAYLOAD_SRC%" "%PAYLOAD_DEST%" >nul
 if errorlevel 1 (
-  echo   %C_RED%ERROR: failed to copy payload to %PAYLOAD_DEST%%C_RESET%
+  echo   %C_RED%Error: Failed To Copy Payload To %PAYLOAD_DEST%%C_RESET%
   exit /b 1
 )
 set "DEPLOYED_SHA="
@@ -588,13 +588,13 @@ if exist "%DSHA_PS1%" del /f /q "%DSHA_PS1%" >nul 2>&1
 if exist "%DSHA_B64%" del /f /q "%DSHA_B64%" >nul 2>&1
 if exist "%DSHA_OUT%" del /f /q "%DSHA_OUT%" >nul 2>&1
 if not defined DEPLOYED_SHA (
-  echo   %C_RED%ERROR: unable to hash the deployed payload.%C_RESET%
+  echo   %C_RED%Error: Unable To Hash The Deployed Payload.%C_RESET%
   exit /b 1
 )
 if not defined PAYLOAD_IS_PREPARED (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check PayloadHash -Path "%PAYLOAD_DEST%" -Config "%CONFIG_MASTER%"
   if errorlevel 1 (
-    echo   %C_RED%ERROR: deployed payload failed hash verification.%C_RESET%
+    echo   %C_RED%Error: Deployed Payload Failed Hash Verification.%C_RESET%
     echo     The pristine asset %PAYLOAD_ASSET% does not match the master PayloadSha256 pin.
     echo     If you intentionally swapped the payload, refresh the pin and rebuild:
     echo         Create.bat repin
@@ -648,7 +648,7 @@ if not errorlevel 1 exit /b 0
 rmdir /s /q "%RELEASE_CACHE%\%~1" 2>nul
 del /f /q "%RELEASE_CACHE%\%~1" 2>nul
 if exist "%RELEASE_CACHE%\%~1" (
-  echo   %C_RED%ERROR: unable to remove build residue: %RELEASE_CACHE%\%~1%C_RESET%
+  echo   %C_RED%Error: Unable To Remove Build Residue: %RELEASE_CACHE%\%~1%C_RESET%
   set "SCRUB_FAILED=1"
 )
 exit /b 0
@@ -661,80 +661,80 @@ if /i "%~1"=="BuildNames.state" exit /b 0
 exit /b 1
 
 :manifest_error
-echo   %C_RED%ERROR: unable to record the PE section baseline manifest.%C_RESET%
+echo   %C_RED%Error: Unable To Record The PE Section Baseline Manifest.%C_RESET%
 goto :failure
 
 :scrub_error
-echo   %C_RED%ERROR: post-success build-cache scrub failed; residue may remain in %RELEASE_CACHE%.%C_RESET%
+echo   %C_RED%Error: Post-Success Build-Cache Scrub Failed; Residue May Remain In %RELEASE_CACHE%.%C_RESET%
 goto :failure
 
 :msbuild_error
-echo %C_RED%ERROR: MSBuild was not found.%C_RESET%
+echo %C_RED%Error: MSBuild Was Not Found.%C_RESET%
 goto :failure
 
 :source_error
-echo %C_RED%ERROR: one or more required project files are missing.%C_RESET%
+echo %C_RED%Error: One Or More Required Project Files Are Missing.%C_RESET%
 goto :failure
 
 :clean_error
-echo %C_RED%ERROR: unable to prepare the Release or Cache directory.%C_RESET%
+echo %C_RED%Error: Unable To Prepare The Release Or Cache Directory.%C_RESET%
 goto :failure
 
 :build_error
-echo %C_RED%ERROR: a project build failed.%C_RESET%
+echo %C_RED%Error: A Project Build Failed.%C_RESET%
 goto :failure
 
 :hash_error
-echo %C_RED%ERROR: unable to calculate the runtime DLL SHA-256.%C_RESET%
+echo %C_RED%Error: Unable To Calculate The Runtime DLL SHA-256.%C_RESET%
 goto :failure
 
 :runtime_rename_error
-echo %C_RED%ERROR: unable to rename the runtime DLL to its per-build name.%C_RESET%
+echo %C_RED%Error: Unable To Rename The Runtime DLL To Its Per-Build Name.%C_RESET%
 goto :failure
 
 :names_error
-echo %C_RED%ERROR: unable to generate the per-build deployed file names.%C_RESET%
+echo %C_RED%Error: Unable To Generate The Per-Build Deployed File Names.%C_RESET%
 goto :failure
 
 :rename_export_error
-echo %C_RED%ERROR: unable to rename the runtime DLL exports.%C_RESET%
+echo %C_RED%Error: Unable To Rename The Runtime DLL Exports.%C_RESET%
 goto :failure
 
 :names_state_error
-echo %C_RED%ERROR: unable to record the per-build name state.%C_RESET%
+echo %C_RED%Error: Unable To Record The Per-Build Name State.%C_RESET%
 goto :failure
 
 :verify_error
-echo %C_RED%ERROR: one or more expected binaries are missing.%C_RESET%
+echo %C_RED%Error: One Or More Expected Binaries Are Missing.%C_RESET%
 goto :failure
 
 :verify_content_error
-echo %C_RED%ERROR: content verification failed (embedded runtime hash, config magic, deployed pin, per-build config key, syscall/stealth layer, or mmap section merge).%C_RESET%
+echo %C_RED%Error: Content Verification Failed (Embedded Runtime Hash, Config Magic, Deployed Pin, Per-Build Config Key, Syscall/Stealth Layer, Or Mmap Section Merge).%C_RESET%
 goto :failure
 
 :cleanup_error
-echo %C_RED%ERROR: unable to remove generated import artifacts.%C_RESET%
+echo %C_RED%Error: Unable To Remove Generated Import Artifacts.%C_RESET%
 goto :failure
 
 :config_error
-echo %C_RED%ERROR: unable to deploy an encrypted configuration.%C_RESET%
+echo %C_RED%Error: Unable To Deploy An Encrypted Configuration.%C_RESET%
 goto :failure
 
 :payload_error
-echo %C_RED%ERROR: unable to deploy the target payload.%C_RESET%
+echo %C_RED%Error: Unable To Deploy The Target Payload.%C_RESET%
 goto :failure
 
 :mutate_fatal
-echo %C_RED%ERROR: unable to mutate the runtime DLL; refusing to continue with an inconsistent build.%C_RESET%
+echo %C_RED%Error: Unable To Mutate The Runtime DLL; Refusing To Continue With An Inconsistent Build.%C_RESET%
 goto :failure
 
 :mutate_exe_error
-echo %C_RED%ERROR: interface PE mutation failed or BuildPE.ps1 was not found; refusing to continue with an inconsistent build.%C_RESET%
+echo %C_RED%Error: Interface PE Mutation Failed Or BuildPE.ps1 Was Not Found; Refusing To Continue With An Inconsistent Build.%C_RESET%
 goto :failure
 
 :refuse_unmutated
 echo.
-echo %C_RED%ERROR: AMEGER_REFUSE_UNMUTATED=1 would ship unmutated binaries (stable timestamps, MSVC Rich fingerprint, standard section names, PDB debug directory). Refusing: rebuild without the bypass for any shipped build.%C_RESET%
+echo %C_RED%Error: AMEGER_REFUSE_UNMUTATED=1 Would Ship Unmutated Binaries (Stable Timestamps, MSVC Rich Fingerprint, Standard Section Names, PDB Debug Directory). Refusing: Rebuild Without The Bypass For Any Shipped Build.%C_RESET%
 goto :failure
 
 :maybe_adopt_payload
@@ -745,29 +745,29 @@ if not exist "%REPIN_SCRIPT%" exit /b 0
 if not exist "%PAYLOAD_ASSET%" exit /b 0
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%REPIN_SCRIPT%" -Config "%CONFIG_MASTER%" -Payload "%PAYLOAD_ASSET%" -Quiet
 if errorlevel 1 (
-  echo   %C_RED%ERROR: could not re-pin the master to the current payload asset.%C_RESET%
+  echo   %C_RED%Error: Could Not Re-Pin The Master To The Current Payload Asset.%C_RESET%
   exit /b 1
 )
 exit /b 0
 
 :repin_payload
 if not exist "%CONFIG_MASTER%" (
-  echo   %C_RED%ERROR: master config not found: %CONFIG_MASTER%%C_RESET%
+  echo   %C_RED%Error: Master Config Not Found: %CONFIG_MASTER%%C_RESET%
   goto :failure
 )
 if not exist "%REPIN_SCRIPT%" (
-  echo   %C_RED%ERROR: RepinPayload.ps1 not found; refusing to re-pin.%C_RESET%
+  echo   %C_RED%Error: RepinPayload.ps1 Not Found; Refusing To Re-Pin.%C_RESET%
   goto :failure
 )
 where powershell.exe >nul 2>&1
 if errorlevel 1 (
-  echo   %C_RED%ERROR: PowerShell unavailable; cannot re-pin.%C_RESET%
+  echo   %C_RED%Error: PowerShell Unavailable; Cannot Re-Pin.%C_RESET%
   goto :failure
 )
 set "REPIN_SRC=%PAYLOAD_ASSET%"
 if defined AMEGER_PAYLOAD set "REPIN_SRC=%AMEGER_PAYLOAD%"
 if not exist "%REPIN_SRC%" (
-  echo   %C_RED%ERROR: payload asset not found: %REPIN_SRC%%C_RESET%
+  echo   %C_RED%Error: Payload Asset Not Found: %REPIN_SRC%%C_RESET%
   goto :failure
 )
 echo   Repinning master pin for: %C_YELLOW%%REPIN_SRC%%C_RESET%

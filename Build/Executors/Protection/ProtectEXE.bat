@@ -33,19 +33,19 @@ set "EXE_ORIGINAL_NAME=Host - x64.exe"
 set "VMP_PROJECT=%AMEGER_VMP_PROJECT_EXE%"
 set "VMP_CON="
 
-echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Locating VMProtect console...
+echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Locating VMProtect Console...
 echo.
 call :find_vmp_con
 if errorlevel 2 goto :vmp_wrapper
 if errorlevel 1 goto :vmp_missing
-echo   %C_GREEN%[+]%C_RESET% Console: %C_GREEN%%VMP_CON%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Console = %C_GREEN%%VMP_CON%%C_RESET%
 echo.
 echo.
 
-echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Resolving launcher target...
+echo [%C_GREEN%2%C_RESET%/%C_GREEN%6%C_RESET%] Resolving Launcher Target...
 echo.
 if not exist "%OUT_ROOT%" (
-  echo   %C_RED%ERROR: release folder not found: %OUT_ROOT%%C_RESET%
+  echo   %C_RED%Error: Release Folder Not Found: %OUT_ROOT%%C_RESET%
   goto :failure
 )
 set "TARGET="
@@ -59,26 +59,26 @@ for %%N in ("%TARGET%") do set "TARGET_NAME=%%~nxN"
 call :read_runtime_name
 if defined DLLDIR_NAME (set "DLL_DIR=%OUT_ROOT%\%DLLDIR_NAME%") else (set "DLL_DIR=%OUT_ROOT%\DLLs")
 if defined RUNTIME_NAME if exist "%DLL_DIR%\%RUNTIME_NAME%" set "RUNTIME_DLL=%DLL_DIR%\%RUNTIME_NAME%"
-echo   %C_GREEN%[+]%C_RESET% Target:  %C_GREEN%%TARGET%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Target = %C_GREEN%%TARGET%%C_RESET%
 if defined RUNTIME_DLL (
-  echo   %C_GREEN%[+]%C_RESET% Runtime: %C_GREEN%%RUNTIME_DLL%%C_RESET% ^(left unvirtualized^)
+  echo   %C_GREEN%[+]%C_RESET% Runtime = %C_GREEN%%RUNTIME_DLL%%C_RESET% ^(left unvirtualized^)
 ) else (
-  echo   %C_YELLOW%[+]%C_RESET% Runtime DLL not found; embedded-hash verification will fail closed unless AMEGER_ALLOW_SKIP_EMBED=1.
+  echo   %C_YELLOW%[+]%C_RESET% Runtime DLL Not Found; Embedded-Hash Verification Will Fail Closed Unless AMEGER_ALLOW_SKIP_EMBED=1.
 )
 call :check_already_protected
 if defined VMP_PRESENT if /i not "%AMEGER_FORCE_VMP%"=="1" (
-  echo   %C_GREEN%[+]%C_RESET% Already protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); skipping.
-  echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 to virtualize anyway.%C_RESET%
+  echo   %C_GREEN%[+]%C_RESET% Already Protected ^(segment %C_YELLOW%%VMP_PRESENT%%C_RESET%^); Skipping.
+  echo   %C_YELLOW%       Set AMEGER_FORCE_VMP=1 To Virtualize Anyway.%C_RESET%
   goto :already_protected
 )
 echo.
 echo.
 
-echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Resolving VMProtect project...
+echo [%C_GREEN%3%C_RESET%/%C_GREEN%6%C_RESET%] Resolving VMProtect Project...
 echo.
 call :find_project
 if errorlevel 1 goto :project_missing
-echo   %C_GREEN%[+]%C_RESET% Project: %C_GREEN%%VMP_PROJECT%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Project = %C_GREEN%%VMP_PROJECT%%C_RESET%
 echo.
 call :check_project_input
 if errorlevel 1 goto :project_mismatch
@@ -87,18 +87,18 @@ echo.
 call :read_state
 echo.
 if /i "%STATE_MATCH%"=="output" (
-  echo   %C_GREEN%[+]%C_RESET% Already protected; nothing to do.
+  echo   %C_GREEN%[+]%C_RESET% Already Protected; Nothing To Do.
   goto :already_done
 )
 if /i "%STATE_MATCH%"=="unknown" (
-  echo   %C_YELLOW%[+]%C_RESET% No prior state recorded; protecting now.
+  echo   %C_YELLOW%[+]%C_RESET% No Prior State Recorded; Protecting Now.
 ) else (
-  echo   %C_GREEN%[+]%C_RESET% Source matches recorded build; protecting.
+  echo   %C_GREEN%[+]%C_RESET% Source Matches Recorded Build; Protecting.
 )
 echo.
 echo.
 
-echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Virtualizing launcher...
+echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Virtualizing Launcher...
 echo.
 call :clean_work
 if errorlevel 1 goto :work_error
@@ -107,13 +107,13 @@ if not exist "%WORK_DIR%" goto :work_error
 call :sha256_of "%TARGET%" SRC_SHA
 if errorlevel 1 goto :hash_error
 if not defined SRC_SHA goto :hash_error
-echo   Source SHA-256: %C_GREEN%%SRC_SHA%%C_RESET%
+echo   Source SHA-256 = %C_GREEN%%SRC_SHA%%C_RESET%
 call :prepare_project
 if errorlevel 1 goto :project_error
-echo   %C_GREEN%[+]%C_RESET% Segment name: %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(randomized per build)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Segment Name = %C_GREEN%%SEG_NAME%%C_RESET% %C_YELLOW%(Randomized Per Build)%C_RESET%
 "%VMP_CON%" "%TARGET%" "%WORK_DIR%\out.exe" -pf "%PROJ_WORK%" -we > "%WORK_DIR%\vmp.log" 2>&1
 if errorlevel 1 (
-  echo   %C_RED%ERROR: VMProtect reported a failure; see the log tail below.%C_RESET%
+  echo   %C_RED%Error: VMProtect Reported A Failure; See The Log Tail Below.%C_RESET%
   call :tail_log
   goto :failure
 )
@@ -121,20 +121,20 @@ call :validate_output
 if errorlevel 2 goto :fc_error
 if errorlevel 1 goto :output_invalid
 echo.
-echo   %C_GREEN%OK%C_RESET% Protected output validated.
+echo   %C_GREEN%OK%C_RESET% Protected Output Validated.
 call :verify_segment "%WORK_DIR%\out.exe"
 if errorlevel 1 goto :segment_error
-echo   %C_GREEN%[+]%C_RESET% VM segment: %C_GREEN%%VM_SEG%%C_RESET% (verified)
+echo   %C_GREEN%[+]%C_RESET% VM Segment = %C_GREEN%%VM_SEG%%C_RESET% (Verified)
 echo.
 copy /y "%WORK_DIR%\out.exe" "%TARGET%" > nul
 if errorlevel 1 goto :deploy_error
 call :sha256_of "%TARGET%" OUT_SHA
 if errorlevel 1 goto :hash_error
-echo   %C_GREEN%[+]%C_RESET% Output SHA-256: %C_GREEN%%OUT_SHA%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Output SHA-256 = %C_GREEN%%OUT_SHA%%C_RESET%
 echo.
 echo.
 
-echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Verifying embedded runtime hash...
+echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Verifying Embedded Runtime Hash...
 echo.
 if not defined RUNTIME_DLL goto :embed_unavailable
 if not exist "%VERIFY_SCRIPT%" goto :embed_unavailable
@@ -142,12 +142,12 @@ call :runtime_hash_words
 if errorlevel 1 goto :embed_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check Embed -Path "%TARGET%" -Words "%H0%,%H1%,%H2%,%H3%,%H4%,%H5%,%H6%,%H7%"
 if errorlevel 1 goto :embed_error
-echo   %C_GREEN%[+]%C_RESET% Embedded runtime hash intact after virtualization.
+echo   %C_GREEN%[+]%C_RESET% Embedded Runtime Hash Intact After Virtualization.
 goto :embed_ok
 
 :embed_unavailable
-echo   %C_RED%ERROR: cannot verify the embedded runtime hash after virtualization.%C_RESET%
-echo   %C_RED%       The runtime DLL or %VERIFY_SCRIPT% was not found; refusing to ship an unverified launcher.%C_RESET%
+echo   %C_RED%Error: Cannot Verify The Embedded Runtime Hash After Virtualization.%C_RESET%
+echo   %C_RED%       The Runtime DLL Or %VERIFY_SCRIPT% Was Not Found; Refusing To Ship An Unverified Launcher.%C_RESET%
 goto :failure
 
 :embed_ok
@@ -155,7 +155,7 @@ call :write_state
 echo.
 echo.
 
-echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping protection artifacts...
+echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping Protection Artifacts...
 echo.
 call :clean_work
 if errorlevel 1 goto :cleanup_error
@@ -163,15 +163,15 @@ call :assert_clean
 if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%OUT_ROOT%%C_RESET%.
 echo.
-echo Launcher protection completed.
+echo Launcher Protection Completed.
 echo.
-echo Interface x64: %C_GREEN%%TARGET%%C_RESET%
+echo Interface x64 = %C_GREEN%%TARGET%%C_RESET%
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
 
 :already_protected
 echo.
-echo Launcher is already VMProtect-protected; release unchanged.
+echo Launcher Is Already VMProtect-Protected; Release Unchanged.
 echo.
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
@@ -205,7 +205,7 @@ exit /b 0
 
 :already_done
 echo.
-echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping protection artifacts...
+echo [%C_GREEN%6%C_RESET%/%C_GREEN%6%C_RESET%] Sweeping Protection Artifacts...
 echo.
 call :clean_work
 if errorlevel 1 goto :cleanup_error
@@ -213,10 +213,10 @@ call :assert_clean
 if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%OUT_ROOT%%C_RESET%.
 echo.
-echo Launcher already protected; release unchanged.
+echo Launcher Already Protected; Release Unchanged.
 echo.
-if defined VMSEG echo VM segment: %C_GREEN%%VMSEG%%C_RESET% (recorded)
-echo Interface x64: %C_GREEN%%TARGET%%C_RESET%
+if defined VMSEG echo VM Segment = %C_GREEN%%VMSEG%%C_RESET% (Recorded)
+echo Interface x64 = %C_GREEN%%TARGET%%C_RESET%
 echo.
 if "%NO_PAUSE%"=="0" pause
 exit /b 0
@@ -431,12 +431,12 @@ if exist "%VMSEG_B64%" del /f /q "%VMSEG_B64%" >nul 2>&1
 if exist "%VMSEG_OUT%" del /f /q "%VMSEG_OUT%" >nul 2>&1
 if /i "%VM_SEG_STATUS%"=="ok" exit /b 0
 if /i "%VM_SEG_STATUS%"=="missing" (
-  echo   %C_RED%ERROR: no VMProtect segment found in the protected output.%C_RESET%
+  echo   %C_RED%Error: No VMProtect Segment Found In The Protected Output.%C_RESET%
 ) else (
-  echo   %C_RED%ERROR: VMProtect segment name mismatch in the protected output.%C_RESET%
+  echo   %C_RED%Error: VMProtect Segment Name Mismatch In The Protected Output.%C_RESET%
 )
-echo   %C_RED%       expected: %SEG_NAME% (optionally followed by digits)%C_RESET%
-echo   %C_RED%       observed: %VM_SEG%%C_RESET%
+echo   %C_RED%       Expected = %SEG_NAME% (Optionally Followed By Digits)%C_RESET%
+echo   %C_RED%       Observed = %VM_SEG%%C_RESET%
 exit /b 1
 
 :write_state
@@ -457,85 +457,85 @@ exit /b 0
 
 :assert_clean
 for %%F in ("%OUT_ROOT%\*.vmp" "%OUT_ROOT%\*.log" "%OUT_ROOT%\*.bak" "%OUT_ROOT%\*.tmp") do if exist "%%~F" (
-  echo   %C_RED%ERROR: protection artifact left in the release folder: %%~nxF%C_RESET%
+  echo   %C_RED%Error: Protection Artifact Left In The Release Folder: %%~nxF%C_RESET%
   exit /b 1
 )
 exit /b 0
 
 :vmp_wrapper
-echo   %C_RED%ERROR: AMEGER_VMP_CON points at a batch/cmd wrapper: %VMP_CON%%C_RESET%
-echo   %C_RED%       A wrapper transfers control and never returns; use the real console.%C_RESET%
+echo   %C_RED%Error: AMEGER_VMP_CON Points At A Batch/CMD Wrapper: %VMP_CON%%C_RESET%
+echo   %C_RED%       A Wrapper Transfers Control And Never Returns; Use The Real Console.%C_RESET%
 goto :failure
 
 :vmp_missing
-echo   %C_RED%ERROR: VMProtect console not found.%C_RESET%
+echo   %C_RED%Error: VMProtect Console Not Found.%C_RESET%
 echo   %C_YELLOW%       Searched:%C_RESET%
 echo         %PROGRAMFILES%\VMProtect*\VMProtect_Con.exe
 echo         %PROGRAMW6432%\VMProtect*\VMProtect_Con.exe
 echo         %PROGRAMFILES(X86)%\VMProtect*\VMProtect_Con.exe
 echo         %LOCALAPPDATA%\VMProtect*\VMProtect_Con.exe
 echo         PATH ^(VMProtect_Con.exe, vmpconsole.exe^)
-echo   %C_YELLOW%       Fix: set AMEGER_VMP_CON to the full path, with no surrounding quotes,%C_RESET%
+echo   %C_YELLOW%       Fix: Set AMEGER_VMP_CON to the full path, with no surrounding quotes,%C_RESET%
 echo   %C_YELLOW%             e.g. set AMEGER_VMP_CON=C:\Program Files\VMProtect Ultimate\VMProtect_Con.exe%C_RESET%
-echo   %C_YELLOW%       Leaving it unset is fine if VMProtect is installed normally.%C_RESET%
-echo   %C_YELLOW%       Note: the console build is not included in the Lite edition.%C_RESET%
+echo   %C_YELLOW%       Leaving It Unset Is Fine If VMProtect Is Installed Normally.%C_RESET%
+echo   %C_YELLOW%       Note: The Console Build Is Not Included In The Lite Edition.%C_RESET%
 goto :failure
 
 :target_missing
-echo   %C_RED%ERROR: no launcher EXE found in the release folder.%C_RESET%
+echo   %C_RED%Error: No Launcher EXE Found In The Release Folder.%C_RESET%
 goto :failure
 
 :target_ambiguous
-echo   %C_RED%ERROR: expected exactly one launcher EXE in %OUT_ROOT%, found %EXE_CANDIDATES%.%C_RESET%
-echo   %C_RED%       Refusing to guess which EXE to protect.%C_RESET%
+echo   %C_RED%Error: Expected Exactly One Launcher EXE In %OUT_ROOT%, found %EXE_CANDIDATES%.%C_RESET%
+echo   %C_RED%       Refusing To Guess Which EXE To Protect.%C_RESET%
 goto :failure
 
 :project_missing
-echo   %C_RED%ERROR: no .vmp project found; set AMEGER_VMP_PROJECT_EXE.%C_RESET%
+echo   %C_RED%Error: No .vmp Project Found; Set AMEGER_VMP_PROJECT_EXE.%C_RESET%
 goto :failure
 
 :project_mismatch
-echo   %C_RED%ERROR: the project does not target this binary.%C_RESET%
-echo   %C_RED%       Refusing to protect with a crossed project.%C_RESET%
+echo   %C_RED%Error: The Project Does Not Target This Binary.%C_RESET%
+echo   %C_RED%       Refusing To Protect With A Crossed Project.%C_RESET%
 goto :failure
 
 :work_error
-echo   %C_RED%ERROR: unable to prepare the protection staging directory.%C_RESET%
+echo   %C_RED%Error: Unable To Prepare The Protection Staging Directory.%C_RESET%
 goto :failure
 
 :hash_error
-echo   %C_RED%ERROR: unable to calculate a SHA-256 for the target or runtime.%C_RESET%
+echo   %C_RED%Error: Unable To Calculate A SHA-256 For The Target Or Runtime.%C_RESET%
 goto :failure
 
 :output_invalid
-echo   %C_RED%ERROR: VMProtect output failed validation; release left untouched.%C_RESET%
+echo   %C_RED%Error: VMProtect Output Failed Validation; Release Left Untouched.%C_RESET%
 goto :failure
 
 :segment_error
-echo   %C_RED%ERROR: the protected launcher does not carry the generated VMProtect segment.%C_RESET%
-echo   %C_RED%       Release left untouched; the output was not deployed.%C_RESET%
+echo   %C_RED%Error: The Protected Launcher Does Not Carry The Generated VMProtect Segment.%C_RESET%
+echo   %C_RED%       Release Left Untouched; The Output Was Not Deployed.%C_RESET%
 goto :failure
 
 :fc_error
-echo   %C_RED%ERROR: unable to compare the protected output against the source.%C_RESET%
-echo   %C_RED%       fc failed; the output is unverified and will not ship.%C_RESET%
+echo   %C_RED%Error: Unable To Compare The Protected Output Against The Source.%C_RESET%
+echo   %C_RED%       fc Failed; The Output Is Unverified And Will Not Ship.%C_RESET%
 goto :failure
 
 :project_error
-echo   %C_RED%ERROR: unable to prepare the randomized project copy.%C_RESET%
+echo   %C_RED%Error: Unable To Prepare The Randomized Project Copy.%C_RESET%
 goto :failure
 
 :deploy_error
-echo   %C_RED%ERROR: unable to deploy the protected launcher.%C_RESET%
+echo   %C_RED%Error: Unable To Deploy The Protected Launcher.%C_RESET%
 goto :failure
 
 :embed_error
-echo   %C_RED%ERROR: embedded runtime hash no longer matches the runtime DLL.%C_RESET%
-echo   %C_RED%       The launcher would refuse to start; rebuild without protection.%C_RESET%
+echo   %C_RED%Error: Embedded Runtime Hash No Longer Matches The Runtime DLL.%C_RESET%
+echo   %C_RED%       The Launcher Would Refuse To Start; Rebuild Without Protection.%C_RESET%
 goto :failure
 
 :cleanup_error
-echo   %C_RED%ERROR: unable to remove generated protection artifacts.%C_RESET%
+echo   %C_RED%Error: Unable To Remove Generated Protection Artifacts.%C_RESET%
 goto :failure
 
 :failure
