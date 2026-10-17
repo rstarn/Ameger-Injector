@@ -2592,7 +2592,7 @@ LUID luid{};
                                 bool exe_start = false;
                                 if (query && exe_base && exe_size)
                                 {
-                                    HANDLE ht = OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
+                                    HANDLE ht = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
                                     if (ht)
                                     {
                                         PVOID start = nullptr;
@@ -8504,7 +8504,7 @@ LUID luid{};
         Context.TargetName = target.name;
         Context.Verbose = config.verbose_trace && !config.quiet;
         Context.SponsorAccess = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
-            PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE;
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE;
         HANDLE sponsorRaw = nullptr;
         DWORD sponsor_err = ERROR_SUCCESS;
         if (config.handle_hijacking)

@@ -260,7 +260,7 @@ void * ProcessInformation::GetTEB()
 
 	const HANDLE borrowed = BorrowCurrentThreadHandle(MDWD(m_pCurrentThread->ClientId.UniqueThread));
 	const bool owns_handle = borrowed == nullptr;
-	HANDLE hThread = borrowed ? borrowed : ScOpenThread(MDWD(m_pCurrentThread->ClientId.UniqueThread), THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION);
+	HANDLE hThread = borrowed ? borrowed : ScOpenThread(MDWD(m_pCurrentThread->ClientId.UniqueThread), THREAD_QUERY_LIMITED_INFORMATION);
 	if (!hThread)
 	{
 		return nullptr;

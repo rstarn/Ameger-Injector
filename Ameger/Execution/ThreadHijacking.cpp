@@ -67,7 +67,7 @@ namespace
 		{
 			return true;
 		}
-		UniqueHandle hThread(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+		UniqueHandle hThread(ScOpenThread(tid, THREAD_QUERY_LIMITED_INFORMATION));
 		if (!hThread)
 		{
 			return true;
@@ -117,7 +117,7 @@ namespace
 			void * teb = nullptr;
 			{
 				THREAD_BASIC_INFORMATION tbi{};
-				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_LIMITED_INFORMATION));
 				if (ht && NT_SUCCESS(ScNtQueryInformationThread(ht.get(), THREADINFOCLASS::ThreadBasicInformation, &tbi, sizeof(tbi), nullptr)))
 				{
 					teb = tbi.TebBaseAddress;
@@ -229,7 +229,7 @@ namespace
 			bool exe_start = false;
 			if (exe_base && exe_size)
 			{
-				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+				UniqueHandle ht(ScOpenThread(tid, THREAD_QUERY_LIMITED_INFORMATION));
 				if (ht)
 				{
 					PVOID start = nullptr;
