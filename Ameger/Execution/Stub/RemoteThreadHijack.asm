@@ -88,7 +88,7 @@ StubFpSaveDone:
 RemoteThreadTebReadIn:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_BUFFER], r11d
-    mov qword ptr [rbx+SR_STATE], 1
+    mov qword ptr [rbx+SR_STATE], SR_STATE_RUNNING
 
     rdtsc
     shl rdx, 32
@@ -113,7 +113,7 @@ RemoteThreadTebReadOut:
     mov r11d, [rbx+SR_BUFFER]
 RemoteThreadTebWrite:
     mov gs:[TEB_LAST_ERROR], r11d
-    mov qword ptr [rbx+SR_STATE], 2
+    mov qword ptr [rbx+SR_STATE], SR_STATE_FINISHED
 RemoteThreadLeaStateOut:
     lea rbx, [RemoteThreadState]
     mov r12, [rbx+SR_SAVED_RSP]
@@ -185,6 +185,10 @@ StubStackScrubDone:
     pop rcx
     pop rax
     popfq
+;; Publish the exit sentinel as the final act of the stub. After this store the thread
+;; never returns into the RX code page and never reads the RW state page again, so the
+;; host is then free to reclaim the entire remote trampoline.
+    mov qword ptr [rbx+SR_STATE], SR_STATE_EXITED
 RemoteThreadJmpReturn:
     jmp qword ptr [RemoteThreadReturnTarget]
 

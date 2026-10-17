@@ -85,6 +85,11 @@ if defined VMP_PRESENT (
     goto :already_protected
   )
 )
+if not defined VMP_PROBE_OK if /i not "%AMEGER_FORCE_VMP%"=="1" (
+  echo   %C_RED%Error: Could Not Probe The Payload For Existing VMProtect Sections.%C_RESET%
+  echo   %C_RED%       Refusing To Re-Virtualize A Possibly-Protected Binary; Set AMEGER_FORCE_VMP=1 To Proceed.%C_RESET%
+  goto :failure
+)
 echo.
 echo.
 
@@ -221,14 +226,16 @@ exit /b 0
 
 :check_already_protected
 set "VMP_PRESENT="
+set "VMP_PROBE_OK="
 set "BASELINE="
 if exist "%RELEASE_CACHE%\pe-sections.txt" for /f "usebackq tokens=1,* delims=:" %%A in ("%RELEASE_CACHE%\pe-sections.txt") do if /i "%%A"=="%TARGET_NAME%" set "BASELINE=%%B"
 if not defined BASELINE set "BASELINE=@none@"
 REM The VMProtect probe is a PowerShell script carried as base64 so that batch never has to parse a
 REM stray parenthesis from the PowerShell grammar. certutil decodes it to a unique temp .ps1, which is
 REM run and then removed. The probe reads the target's PE section table and reports any section absent
-REM from the recorded baseline as a VMP_PRESENT line. VMP_PRESENT is left unset if the probe cannot
-REM run, exactly as the previous inline command behaved.
+REM from the recorded baseline as a VMP_PRESENT line. VMP_PROBE_OK is set only when the probe ran and
+REM produced a readable result; callers must treat an unset VMP_PROBE_OK as "unknown", never as
+REM "not protected", or a broken probe would silently re-virtualize an already-protected binary.
 set "VMP_CHK=%TEMP%\amg_vmpchk_%RANDOM%%RANDOM%"
 set "VMP_CHK_B64=%VMP_CHK%.b64"
 set "VMP_CHK_PS1=%VMP_CHK%.ps1"
@@ -238,8 +245,12 @@ set "VMP_CHK_OUT=%VMP_CHK%.out"
 >>"%VMP_CHK_B64%" echo -----END CERTIFICATE-----
 certutil -decode "%VMP_CHK_B64%" "%VMP_CHK_PS1%" >nul 2>&1
 if errorlevel 1 goto :vmp_check_cleanup
+if not exist "%VMP_CHK_PS1%" goto :vmp_check_cleanup
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VMP_CHK_PS1%" -Baseline "%BASELINE%" -Target "%TARGET%" >"%VMP_CHK_OUT%" 2>&1
-for /f "usebackq tokens=1,* delims==" %%A in ("%VMP_CHK_OUT%") do set "%%A=%%B"
+if errorlevel 1 goto :vmp_check_cleanup
+if not exist "%VMP_CHK_OUT%" goto :vmp_check_cleanup
+set "VMP_PROBE_OK=1"
+for /f "usebackq tokens=1,* delims==" %%A in ("%VMP_CHK_OUT%") do if /i "%%A"=="VMP_PRESENT" set "VMP_PRESENT=%%B"
 :vmp_check_cleanup
 if exist "%VMP_CHK_PS1%" del /f /q "%VMP_CHK_PS1%" >nul 2>&1
 if exist "%VMP_CHK_B64%" del /f /q "%VMP_CHK_B64%" >nul 2>&1
@@ -510,7 +521,10 @@ if exist "%WORK_DIR%" exit /b 1
 exit /b 0
 
 :assert_clean
-for %%F in ("%DLL_DIR%\*.vmp" "%DLL_DIR%\*.log" "%DLL_DIR%\*.bak" "%DLL_DIR%\*.tmp") do if exist "%%~F" (
+set "LOG_NAME="
+if exist "%NAMES_STATE%" for /f "usebackq tokens=1,* delims==" %%A in ("%NAMES_STATE%") do if /i "%%A"=="LOG_NAME" set "LOG_NAME=%%B"
+if not defined LOG_NAME for %%I in ("%OUT_ROOT%\*.ini") do if not defined LOG_NAME set "LOG_NAME=%%~nI.log"
+for %%F in ("%DLL_DIR%\*.vmp" "%DLL_DIR%\*.log" "%DLL_DIR%\*.bak" "%DLL_DIR%\*.tmp") do if /i not "%%~nxF"=="Result.log" if /i not "%%~nxF"=="%LOG_NAME%" if exist "%%~F" (
   echo   %C_RED%Error: Protection Artifact Left In The Release Folder: %%~nxF%C_RESET%
   exit /b 1
 )

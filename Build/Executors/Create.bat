@@ -374,6 +374,7 @@ echo   %C_GREEN%[+]%C_RESET% RuntimeName = %C_GREEN%%RUNTIME_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% LogName     = %C_GREEN%%CONFIG_NAME%.log%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigMagic = %C_GREEN%%CONFIG_MAGIC%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% WindowClass = %C_GREEN%%WINDOW_CLASS%%C_RESET%
 echo.
@@ -411,6 +412,7 @@ if not exist "%RELEASE_CACHE%" exit /b 1
 >>"%NAMES_STATE%" echo EXE_NAME=%EXE_NAME%
 >>"%NAMES_STATE%" echo DLLDIR_NAME=%DLLDIR_NAME%
 >>"%NAMES_STATE%" echo CONFIG_NAME=%CONFIG_NAME%
+>>"%NAMES_STATE%" echo LOG_NAME=%CONFIG_NAME%.log
 >>"%NAMES_STATE%" echo CONFIG_MAGIC=%CONFIG_MAGIC%
 >>"%NAMES_STATE%" echo WINDOW_CLASS=%WINDOW_CLASS%
 >>"%NAMES_STATE%" echo EXPORT_MAP=%EXPORT_MAP%

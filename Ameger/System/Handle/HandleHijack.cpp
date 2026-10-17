@@ -607,8 +607,10 @@ namespace
 
 					if (!known && foreign_opened >= kMaxForeignOwners)
 					{
+						// Skip this donor only. Raising the global BudgetHit here would abort
+						// every remaining candidate in this pass *and* both later passes, turning
+						// a per-owner budget into a whole-scan budget.
 						++BudgetSkipped;
-						BudgetHit = true;
 						return false;
 					}
 				}
@@ -664,6 +666,7 @@ namespace
 			DWORD		OwnerPid;
 			ULONG_PTR	HandleValue;
 			PVOID		Object;
+			ULONG		GrantedAccess;
 		};
 
 		std::vector<Candidate> Candidates;
@@ -692,7 +695,7 @@ namespace
 					continue;
 				}
 
-				Candidates.push_back(Candidate{ static_cast<DWORD>(Entry.UniqueProcessId), Entry.HandleValue, Entry.Object });
+				Candidates.push_back(Candidate{ static_cast<DWORD>(Entry.UniqueProcessId), Entry.HandleValue, Entry.Object, Entry.GrantedAccess });
 			}
 		}
 		else
@@ -719,7 +722,7 @@ namespace
 				}
 
 				Candidates.push_back(Candidate{ static_cast<DWORD>(Entry.UniqueProcessId),
-					static_cast<ULONG_PTR>(Entry.HandleValue), Entry.Object });
+					static_cast<ULONG_PTR>(Entry.HandleValue), Entry.Object, static_cast<ULONG>(Entry.GrantedAccess) });
 			}
 		}
 
@@ -740,6 +743,15 @@ namespace
 				}
 
 				if (Entry.Object && WrongObjects.find(ReCa<ULONG_PTR>(Entry.Object)) != WrongObjects.end())
+				{
+					continue;
+				}
+
+				// NtDuplicateObject clamps the duplicate to the source object's existing
+				// grant, so a donor that does not already hold every bit we need can only
+				// ever produce a weaker handle that then fails verification. Reject it here
+				// rather than spending a duplicate attempt on it.
+				if ((Entry.GrantedAccess & DesiredAccess) != DesiredAccess)
 				{
 					continue;
 				}

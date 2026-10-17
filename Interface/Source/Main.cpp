@@ -87,6 +87,8 @@ namespace
 
 
 
+std::wstring g_ResultLogName = L"Result.log";
+
 namespace ameger_ui_log
 {
     constexpr size_t kMaxChars = 2097152;
@@ -179,51 +181,94 @@ namespace ameger_ui_log
 
     
     
-    inline void CopyToClipboardStealthily()
+    inline std::wstring ResultLogPath()
+    {
+        wchar_t module[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (!length || length >= MAX_PATH)
+        {
+            return {};
+        }
+
+        std::wstring path(module, length);
+        const size_t slash = path.find_last_of(L"\\/");
+        if (slash == std::wstring::npos)
+        {
+            return {};
+        }
+
+        path.resize(slash + 1);
+        path += g_ResultLogName;
+        return path;
+    }
+
+    inline void ResetResultLog()
+    {
+        const std::wstring path = ResultLogPath();
+        if (!path.empty())
+        {
+            DeleteFileW(path.c_str());
+        }
+
+        wchar_t module[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (length && length < MAX_PATH)
+        {
+            std::wstring legacy(module, length);
+            const size_t slash = legacy.find_last_of(L"\\/");
+            if (slash != std::wstring::npos)
+            {
+                legacy.resize(slash + 1);
+                legacy += L"Result.log";
+                if (_wcsicmp(legacy.c_str(), path.c_str()) != 0)
+                {
+                    DeleteFileW(legacy.c_str());
+                }
+            }
+        }
+    }
+
+    inline void WriteResultLog()
     {
         std::wstring snapshot = Snapshot();
         if (snapshot.empty())
         {
-            snapshot = L"(no output)";
-        }
-        if (snapshot.size() > kMaxChars)
-        {
-            snapshot.resize(kMaxChars);
-        }
-        for (int attempt = 0; attempt < 8; ++attempt)
-        {
-            if (!OpenClipboard(nullptr))
-            {
-                Sleep(30);
-                continue;
-            }
-            (void)EmptyClipboard();
-            const SIZE_T bytes = (snapshot.size() + 1) * sizeof(wchar_t);
-            HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-            if (!mem)
-            {
-                CloseClipboard();
-                return;
-            }
-            void * locked = GlobalLock(mem);
-            if (!locked)
-            {
-                GlobalFree(mem);
-                CloseClipboard();
-                return;
-            }
-            memcpy(locked, snapshot.c_str(), bytes);
-            GlobalUnlock(mem);
-            if (!SetClipboardData(CF_UNICODETEXT, mem))
-            {
-                GlobalFree(mem);
-                CloseClipboard();
-                return;
-            }
-            
-            CloseClipboard();
             return;
         }
+
+        const std::wstring path = ResultLogPath();
+        if (path.empty())
+        {
+            return;
+        }
+
+        const int chars = static_cast<int>(snapshot.size());
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, snapshot.c_str(), chars, nullptr, 0, nullptr, nullptr);
+        if (bytes <= 0)
+        {
+            return;
+        }
+
+        std::string utf8(static_cast<size_t>(bytes), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, snapshot.c_str(), chars, utf8.data(), bytes, nullptr, nullptr);
+
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+        CloseHandle(file);
+    }
+
+    inline void Clear()
+    {
+        AcquireSRWLockExclusive(&Lock());
+        Buffer().clear();
+        ReleaseSRWLockExclusive(&Lock());
     }
 } 
 
@@ -263,7 +308,6 @@ int UiWprintf(const wchar_t * format, ...)
             va_end(args);
             return forwarded;
         }
-        OutputDebugStringW(buffer.data());
     }
     return written;
 }
@@ -300,7 +344,6 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             va_end(args);
             return forwarded;
         }
-        OutputDebugStringW(buffer.data());
     }
     return written;
 }
@@ -1044,10 +1087,6 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
                     break;
                 }
             }
-            if (!erased)
-            {
-                break;
-            }
         }
         std::wstring out;
         if (keepChild)
@@ -1064,7 +1103,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         return out;
     }
 
-    DWORD FindTrustedBroker(DWORD excludePid, const std::wstring & excludeImage)
+    DWORD FindTrustedBroker(DWORD excludePid)
     {
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snap == INVALID_HANDLE_VALUE)
@@ -1109,11 +1148,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             {
                 continue;
             }
-            if (!excludeImage.empty() && _wcsicmp(entry.szExeFile, excludeImage.c_str()) == 0 && isSvchost)
-            {
-                
-                
-            }
+
             DWORD procSession = 0;
             ProcessIdToSessionId(entry.th32ProcessID, &procSession);
             if (isExplorer)
@@ -1279,7 +1314,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             {
                 continue;
             }
-            const DWORD broker = FindTrustedBroker(0, std::wstring());
+            const DWORD broker = FindTrustedBroker(0);
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
@@ -1349,10 +1384,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             
             
             
-            DWORD broker = FindTrustedBroker(currentParent, std::wstring());
+            DWORD broker = FindTrustedBroker(currentParent);
             if (!broker || broker == currentParent)
             {
-                broker = FindTrustedBroker(0, std::wstring());
+                broker = FindTrustedBroker(0);
             }
             const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
@@ -1502,31 +1537,28 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
     }
 
+    // Both PrintError and PrintWarning publish to three sinks: the in-memory clipboard log,
+    // the debugger, and the console. The console write goes through UiWprintf/UiFwprintf,
+    // which append to the clipboard log themselves -- so these must NOT append a second
+    // time here, or every warning lands in the log twice.
     void PrintError(const wchar_t * message)
     {
-        
-        
-        
-        
-        
-        
-        
         if (!message)
         {
             return;
         }
-
-        wchar_t line[1024]{};
-        swprintf_s(line, L"%ls[x]%ls %ls", kRed, kReset, message);
-        ameger_ui_log::AppendStripped(line);
-        OutputDebugStringW(line);
-        OutputDebugStringW(L"\n");
 
         HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
             fwprintf(stderr, L"%ls%ls%ls\n", kRed, message, kReset);
+        }
+        else
+        {
+            wchar_t line[1024]{};
+            swprintf_s(line, L"%ls[x]%ls %ls", kRed, kReset, message);
+            ameger_ui_log::AppendStripped(line);
         }
     }
 
@@ -1537,17 +1569,17 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             return;
         }
 
-        wchar_t line[1024]{};
-        swprintf_s(line, L"  %ls[!]%ls %ls", kYellow, kReset, message);
-        ameger_ui_log::AppendStripped(line);
-        OutputDebugStringW(line);
-        OutputDebugStringW(L"\n");
-
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
-            wprintf(L"%ls[!]%ls %ls\n", kYellow, kReset, message);
+            wprintf(L"%ls[!]%ls %ls\n", kYellow, message, kReset);
+        }
+        else
+        {
+            wchar_t line[1024]{};
+            swprintf_s(line, L"  %ls[!]%ls %ls", kYellow, kReset, message);
+            ameger_ui_log::AppendStripped(line);
         }
     }
 
@@ -1567,7 +1599,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     }
 
     
-    const void * g_RuntimeCategory = nullptr;
+    // Written by VerbosePrint on a runtime worker thread and reset from the main
+    // thread, so it has to be atomic. The census accumulator below is only ever
+    // touched from inside the callback, which the runtime serialises.
+    std::atomic<const void *> g_RuntimeCategory{ nullptr };
 
     
     bool FullThreadCensusEnabled();
@@ -1873,9 +1908,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
         }
 
-        if (title && title != g_RuntimeCategory)
+        if (title && title != g_RuntimeCategory.load(std::memory_order_acquire))
         {
-            g_RuntimeCategory = title;
+            g_RuntimeCategory.store(title, std::memory_order_release);
             wprintf(L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
         }
 
@@ -1901,8 +1936,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     
     void ResetRuntimeCategory()
     {
-        extern const void * g_RuntimeCategory;
-        g_RuntimeCategory = nullptr;
+        g_RuntimeCategory.store(nullptr, std::memory_order_release);
     }
 
     void DetachInterfaceConsole()
@@ -2326,61 +2360,9 @@ wchar_t name[48]{};
             wprintf(L"====================================================================================================\n");
         }
     }
-
-    bool EnableSeDebugPrivilege()
-    {
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
-        {
-            return false;
-        }
-        FileHandleGuard tokenGuard(token);
-
-        LUID luid{};
-
-        if (!LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &luid))
-        {
-            return false;
-        }
-
-        TOKEN_PRIVILEGES privileges{};
-        privileges.PrivilegeCount = 1;
-        privileges.Privileges[0].Luid = luid;
-        privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-        if (!AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr))
-        {
-            return false;
-        }
-
-        const DWORD status = GetLastError();
-        return status == ERROR_SUCCESS;
-    }
-
-    void DisableSeDebugPrivilege()
-    {
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
-        {
-            return;
-        }
-        FileHandleGuard tokenGuard(token);
-
-LUID luid{};
-
-        if (!LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &luid))
-        {
-            return;
-        }
-
-        TOKEN_PRIVILEGES privileges{};
-        privileges.PrivilegeCount = 1;
-        privileges.Privileges[0].Luid = luid;
-
-        privileges.Privileges[0].Attributes = SE_PRIVILEGE_REMOVED;
-        AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr);
-    }
-
-    
+    // SeDebugPrivilege is raised and dropped inside the runtime DLL (HandleHijack.cpp),
+    // which owns the whole donor-acquisition sequence. The launcher deliberately never
+    // touches the process token for injection, so it keeps no privilege helpers.
     
     
     
@@ -2401,7 +2383,12 @@ LUID luid{};
     
     
     
-    DWORD PickHijackThreadTid(DWORD target_pid)
+    // Picks a hijack-sponsor candidate thread. Suspended threads are preferred, then
+    // threads in safe wait states. The lowest-TID thread (almost always the primary
+    // thread) is avoided while any alternative exists, and callers can exclude a TID
+    // that a previous sponsor attempt already failed on so the retry loop actually
+    // walks the candidate set instead of re-opening the same thread eight times.
+    DWORD PickHijackThreadTid(DWORD target_pid, DWORD exclude_tid)
     {
         if (!target_pid)
         {
@@ -2470,7 +2457,7 @@ LUID luid{};
                     }
                     return reason == 4 || reason == 6 || reason == 11 || reason == 13 || reason == 15;
                 };
-                auto score_walk = [&](DWORD exclude_tid, bool allow_wait) -> bool
+                auto score_walk = [&](DWORD avoid_tid, bool allow_wait) -> bool
                 {
                     bool found = false;
                     for (ULONG index = 0; index < thread_count; ++index)
@@ -2483,7 +2470,7 @@ LUID luid{};
 
                         const auto * thread = ReCa<const SYSTEM_THREAD_INFORMATION *>(buffer.data() + entry);
                         const DWORD tid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(thread->ClientId.UniqueThread));
-                        if (!tid || tid == GetCurrentThreadId() || tid == exclude_tid)
+                        if (!tid || tid == GetCurrentThreadId() || tid == exclude_tid || tid == avoid_tid)
                         {
                             continue;
                         }
@@ -2586,7 +2573,7 @@ LUID luid{};
                                     continue;
                                 }
                                 const DWORD tid = entry.th32ThreadID;
-                                if (!tid || tid == GetCurrentThreadId())
+                                if (!tid || tid == GetCurrentThreadId() || tid == exclude_tid)
                                 {
                                     continue;
                                 }
@@ -2636,11 +2623,6 @@ LUID luid{};
 
     struct HijackContext
     {
-        bool PrivilegeAttempted = false;
-        bool PrivilegeOk = false;
-        bool SponsorOpened = false;
-        ULONG_PTR SponsorValue = 0;
-        DWORD SponsorAccess = 0;
         DWORD TargetPid = 0;
         std::wstring TargetName;
         bool SponsorThreadAttempted = false;
@@ -4163,8 +4145,7 @@ LUID luid{};
         }
         (void)INJ_MM_MAP_FROM_MEMORY;
     }
-
-    DWORD BuildFlags(const WizardConfig & config)
+DWORD BuildFlags(const WizardConfig & config)
     {
         DWORD flags = 0;
 
@@ -4194,9 +4175,10 @@ LUID luid{};
         {
             flags |= INJ_MM_RUN_UNDER_LDR_LOCK;
         }
-        
-        
-        flags |= INJ_MM_ENABLE_EXCEPTIONS;
+        if (config.exceptions)
+        {
+            flags |= INJ_MM_ENABLE_EXCEPTIONS;
+        }
         if (config.resolve_imports)
         {
             flags |= INJ_MM_RESOLVE_IMPORTS;
@@ -4288,18 +4270,13 @@ LUID luid{};
             FlagTint, hijack_on ? L"Y" : L"N", kReset,
             FlagTint, hijack_flag, kReset,
             FlagTint, Flags, kReset);
-
-        if (!IsThread && Context)
+        // Process-handle acquisition happens inside the runtime, which raises and drops
+        // SeDebugPrivilege itself when a donor open is denied. The launcher never elevates
+        // for this path, so the privilege row is informational only.
+        if (!IsThread)
         {
-
-            const wchar_t * privilege_text =
-                !Context->PrivilegeAttempted ? L"Not Required" :
-                (Context->PrivilegeOk ? L"Enabled" : L"Failed");
-            const wchar_t * privilege_tint =
-                !Context->PrivilegeAttempted ? kYellow :
-                (Context->PrivilegeOk ? kGreen : kRed);
             wprintf(XOR_STR_W(L"    %ls %ls SeDebugPrivilege %ls%s%ls\n").get(), StageTag(++Stage).c_str(), StageLabel(L"Privilege").c_str(),
-                privilege_tint, privilege_text, kReset);
+                kDim, L"Not Required (Runtime-Side Acquisition)", kReset);
         }
 
         if (IsThread && Context && Context->SponsorThreadOpened)
@@ -4318,22 +4295,6 @@ LUID luid{};
         {
             wprintf(L"    %ls %ls %lsNot Attempted%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kYellow, kReset);
-        }
-        else if (Context && Context->SponsorOpened)
-        {
-            wprintf(L"    %ls %ls %ls0x%08X%ls Pre-Opened, Mask %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
-                StageLabel(L"Sponsor").c_str(), kGreen, static_cast<DWORD>(Context->SponsorValue), kReset,
-                kGreen, Context->SponsorAccess, kReset);
-
-            const bool skip_roundtrip = (Flags & INJ_SKIP_SPONSOR_ROUNDTRIP) != 0;
-            const wchar_t * RoundTripText =
-                Stats->SponsorProbed ? L"OK" : (skip_roundtrip ? L"Skipped" : L"Failed");
-            const wchar_t * RoundTripTint =
-                Stats->SponsorProbed ? kGreen : (skip_roundtrip ? kGreen : kRed);
-            wprintf(L"    %ls %ls Identity %ls%s%ls, Roundtrip %ls%s%ls\n", StageTag(++Stage).c_str(),
-                StageLabel(L"Sponsor Proof").c_str(),
-                Stats->SponsorValidated ? kGreen : kRed, Stats->SponsorValidated ? L"OK" : L"Failed", kReset,
-                RoundTripTint, RoundTripText, kReset);
         }
         else
         {
@@ -8526,57 +8487,18 @@ LUID luid{};
         Context.TargetPid = target.pid;
         Context.TargetName = target.name;
         Context.Verbose = config.verbose_trace && !config.quiet;
-        Context.SponsorAccess = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE;
-        
-        
-        HANDLE sponsorRaw = nullptr;
-        DWORD sponsor_err = ERROR_SUCCESS;
-        if (false && config.handle_hijacking)
-        {
- 
-            sponsorRaw = OpenProcess(Context.SponsorAccess, FALSE, target.pid);
-            if (!sponsorRaw && GetLastError() == ERROR_ACCESS_DENIED)
-            {
-                Context.PrivilegeAttempted = true;
-                Context.PrivilegeOk = EnableSeDebugPrivilege();
-                if (Context.PrivilegeOk)
-                {
-                    sponsorRaw = OpenProcess(Context.SponsorAccess, FALSE, target.pid);
-                }
 
-                if (!sponsorRaw)
-                {
-                    sponsor_err = GetLastError();
-                }
-
-                DisableSeDebugPrivilege();
-            }
-            if (!sponsorRaw && sponsor_err == ERROR_SUCCESS)
-            {
-                sponsor_err = GetLastError();
-            }
-            Context.SponsorOpened = sponsorRaw != nullptr;
-            if (sponsorRaw)
-            {
-                Context.SponsorValue = ReCa<ULONG_PTR>(sponsorRaw);
-            }
-            else
-            {
-                const wchar_t * consequence = config.hijack_scan
-                    ? L"Runtime Will Scan Only (No Direct Fallback)."
-                    : L"No Acquisition Path Remains; Loading Will Fail Closed.";
-                wprintf(L"  %ls[!]%ls Sponsor Pre-Open Failed (0x%08X); %ls\n",
-                    kYellow, kReset, sponsor_err, consequence);
-            }
-        }
-        FileHandleGuard sponsorGuard(sponsorRaw);
-
+        // Process-handle acquisition is the runtime's job: it either duplicates a donor
+        // handle out of another process (the preferred, access-mask-preserving route) or
+        // opens the target directly. The launcher deliberately does not hold a target
+        // handle across the injection, because doing so would leave a syscall-bearing
+        // handle in the launcher's own table for the whole load.
         HANDLE threadSponsorRaw = nullptr;
         if (config.handle_hijacking)
         {
             Context.SponsorThreadAttempted = true;
             DWORD thread_sponsor_err = ERROR_SUCCESS;
+            DWORD failed_sponsor_tid = 0;
             for (int attempt = 0; attempt < 8 && !threadSponsorRaw; ++attempt)
             {
                 if (attempt > 0)
@@ -8584,10 +8506,7 @@ LUID luid{};
                     Sleep(20);
                 }
 
-                
-                
-                
-                const DWORD victim_tid = PickHijackThreadTid(target.pid);
+                const DWORD victim_tid = PickHijackThreadTid(target.pid, failed_sponsor_tid);
                 if (!victim_tid)
                 {
 
@@ -8600,6 +8519,7 @@ LUID luid{};
                 if (!threadSponsorRaw)
                 {
                     thread_sponsor_err = GetLastError();
+                    failed_sponsor_tid = victim_tid;
                 }
             }
 
@@ -8618,16 +8538,7 @@ LUID luid{};
         FileHandleGuard threadSponsorGuard(threadSponsorRaw);
 
         Trace::Begin(L"Pre-Open Donor Handles (Sponsor)");
-        if (sponsorRaw)
-        {
-            Trace::Note(L"Process Sponsor Handle = 0x%08X (Access 0x%08lX)",
-                static_cast<unsigned>(ReCa<ULONG_PTR>(sponsorRaw)),
-                static_cast<unsigned long>(Context.SponsorAccess));
-        }
-        else
-        {
-            Trace::Note(L"Process Sponsor Handle = Not Obtained (Runtime Acquisition Only)");
-        }
+        Trace::Note(L"Process Sponsor Handle = Not Obtained (Runtime Acquisition Only)");
         if (threadSponsorRaw)
         {
             Trace::Note(L"Thread Sponsor Handle = 0x%08X (TID 0x%04lX)",
@@ -8640,23 +8551,22 @@ LUID luid{};
         }
         Trace::End();
 
-        HANDLE targetHandle = sponsorRaw;
-        FileHandleGuard targetHandleGuard;
-        if (!targetHandle)
+        // Read-only (plus VM_WRITE only when a hook patch is explicitly authorised) so the
+        // hook scanner can inspect the target without holding a stronger handle than it needs.
+        HANDLE targetHandle = nullptr;
         {
-
             DWORD scan_mask = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ;
             if (config.hook_restore && HookPatchExplicitlyAllowed())
             {
                 scan_mask |= PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
             }
             targetHandle = OpenProcess(scan_mask, FALSE, target.pid);
-            targetHandleGuard.reset(targetHandle);
-            if (!targetHandle)
-            {
-                wprintf(L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
-                    kYellow, kReset, GetLastError());
-            }
+        }
+        FileHandleGuard targetHandleGuard(targetHandle);
+        if (!targetHandle)
+        {
+            wprintf(L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
+                kYellow, kReset, GetLastError());
         }
 
         const DWORD flags = BuildFlags(config);
@@ -8669,7 +8579,7 @@ LUID luid{};
         data.Timeout = static_cast<DWORD>(timeout_value);
         data.GenerateErrorLog = true;
 
-        data.hHandleValue = sponsorRaw ? ReCa<ULONG_PTR>(sponsorRaw) : 0;
+        data.hHandleValue = 0;
         data.TargetTid = Context.SponsorTid;
         data.hThreadHandleValue = threadSponsorRaw ? ReCa<ULONG_PTR>(threadSponsorRaw) : 0;
         data.DllPath = config.payload_name.c_str();
@@ -8766,7 +8676,6 @@ LUID luid{};
             }
             targetHandleGuard.reset();
             threadSponsorGuard.reset();
-            sponsorGuard.reset();
             Trace::Summary(L"Failed During Injection");
             PauseBeforeExit();
             
@@ -8777,22 +8686,6 @@ LUID luid{};
 
         threadSponsorGuard.reset();
         threadSponsorRaw = nullptr;
-
-        const bool hook_write_may_happen = config.hook_restore && HookPatchExplicitlyAllowed();
-        if (sponsorRaw && !hook_write_may_happen)
-        {
-            sponsorGuard.reset();
-            sponsorRaw = nullptr;
-            targetHandle = nullptr;
-
-            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
-            targetHandleGuard.reset(targetHandle);
-            if (!targetHandle)
-            {
-                wprintf(L"  %ls[!]%ls Could Not Re-Open The Target Read-Only For Verification (0x%08X).\n",
-                    kYellow, kReset, GetLastError());
-            }
-        }
 
         Trace::Begin(L"Fetch Runtime Telemetry");
         HijackStats ProcessHijackStats{};
@@ -8929,7 +8822,6 @@ LUID luid{};
             }
         };
 
-        record(ReCa<ULONGLONG>(sponsorRaw));
         record(ReCa<ULONGLONG>(threadSponsorRaw));
         record(ReCa<ULONGLONG>(targetHandle));
 
@@ -9021,10 +8913,8 @@ LUID luid{};
 
         targetHandleGuard.reset();
         threadSponsorGuard.reset();
-        sponsorGuard.reset();
         targetHandle = nullptr;
         threadSponsorRaw = nullptr;
-        sponsorRaw = nullptr;
 
         {
             wchar_t list[96] = {};
@@ -9212,6 +9102,13 @@ LUID luid{};
             static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
             static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
 
+        row(L"Thread Context Snapshot... ", ThreadExec.OldRip != 0);
+        wprintf(L"Original RIP = 0x%llX | Original RSP = 0x%llX | Post-Scrub Limit = 0x%llX | FP Mode %ls\n",
+            static_cast<unsigned long long>(ThreadExec.OldRip),
+            static_cast<unsigned long long>(ThreadExec.OldRsp),
+            static_cast<unsigned long long>(ThreadExec.StackLimit),
+            ThreadExec.FpMode ? L"XSAVE" : L"FXSAVE");
+
         row(L"Data Directories Wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
         wprintf(L"Cleaned Mask = 0x%08X | Residual = 0x%08X | Mapper Re-Read %s\n",
             (unsigned)MapStats.CleanedMask, (unsigned)MapStats.ResidualMask,
@@ -9285,6 +9182,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         return 0;
     }
 
+    {
+        const std::wstring config_path = ConfigurationPath();
+        const size_t slash = config_path.find_last_of(L"\\/");
+        const size_t dot = config_path.find_last_of(L'.');
+        if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash + 1))
+        {
+            const size_t start = (slash == std::wstring::npos) ? 0 : slash + 1;
+            const std::wstring stem = config_path.substr(start, dot - start);
+            if (!stem.empty())
+            {
+                g_ResultLogName = stem + L".log";
+            }
+        }
+    }
+
+    ameger_ui_log::ResetResultLog();
+
     const int retryIndex = GetRetryIndex();
     Runtime runtime;
     int result = 1;
@@ -9309,34 +9223,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    
-    
-    
+    // Persist the log next to the launcher/config BEFORE anything that can end the process. The
+    // file is named "<config stem>.log" (randomized per build) and falls back to Result.log when
+    // no valid config is found. The retry path calls TerminateInterface(), which never returns,
+    // so a log written after it would be lost. The log is deleted at startup and rewritten from
+    // scratch at exit, so it never accumulates across attempts or runs.
+    ameger_ui_log::WriteResultLog();
+    ameger_ui_log::Clear();
+
     if (result == kResultRetryable && retryIndex + 1 < kMaxLaunchAttempts)
     {
         const int nextRetry = retryIndex + 1;
         if (SpawnFreshRetryProcess(nextRetry))
         {
-            
-            
             TerminateInterface(result);
         }
-        
     }
-
-    
-    
-    ameger_ui_log::CopyToClipboardStealthily();
 
     if (result == kResultRetryable && retryIndex + 1 >= kMaxLaunchAttempts)
     {
-        LayeredNotify(L"Launcher", L"Operation Failed After 3 Attempts. The Full Log Is On Your Clipboard.", 5000);
+        const std::wstring message = L"Operation Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L".";
+        LayeredNotify(L"Launcher", message.c_str(), 5000);
         result = 1;
     }
 
-    if (runtime.module)
-    {
-        TerminateInterface(result);
-    }
     return result;
 }

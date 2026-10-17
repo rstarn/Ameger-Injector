@@ -449,8 +449,6 @@ DWORD SYMBOL_PARSER::GetEnumValueAny(const char * const * TypeNames, size_t Type
 
 void SYMBOL_PARSER::Cleanup()
 {
-	LOG(1, XOR_STR_A("SymbolParser::Cleanup\n").get());
-
 	m_bReady = false;
 
 	if (m_bInitialized)

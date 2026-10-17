@@ -9,7 +9,10 @@
 
 inline constexpr DWORD INJ_THREAD_HIJACK_ACCESS =
 	THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
-	THREAD_QUERY_LIMITED_INFORMATION;
+	THREAD_QUERY_LIMITED_INFORMATION |
+	// WaitForSingleObject on a thread handle requires SYNCHRONIZE; without it the
+	// termination checks in ThreadHijacking.cpp can never succeed.
+	SYNCHRONIZE;
 
 enum class HijackSource : DWORD
 {
@@ -45,12 +48,9 @@ struct HijackStats
 	
 	DWORD SnapshotBytes = 0;
 	DWORD ProbeMethod = 0;
-	ULONG_PTR ProbePage = 0;
-	DWORD ProbeProtect = 0;
-	DWORD Reserved2 = 0;
 };
 
-static_assert(sizeof(HijackStats) == 96);
+static_assert(sizeof(HijackStats) == 80);
 static_assert(offsetof(HijackStats, Attempted) == 0);
 static_assert(offsetof(HijackStats, SponsorProbed) == 68);
 
@@ -69,18 +69,24 @@ struct THREAD_EXEC_STATS
 	
 	DWORD RoutineRet = 0;
 	ULONG_PTR OldRip = 0;
+	ULONG_PTR OldRsp = 0;
 	ULONG_PTR SavedRsp = 0;
 	ULONG_PTR StackLimit = 0;
 	DWORD FpMode = 0;
 	DWORD FpMask = 0;
 };
 
-static_assert(sizeof(THREAD_EXEC_STATS) == 88);
+static_assert(sizeof(THREAD_EXEC_STATS) == 96);
 static_assert(offsetof(THREAD_EXEC_STATS, Attempted) == 0);
 static_assert(offsetof(THREAD_EXEC_STATS, DonorRounds) == 16);
 static_assert(offsetof(THREAD_EXEC_STATS, PollIterations) == 40);
 static_assert(offsetof(THREAD_EXEC_STATS, RoutineRet) == 48);
-static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 84);
+static_assert(offsetof(THREAD_EXEC_STATS, OldRip) == 56);
+static_assert(offsetof(THREAD_EXEC_STATS, OldRsp) == 64);
+static_assert(offsetof(THREAD_EXEC_STATS, SavedRsp) == 72);
+static_assert(offsetof(THREAD_EXEC_STATS, StackLimit) == 80);
+static_assert(offsetof(THREAD_EXEC_STATS, FpMode) == 88);
+static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 92);
 
 struct MAP_STATS
 {

@@ -286,13 +286,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		BYTE stub_slab[SC_REMOTE_STUB_COUNT][SC_STUB_SIZE]{ };
 
 		const DWORD Built = BuildSyscallStubs(ReCa<BYTE *>(stub_slab), sizeof(stub_slab), remote_stub_hashes, SC_REMOTE_STUB_COUNT);
-		if (!Built)
+		if (Built != SC_REMOTE_STUB_COUNT)
 		{
+			// A partial slab would leave holes in the remote dispatch table. Report the
+			// dedicated stub-build code rather than letting IsValid() below fail with the
+			// generic uninformative INJ_ERR_GET_PROC_ADDRESS_FAIL.
 			INIT_ERROR_DATA(error_data, INJ_ERR_SYSCALL_RESOLVE_FAILED);
 
-			LOG(1, "Remote Syscall Stubs Could Not Be Built\n");
+			LOG(1, "Remote Syscall Stubs Only Partially Built = %u/%u\n", Built, SC_REMOTE_STUB_COUNT);
 
-			return INJ_ERR_SYSCALL_RESOLVE_FAILED;
+			return INJ_ERR_SYSCALL_STUB_BUILD_FAILED;
 		}
 
 		for (DWORD i = 0; i < SC_REMOTE_STUB_COUNT; ++i)

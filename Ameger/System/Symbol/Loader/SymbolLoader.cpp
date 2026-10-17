@@ -966,8 +966,6 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 void SYMBOL_LOADER::Cleanup()
 {
-	LOG(1, XOR_STR_A("SymbolLoader::Cleanup\n").get());
-
 	m_bReady = false;
 
 	if (m_hPdbFile && m_hPdbFile != INVALID_HANDLE_VALUE)
@@ -1031,8 +1029,6 @@ void SYMBOL_LOADER::SetDownload(bool bDownload)
 
 void SYMBOL_LOADER::Interrupt()
 {
-	LOG(1, XOR_STR_A("SymbolLoader::Interrupt\n").get());
-
 	m_bInterruptEvent = true;
 
 	if (m_hInterruptEvent)
@@ -1040,10 +1036,6 @@ void SYMBOL_LOADER::Interrupt()
 		if (!SetEvent(m_hInterruptEvent))
 		{
 			LOG(1, XOR_STR_A("SymbolLoader: SetEvent Failed To Trigger Interrupt Event = %08X\n").get(), GetLastError());
-		}
-		else
-		{
-			LOG(1, XOR_STR_A("SymbolLoader: Interrupt Event Set\n").get());
 		}
 	}
 	else

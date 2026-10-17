@@ -324,6 +324,200 @@ namespace
 		}
 		return fallback;
 	}
+
+	struct DeferredTrampoline
+	{
+		HANDLE	Process = nullptr;
+		HANDLE	Thread	= nullptr;
+		void *	Base	= nullptr;
+	};
+
+	constexpr SIZE_T kDeferredTrampolineSize = 0x2000;
+	constexpr SIZE_T kDeferredCodePage = 0x1000;
+
+	SRWLOCK g_DeferredTrampolineLock = SRWLOCK_INIT;
+	std::vector<DeferredTrampoline> g_DeferredTrampolines;
+
+	void CloseDeferredTrampoline(DeferredTrampoline & Entry)
+	{
+		if (Entry.Thread && Entry.Thread != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(Entry.Thread);
+		}
+
+		if (Entry.Process && Entry.Process != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(Entry.Process);
+		}
+
+		Entry.Process = nullptr;
+		Entry.Thread	= nullptr;
+		Entry.Base		= nullptr;
+	}
+
+	void EnqueueDeferredTrampoline(HANDLE Process, HANDLE Thread, void * Base)
+	{
+		HANDLE DupProcess = nullptr;
+		HANDLE DupThread	= nullptr;
+		DWORD DupError	= ERROR_SUCCESS;
+
+		if (!Process || Process == INVALID_HANDLE_VALUE || !Thread || Thread == INVALID_HANDLE_VALUE || !Base)
+		{
+			DupError = ERROR_INVALID_HANDLE;
+		}
+		else if (!DuplicateHandle(GetCurrentProcess(), Process, GetCurrentProcess(), &DupProcess, 0, FALSE, 0))
+		{
+			DupError = GetLastError();
+		}
+		else if (!DuplicateHandle(GetCurrentProcess(), Thread, GetCurrentProcess(), &DupThread, 0, FALSE, 0))
+		{
+			DupError = GetLastError();
+		}
+
+		if (DupError != ERROR_SUCCESS)
+		{
+			if (DupThread)
+			{
+				CloseHandle(DupThread);
+			}
+
+			if (DupProcess)
+			{
+				CloseHandle(DupProcess);
+			}
+
+			LOG(2, "Deferred Trampoline Handles Not Duplicated (Error = %u); Remote Allocation Retained\n", DupError);
+			return;
+		}
+
+		{
+			AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
+			g_DeferredTrampolines.push_back(DeferredTrampoline{ DupProcess, DupThread, Base });
+			ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
+		}
+
+		LOG(2, "Remote Allocation Deferred For Reclaim (Base = %p)\n", Base);
+	}
+
+	bool DeferredProcessGone(HANDLE Process)
+	{
+		const DWORD wait = WaitForSingleObject(Process, 0);
+		if (wait == WAIT_OBJECT_0)
+		{
+			return true;
+		}
+
+		if (wait == WAIT_TIMEOUT)
+		{
+			return false;
+		}
+
+		DWORD exit_code = STILL_ACTIVE;
+		return GetExitCodeProcess(Process, &exit_code) && exit_code != STILL_ACTIVE;
+	}
+
+	void ReapDeferredTrampolines()
+	{
+		std::vector<DeferredTrampoline> pending;
+		{
+			AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
+			pending.swap(g_DeferredTrampolines);
+			ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
+		}
+
+		if (pending.empty())
+		{
+			return;
+		}
+
+		std::vector<DeferredTrampoline> retained;
+
+		for (DeferredTrampoline & Entry : pending)
+		{
+			if (DeferredProcessGone(Entry.Process))
+			{
+				LOG(2, "Deferred Trampoline Dropped: Target Process Gone (Base = %p)\n", Entry.Base);
+
+				CloseDeferredTrampoline(Entry);
+				continue;
+			}
+
+			if (WaitForSingleObject(Entry.Thread, 0) == WAIT_OBJECT_0)
+			{
+				ScrubRemoteRegion(Entry.Process, Entry.Base, kDeferredTrampolineSize, kScrubChunk);
+				if (!VirtualFreeEx(Entry.Process, Entry.Base, 0, MEM_RELEASE))
+				{
+					const DWORD free_error = GetLastError();
+
+					LOG(2, "Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n", free_error, Entry.Base);
+
+					retained.push_back(Entry);
+					continue;
+				}
+
+				LOG(2, "Deferred Trampoline Reclaimed: Donor Thread Exited (Base = %p)\n", Entry.Base);
+
+				CloseDeferredTrampoline(Entry);
+				continue;
+			}
+
+			SR_REMOTE_STATE state = SR_REMOTE_STATE::SR_RS_ExecutionPending;
+			if (!ScReadProcessMemory(Entry.Process, ReCa<BYTE *>(Entry.Base) + kDeferredCodePage, &state, sizeof(state), nullptr) ||
+				!RemoteRoutineSettled(state))
+			{
+				retained.push_back(Entry);
+				continue;
+			}
+
+			ULONG previous = 0;
+			if (NT_FAIL(ScNtSuspendThread(Entry.Thread, &previous)))
+			{
+				retained.push_back(Entry);
+				continue;
+			}
+
+			if (previous > 0)
+			{
+				ScNtResumeThread(Entry.Thread, nullptr);
+				retained.push_back(Entry);
+				continue;
+			}
+
+			CONTEXT ctx{ 0 };
+			ctx.ContextFlags = CONTEXT_CONTROL;
+			const bool have_context = NT_SUCCESS(ScNtGetContextThread(Entry.Thread, &ctx)) != FALSE;
+			ScNtResumeThread(Entry.Thread, nullptr);
+
+			const ULONG_PTR base = ReCa<ULONG_PTR>(Entry.Base);
+			if (!have_context || (ctx.Rip >= base && ctx.Rip < base + kDeferredCodePage))
+			{
+				retained.push_back(Entry);
+				continue;
+			}
+
+			ScrubRemoteRegion(Entry.Process, Entry.Base, kDeferredTrampolineSize, kScrubChunk);
+			if (!VirtualFreeEx(Entry.Process, Entry.Base, 0, MEM_RELEASE))
+			{
+				const DWORD free_error = GetLastError();
+
+				LOG(2, "Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n", free_error, Entry.Base);
+
+				retained.push_back(Entry);
+				continue;
+			}
+
+			LOG(2, "Deferred Trampoline Reclaimed: Thread Outside Stub (Base = %p)\n", Entry.Base);
+
+			CloseDeferredTrampoline(Entry);
+		}
+
+		if (!retained.empty())
+		{
+			AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
+			g_DeferredTrampolines.insert(g_DeferredTrampolines.end(), retained.begin(), retained.end());
+			ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
+		}
+	}
 }
 
 static void ProbeFpCaps(DWORD & OutFlags, DWORD & OutMask, const BYTE * pStatePage)
@@ -886,6 +1080,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		}
 	}
 
+	StoreThreadExecStat(g_ThreadExecStats.Attempted, 1);
+	StoreThreadExecStat(g_ThreadExecStats.HijackedTid, ThreadID);
+
 	ULONG sr_suspend = 0;
 	if (NT_FAIL(ScNtSuspendThread(hThread, &sr_suspend)))
 	{
@@ -911,9 +1108,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	CONTEXT OldContext{ 0 };
 	OldContext.ContextFlags = CONTEXT_ALL;
-
-	StoreThreadExecStat(g_ThreadExecStats.Attempted, 1);
-	StoreThreadExecStat(g_ThreadExecStats.HijackedTid, ThreadID);
 
 	if (NT_FAIL(ScNtGetContextThread(hThread, &OldContext)))
 	{
@@ -948,6 +1142,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	OldContext.Rip = reinterpret_cast<ULONG_PTR>(pRemoteFunc);
 
 	InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.OldRip), static_cast<LONG64>(OldRIP));
+	InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.OldRsp), static_cast<LONG64>(OldContext.Rsp));
 	StoreThreadExecStat(g_ThreadExecStats.FpMode, remote_data->FpFlags);
 	StoreThreadExecStat(g_ThreadExecStats.FpMask, remote_data->FpMask);
 	LOG(1, "[ThreadHijack] [*] Context Captured: Target RIP = 0x%llX | RSP = 0x%llX\n", (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
@@ -1016,6 +1211,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 				LOG(2, "Thread Context Recovery Failed; Remote Allocation Retained\n");
 
+				EnqueueDeferredTrampoline(hTargetProc, hThread, pMem);
 				allocation_guard.release();
 				return SR_HT_ERR_RECOVERY_REQUIRED;
 			}
@@ -1100,8 +1296,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				else if (ctx.Rsp <= OldContext.Rsp && (OldContext.Rsp - ctx.Rsp) <= kStubFrameWindow)
 				{
 
-					ctx.Rip = OldRIP;
-					ctx.Rsp = OldContext.Rsp;
+					ctx = OldContext;
+					ctx.Rip = OldRIP;	// OldContext.Rip was repointed at the stub; OldRIP holds the original
 					restored = NT_SUCCESS(ScNtSetContextThread(hThread, &ctx)) != FALSE;
 					settled = true;
 				}
@@ -1149,20 +1345,29 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	
 	
 	
-	auto ReclaimOrRetainTrampoline = [&](bool context_restored) -> void
+	auto ReclaimOrRetainTrampoline = [&](bool context_restored, SR_REMOTE_STATE State) -> void
 	{
 		if (context_restored)
 		{
 			return;
 		}
 
-		if (StubRegionFreeToRelease())
+		if (RemoteRoutineSettled(State) && StubRegionFreeToRelease())
 		{
 			LOG(2, "Thread Is No Longer Inside The Stub; Remote Allocation Reclaimed\n");
 			return;
 		}
 
-		LOG(2, "Thread Context Recovery Failed; Remote Allocation Retained\n");
+		if (!RemoteRoutineSettled(State))
+		{
+			LOG(2, "Stub State Not Settled (State = %d); Remote Allocation Deferred For Reclaim\n", static_cast<int>(State));
+		}
+		else
+		{
+			LOG(2, "Thread Context Recovery Failed; Remote Allocation Deferred For Reclaim\n");
+		}
+
+		EnqueueDeferredTrampoline(hTargetProc, hThread, pMem);
 		allocation_guard.release();
 	};
 
@@ -1190,7 +1395,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			consecutive_read_failures = 0;
 
-			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionFinished)
+			if (RemoteRoutineSettled(data.State))
 			{
 				LOG(2, "ShellData Retrieved\n");
 				const DWORD exec_ms = static_cast<DWORD>(GetTickCount64() - Timer);
@@ -1266,7 +1471,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				ForceRestoreContext(context_restored, resumed);
 			}
 
-			ReclaimOrRetainTrampoline(context_restored);
+			ReclaimOrRetainTrampoline(context_restored, data.State);
 
 			StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 			StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? error_data.AdvErrorCode : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1306,7 +1511,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				ForceRestoreContext(context_restored, resumed);
 			}
 
-		ReclaimOrRetainTrampoline(context_restored);
+		ReclaimOrRetainTrampoline(context_restored, data.State);
 
 		StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 		StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_RPM_FAIL : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1315,7 +1520,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		}
 
 	}
-	if (data.State != SR_REMOTE_STATE::SR_RS_ExecutionFinished)
+	if (!RemoteRoutineSettled(data.State))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1328,7 +1533,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			ForceRestoreContext(context_restored, resumed);
 		}
 
-		ReclaimOrRetainTrampoline(context_restored);
+		ReclaimOrRetainTrampoline(context_restored, data.State);
 
 		StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
 		StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_REMOTE_PENDING_TIMEOUT : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1383,8 +1588,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				(OldContext.Rsp - check_context.Rsp) <= kStubFrameWindow)
 			{
 
-				check_context.Rip = OldRIP;
-				check_context.Rsp = OldContext.Rsp;
+				check_context = OldContext;
+				check_context.Rip = OldRIP;	// OldContext.Rip was repointed at the stub; OldRIP holds the original
 				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 
@@ -1411,7 +1616,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		LOG(1, "[ThreadHijack] [x] Context Verification Failed: RIP = 0x%llX | Not Restored\n", (unsigned long long)OldRIP);
 	}
 
-	ReclaimOrRetainTrampoline(context_restored);
+	ReclaimOrRetainTrampoline(context_restored, data.State);
 
 	StoreThreadExecStat(g_ThreadExecStats.Success, context_restored ? 1 : 0);
 	StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? ERROR_SUCCESS : SR_HT_ERR_RECOVERY_REQUIRED);
@@ -1442,11 +1647,15 @@ DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD
 
 	for (int round = 0; round < kMaxDonorRounds; ++round)
 	{
+		ReapDeferredTrampolines();
+
 		const ULONGLONG elapsed = GetTickCount64() - budget_start;
 		if (elapsed >= Timeout)
 		{
 			break;
 		}
+
+		StoreThreadExecStat(g_ThreadExecStats.HijackedTid, 0);
 
 		const DWORD remaining = Timeout - static_cast<DWORD>(elapsed);
 		const bool sponsor_round = (round == 0);
@@ -1493,6 +1702,8 @@ DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD
 	}
 
 	LOG(2, "Donor Search Exhausted After %u Round(s)\n", static_cast<DWORD>(excluded.size()));
+
+	ReapDeferredTrampolines();
 
 	INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 

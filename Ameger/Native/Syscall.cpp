@@ -354,12 +354,7 @@ bool BuildPool()
 	{
 		g_SyscallTable[i].Stub = nullptr;
 	}
-	BYTE * OldPool = ReCa<BYTE *>(g_SyscallPool.exchange(nullptr, std::memory_order_acq_rel));
-	if (OldPool)
-	{
-		VirtualFree(OldPool, 0, MEM_RELEASE);
-	}
-
+	
 	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
@@ -393,6 +388,11 @@ bool BuildPool()
 	DWORD OldProtect = 0;
 	if (!VirtualProtect(Pool, kStubAreaSize, PAGE_EXECUTE_READ, &OldProtect))
 	{
+		for (size_t i = 0; i < kSyscallTableCount; ++i)
+		{
+			g_SyscallTable[i].Stub = nullptr;
+		}
+
 		VirtualFree(Pool, 0, MEM_RELEASE);
 		SC_LOG_ERR("VirtualProtect RX Failed");
 		return false;
@@ -766,9 +766,9 @@ DWORD SyscallResolveAll()
 	
 	
 	
+	g_SyscallPoolReady.store(true, std::memory_order_release);
 	if (Ready == kSyscallTableCount)
 	{
-		g_SyscallPoolReady.store(true, std::memory_order_release);
 		SC_LOG_OK("Syscall Layer Ready: %u/%zu Stubs Built\n", Ready, kSyscallTableCount);
 	}
 	else

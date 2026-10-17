@@ -3,12 +3,22 @@
 #include "System/Information/ProcessInformation.h"
 #include "Core/Utility/Tools/Tools.h"
 
+// Mirrors the SR_STATE_* constants in Execution/Stub/RemoteShell.inc. Keep the two in lockstep.
 enum class SR_REMOTE_STATE : ULONG_PTR
 {
 	SR_RS_ExecutionPending	= 0,
 	SR_RS_Executing			= 1,
-	SR_RS_ExecutionFinished	= 2
+	SR_RS_ExecutionFinished	= 2,
+	// Published by the stub as its final act, immediately before the return jump. Once this
+	// is observed the thread can never re-enter the RX code page or re-read the RW state
+	// page, so the remote trampoline is provably unreachable and may be reclaimed.
+	SR_RS_Exited			= 3
 };
+
+__forceinline bool RemoteRoutineSettled(SR_REMOTE_STATE state)
+{
+	return state >= SR_REMOTE_STATE::SR_RS_ExecutionFinished;
+}
 
 using f_Routine			= DWORD(__fastcall *)(void * pArg);
 
