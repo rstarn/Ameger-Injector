@@ -96,11 +96,11 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 
 	bool supported = true;
 
-	// The newest known family is the catch-all upper bound: any build at or above it (including builds
-	// newer than the newest release this project has been calibrated against) is mapped onto the
-	// newest known layout rather than rejected, so a future Windows update does not hard-fail the gate.
-	// Each branch below only tightens the bound for builds it is known to cover. The actual structure
-	// offsets are resolved from the downloaded ntdll PDB, not from this family value.
+	
+	
+	
+	
+	
 	if (build_number >= 26300)
 	{
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_26H2;
@@ -319,9 +319,9 @@ bool GetSymbolCacheRoot(std::wstring & out)
 
 namespace
 {
-	// Deepest scratch tree layout that is walked before giving up. The tree lives in user writable
-	// storage, so its shape is untrusted input and the walk is iterative and depth bounded rather
-	// than a recursion that mirrors it.
+	
+	
+	
 	constexpr size_t kMaxScratchTreeDepth = 64;
 
 	struct ScratchTreeEntry
@@ -330,15 +330,15 @@ namespace
 		size_t Depth;
 	};
 
-	// Deletes every file and directory below `root` (not `root` itself) and reports whether the tree
-	// came out completely empty. Every failure is logged and folded into the result, so a child that
-	// could not be removed can no longer disappear behind a successful return.
+	
+	
+	
 	bool DeleteScratchTree(const std::wstring & root)
 	{
 		bool complete = true;
 
-		// Directories are recorded pre-order, so removing the record in reverse removes every child
-		// before the directory that holds it.
+		
+		
 		std::vector<std::wstring> directories;
 		std::vector<ScratchTreeEntry> pending;
 
@@ -393,8 +393,8 @@ namespace
 					continue;
 				}
 
-				// A junction or symlink is unlinked, never descended into: following it would delete
-				// whatever it points at, which is not necessarily scratch storage.
+				
+				
 				if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
 				{
 					if (!RemoveDirectoryW(child.c_str()))
@@ -449,10 +449,10 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 		return false;
 	}
 
-	// A recursive delete is only ever performed on storage this library knows it created. Anything
-	// else - most importantly the injector's own install directory, which an earlier fallback used to
-	// hand over - fails closed so a teardown bug can never escalate into deleting the runtime, the
-	// payload or the launcher.
+	
+	
+	
+	
 	if (!IsOwnedScratchRoot(root))
 	{
 		LOG(1, "Refusing To Delete A Path That Is Not Owned Scratch Storage = %ls\n", root.c_str());
@@ -462,8 +462,8 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 
 	const bool tree_cleared = DeleteScratchTree(root);
 
-	// A root that is already gone is a success (the goal was that it not exist); anything still there
-	// afterwards is reported as a failure so the caller can log it.
+	
+	
 	if (RemoveDirectoryW(root.c_str()))
 	{
 		return tree_cleared;
@@ -476,10 +476,10 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 {
-	// IsWow64Process only answers "WOW64 or not", which is sufficient on an x64 host but misreports a
-	// native ARM64 process on an ARM64 host. IsWow64Process2 reports the target's machine type and the
-	// host's native machine, so the target's effective machine can be compared against the machine this
-	// build targets. It is resolved dynamically because it does not exist before Windows 10 1709.
+	
+	
+	
+	
 	using f_IsWow64Process2 = BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *);
 
 	static f_IsWow64Process2 pIsWow64Process2 = []() -> f_IsWow64Process2
@@ -525,8 +525,8 @@ bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 			*error_code = ERROR_SUCCESS;
 		}
 
-		// A process that runs natively reports IMAGE_FILE_MACHINE_UNKNOWN for its own machine and the
-		// host's native machine instead; either way the effective machine is the one that matters.
+		
+		
 		const USHORT effective = process_machine != IMAGE_FILE_MACHINE_UNKNOWN ? process_machine : native_machine;
 
 		return effective == kHostMachine;
@@ -579,15 +579,15 @@ bool SymbolDownloadDisabled()
 
 namespace
 {
-	// Length of the random leaf GetSymbolCacheRoot mints.
+	
 	constexpr size_t kRandomLeafLength = 10;
 
-	// A leaf name qualifies as owned scratch storage when it is either one of the random names
-	// GetSymbolCacheRoot mints - exactly kRandomLeafLength alphanumeric characters, the first forced
-	// into 'a'..'z' - or the dedicated fallback directory. Anything else - including the install
-	// folder itself, which has a real product name - is rejected. The shape has to be matched exactly
-	// and not just bounded: "Users", "Windows" and "Program Files" are all short and alphanumeric, so
-	// a length-and-alphabet test alone lets arbitrary user directories pass as scratch storage.
+	
+	
+	
+	
+	
+	
 	bool IsScratchLeafName(const std::wstring & leaf)
 	{
 		if (leaf == AMEGER_SCRATCH_LEAF_DIR)
@@ -652,7 +652,7 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		return false;
 	}
 
-	// Only absolute, drive rooted paths are ever deletable. A UNC path or a relative one is refused.
+	
 	if (root[1] != L':' || (root[2] != L'\\' && root[2] != L'/'))
 	{
 		return false;
@@ -663,11 +663,11 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 	const size_t drive_end = normalized.find_first_of(L"\\/", 3);
 	if (drive_end == std::wstring::npos)
 	{
-		// "<x>:\" - a drive root.
+		
 		return false;
 	}
 
-	// Find the leaf directory name (the last non empty component).
+	
 	std::wstring leaf;
 	for (size_t i = normalized.size() - 2; i > 0; --i)
 	{
@@ -685,8 +685,8 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		return false;
 	}
 
-	// Refuse the Windows directory and everything under it: a user profile style directory name would
-	// otherwise be indistinguishable from scratch storage.
+	
+	
 	std::wstring own_path;
 	{
 		wchar_t buffer[MAX_PATH * 2]{ 0 };
@@ -721,8 +721,8 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		}
 	}
 
-	// The scratch directory may live inside the install folder, but it must never BE the install
-	// folder: deleting that would remove the runtime, the payload and the launcher.
+	
+	
 	if (!own_path.empty())
 	{
 		const std::wstring lower_own = Lowercase(own_path);
@@ -735,8 +735,8 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		const bool nested = lower_root.compare(0, lower_own.size(), lower_own) == 0;
 		if (nested)
 		{
-			// Every path segment between the install folder and the leaf must itself be an owned
-			// scratch name, so a deep path such as "<install>\Anything\.symbols" is still rejected.
+			
+			
 			std::wstring remainder = lower_root.substr(lower_own.size());
 			if (!remainder.empty() && (remainder.front() == L'\\' || remainder.front() == L'/'))
 			{
@@ -844,9 +844,9 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 
 	if (!have_record)
 	{
-		// An empty ring is not a successful error report, so it returns its own code rather than
-		// succeeding. The caller distinguishes "nothing went wrong" from "here is what went wrong"
-		// without having to read the output struct to find out.
+		
+		
+		
 		return INJ_ERR_NO_LAST_ERROR;
 	}
 

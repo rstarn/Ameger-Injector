@@ -7,8 +7,8 @@
 
 ProcessInformation::ProcessInformation()
 {
-	// Resolved from the locally built stubs rather than through GetProcAddress, so the enumeration of a
-	// process tree never touches a public ntdll entry point.
+	
+	
 	m_pNtQueryInformationProcess	= ReCa<f_NtQueryInformationProcess>	(SyscallStub(SC_NtQueryInformationProcess));
 	m_pNtQuerySystemInformation		= ReCa<f_NtQuerySystemInformation>	(SyscallStub(SC_NtQuerySystemInformation));
 	m_pNtQueryInformationThread		= ReCa<f_NtQueryInformationThread>	(SyscallStub(SC_NtQueryInformationThread));
@@ -54,9 +54,9 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 		}
 	}
 
-	// Re-selecting the process that is already located in this snapshot only needs the thread cursor
-	// reset; walking the whole process list again would be wasted work. RefreshInformation clears the
-	// flag, so a rebuilt snapshot always forces a fresh walk.
+	
+	
+	
 	if (hTargetProc == m_hCurrentProcess && m_ProcessLocated)
 	{
 		m_CurrentThreadIndex = 0;
@@ -92,7 +92,7 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 			break;
 		}
 
-		// Bounds check: ensure next entry is within buffer
+		
 		if (ReCa<BYTE *>(pNext) + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer_end)
 		{
 			break;
@@ -126,7 +126,7 @@ bool ProcessInformation::NextThread()
 		return false;
 	}
 
-	// Bounds check: ensure the next thread entry is within the allocated buffer
+	
 	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
 	BYTE * next_thread_ptr = ReCa<BYTE *>(&m_pCurrentProcess->Threads[m_CurrentThreadIndex + 1]);
 	if (next_thread_ptr + sizeof(SYSTEM_THREAD_INFORMATION) > buffer_end)
@@ -142,9 +142,9 @@ bool ProcessInformation::NextThread()
 
 bool ProcessInformation::RefreshInformation()
 {
-	// Free-then-reallocate in one pass; the previous implementation recursed into itself just to
-	// reuse the allocation path. The snapshot is invalidated first so a caller that keeps the same
-	// process handle is forced to re-walk against the rebuilt buffer.
+	
+	
+	
 	m_ProcessLocated = false;
 
 	if (m_pFirstProcess)
@@ -201,8 +201,8 @@ bool ProcessInformation::RefreshInformation()
 		return false;
 	}
 
-	// The cursor has to move with the thread pointer: a rebuilt snapshot starts at thread 0, and
-	// leaving the old index behind makes the next NextThread() skip threads or stop early.
+	
+	
 	m_CurrentThreadIndex	= 0;
 	m_pCurrentProcess		= m_pFirstProcess;
 	m_pCurrentThread		= &m_pCurrentProcess->Threads[0];
@@ -227,8 +227,8 @@ bool ProcessInformation::GetThreadState(KTHREAD_STATE & state, KWAIT_REASON & re
 		return false;
 	}
 
-	// The kernel writes both fields as ULONGs; carry the full value through to the widened output
-	// enums (KTHREAD_STATE/KWAIT_REASON are now ULONG-backed) rather than narrowing to a byte.
+	
+	
 	state	= static_cast<KTHREAD_STATE>(m_pCurrentThread->ThreadState);
 	reason	= static_cast<KWAIT_REASON>(m_pCurrentThread->WaitReason);
 

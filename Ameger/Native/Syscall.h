@@ -4,23 +4,23 @@
 
 #include "NT/Windows11.h"
 
-// ------------------------------------------------------------------------------------------------
-// Direct syscall layer.
-//
-// Every cross process operation performed by this project goes through a syscall instruction issued
-// from a locally generated stub. Nothing is ever routed through a public ntdll export, so an inline
-// hook (or a trampoline) placed on an ntdll entry point never observes, nor is even able to intercept,
-// any of the operations below. That is the requirement against an anti-cheat whose only viable
-// observation points are the resolved IAT of a shim module and the syscall boundary.
-//
-// Service numbers are never stored in the image. They are extracted from ntdll's own export table at
-// run time (the "mov eax, imm32" prologue), and are validated against the syscall instruction that is
-// expected to follow a healthy stub. When a prologue does not validate (inline hooked, patched, or
-// obfuscated) the number is reconstructed from a table neighbour instead of being read directly.
-// ------------------------------------------------------------------------------------------------
 
-// Compile time FNV-1a over the export name. MSVC folds this to an immediate, so no API name string is
-// emitted into the final image; only the resulting hash exists in .rdata.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 constexpr DWORD ScHash(const char * s)
 {
 	DWORD h = 0x811C9DC5u;
@@ -48,6 +48,9 @@ constexpr DWORD ScHash(const char * s)
 #define SC_NtAllocateVirtualMemory			SC_NAME(NtAllocateVirtualMemory)
 #define SC_NtFreeVirtualMemory				SC_NAME(NtFreeVirtualMemory)
 #define SC_NtProtectVirtualMemory			SC_NAME(NtProtectVirtualMemory)
+#define SC_NtCreateSection					SC_NAME(NtCreateSection)
+#define SC_NtMapViewOfSection				SC_NAME(NtMapViewOfSection)
+#define SC_NtUnmapViewOfSection				SC_NAME(NtUnmapViewOfSection)
 #define SC_NtWriteVirtualMemory				SC_NAME(NtWriteVirtualMemory)
 #define SC_NtReadVirtualMemory				SC_NAME(NtReadVirtualMemory)
 
@@ -64,10 +67,10 @@ constexpr DWORD ScHash(const char * s)
 #define SC_STUB_WITH_RET		11
 #define SC_STUB_AREA_ALIGN		0x10
 
-// 4C 8B D1    mov  r10, rcx        -> offset 0
-// B8 ss ss ss mov  eax, service    -> opcode at 3, immediate at 4
-// 0F 05       syscall              -> offset 8
-// C3          ret                  -> offset 10
+
+
+
+
 #define SC_STUB_OFFSET_PROLOGUE	0
 #define SC_STUB_OFFSET_OPCODE		3
 #define SC_STUB_OFFSET_SERVICE		4
@@ -76,9 +79,9 @@ constexpr DWORD ScHash(const char * s)
 
 #pragma endregion
 
-// Sized so a remote stub area can be dropped straight into an existing staging region. The count
-// matches the number of cross-boundary entry points the remote shell actually calls through.
-#define SC_REMOTE_STUB_COUNT		5
+
+
+#define SC_REMOTE_STUB_COUNT		8
 
 void *	SyscallStub(DWORD NameHash);
 
@@ -86,16 +89,16 @@ DWORD	SyscallResolveAll();
 
 bool	SyscallReady();
 
-// Copies a service number out of a locally built stub. Used for verification/diagnostics only.
+
 DWORD	SyscallServiceOfStub(const void * Stub);
 
-// Builds a self contained stub blob (SC_STUB_SIZE bytes per entry, SC_STUB_AREA_ALIGN aligned) into
-// Destination. Returns the number of stubs written, or 0 on failure.
+
+
 DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count);
 
 #pragma region typed wrappers
 
-// x64 register convention shorthand: RCX, RDX, R8, R9, [rsp+0x20], [rsp+0x28].
+
 
 using f_ScNtOpenProcess = NTSTATUS(NTAPI *)(
 	PHANDLE				ProcessHandle,
@@ -208,10 +211,10 @@ using f_ScNtSetContextThread = NTSTATUS(NTAPI *)(
 
 #pragma region direct wrappers
 
-// Several of these services write their result through an optional pointer. Passing null for one of them
-// is not uniformly safe: on this platform NtProtectVirtualMemory faults rather than skipping the write,
-// so a null result pointer is substituted with a scratch local that is simply discarded. Every wrapper
-// below therefore routes its optional result pointer through this helper.
+
+
+
+
 __forceinline ULONG * ScOut(ULONG * Requested, ULONG & Scratch)
 {
 	if (Requested)
@@ -236,8 +239,8 @@ __forceinline SIZE_T * ScOut(SIZE_T * Requested, SIZE_T & Scratch)
 	return &Scratch;
 }
 
-// Every wrapper is a thin inline shim. They return STATUS_ENTRYPOINT_NOT_FOUND when the service could
-// not be resolved, which keeps call sites free of null checks without masking a real failure.
+
+
 
 __forceinline NTSTATUS ScNtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, OBJECT_ATTRIBUTES * ObjectAttributes, CLIENT_ID * ClientId)
 {
@@ -422,10 +425,10 @@ __forceinline NTSTATUS ScNtSetContextThread(HANDLE ThreadHandle, CONTEXT * Conte
 
 #pragma region convenience helpers
 
-// Drop in replacements for the Win32 helpers that used to be used for cross process work. They map
-// exactly onto the operations the Win32 wrappers performed, minus the observable wrapper.
 
-// Opens a process handle by pid. DesiredAccess is honoured verbatim - no implicit widening.
+
+
+
 __forceinline HANDLE ScOpenProcess(DWORD ProcessId, ACCESS_MASK DesiredAccess)
 {
 	if (!ProcessId)
@@ -549,9 +552,9 @@ __forceinline bool ScFreeMemory(HANDLE ProcessHandle, void * BaseAddress)
 	return NT_SUCCESS(Status);
 }
 
-// Zeroes a remote region after making it writable. The scratch buffer is bounded by ChunkSize, so a
-// region far larger than the buffer never needs a matching local allocation. Writing stops at the
-// first chunk that cannot be written; the caller keeps ownership of the region and decides cleanup.
+
+
+
 __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, SIZE_T Size, SIZE_T ChunkSize)
 {
 	if (!ProcessHandle || ProcessHandle == INVALID_HANDLE_VALUE || !BaseAddress || !Size || !ChunkSize)
@@ -560,10 +563,10 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 	}
 
 	ULONG old_protect = 0;
-	// Capture the prior protection so the restores below return the region to its
-	// actual state. Passing nullptr here used to leave old_protect at 0, so both
-	// restores applied protection 0 (invalid) and silently left scrubbed regions
-	// writable — a stealth defect on every scrubbed trampoline/staging page.
+	
+	
+	
+	
 	if (!ScProtectMemory(ProcessHandle, BaseAddress, Size, PAGE_READWRITE, &old_protect))
 	{
 		return;
@@ -643,12 +646,12 @@ __forceinline DWORD ScGetProcessIdOfThread(HANDLE ThreadHandle)
 	return static_cast<DWORD>(ReCa<ULONG_PTR>(Basic.ClientId.UniqueProcess) & 0xFFFFFFFF);
 }
 
-// Win32 path of the owning image. Falls back to 0 rather than to a native format path so that a
-// caller never ends up comparing a \Device\HarddiskVolume path with a Win32 one. Defined out of line
-// because it carries its own scratch buffer.
+
+
+
 DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Characters);
 
-// Semantically identical to GetExitCodeProcess.
+
 __forceinline bool ScGetExitCodeProcess(HANDLE ProcessHandle, DWORD & ExitCode)
 {
 	ExitCode = 0;

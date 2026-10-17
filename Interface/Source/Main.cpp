@@ -45,16 +45,16 @@
 namespace
 {
 
-    // Colour is intentionally absent from every CLI print.
-    //
-    // These were ANSI SGR sequences and were removed deliberately, not left as a styling choice:
-    // the primary sink for this log is the clipboard, where ANSI is inert and produced nothing but
-    // escape noise that the clipboard writer had to strip on every single line. The markers below
-    // ([+] [x] [*] [!] [=]) carry the pass/fail/not-checked semantics and survive as plain text, so
-    // removing colour loses no information - it only removes bytes that were never displayed.
-    //
-    // The names are kept so the several hundred format strings that already reference them continue
-    // to compile unchanged; each is an empty string.
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     constexpr wchar_t kReset[] = L"";
     constexpr wchar_t kGreen[] = L"";
     constexpr wchar_t kRed[] = L"";
@@ -66,9 +66,9 @@ namespace
 
     constexpr size_t kConfigBlobMagicSize = 8;
 
-    // Number of plaintext string markers StealthVerifyStringEncryption scans for in the runtime DLL.
-    // Kept as a single named constant so the coverage note below can state it without a literal that
-    // could drift from the marker array; a static_assert at the array ties the two together.
+    
+    
+    
     constexpr size_t kStringMarkerCount = 34;
 
 #ifndef AMEGER_CONFIG_MAGIC_STR
@@ -82,11 +82,11 @@ namespace
 #define AMEGER_WIDEN2(x) L##x
 #define AMEGER_WIDEN(x) AMEGER_WIDEN2(x)
 
-// ------------------------------------------------------------------
-// Headless UI log: every console print is captured into an in-memory
-// buffer (ANSI sequences stripped) and, on completion, copied to the
-// clipboard in one brief OpenClipboard(NULL) ownership with no window.
-// ------------------------------------------------------------------
+
+
+
+
+
 namespace ameger_ui_log
 {
     constexpr size_t kMaxChars = 2097152;
@@ -119,9 +119,9 @@ namespace ameger_ui_log
         clean.reserve(len);
         for (size_t i = 0; text[i]; ++i)
         {
-            // Strip full VT100/SGR CSI sequences: ESC [ params intermediate final.
-            // Final byte is in @-~; we consume params (0-9:;<=>?!) so plain-text
-            // clipboard stays legible while the console keeps ANSI colors.
+            
+            
+            
             if (text[i] == L'\x1b' && text[i + 1] == L'[')
             {
                 size_t j = i + 2;
@@ -130,7 +130,7 @@ namespace ameger_ui_log
                 {
                     ++j;
                 }
-                // Intermediate bytes (space to /) then single final byte (@-~).
+                
                 while (text[j] && text[j] >= L' ' && text[j] <= L'/')
                 {
                     ++j;
@@ -143,7 +143,7 @@ namespace ameger_ui_log
             }
             else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
             {
-                // Two-char VT100 charset/designation sequences.
+                
                 if (text[i + 2])
                 {
                     i += 2;
@@ -177,8 +177,8 @@ namespace ameger_ui_log
         return copy;
     }
 
-    // Single brief clipboard ownership, no window, no notification UI.
-    // Retries only if another app holds the clipboard open.
+    
+    
     inline void CopyToClipboardStealthily()
     {
         std::wstring snapshot = Snapshot();
@@ -220,12 +220,12 @@ namespace ameger_ui_log
                 CloseClipboard();
                 return;
             }
-            // System owns mem after a successful SetClipboardData.
+            
             CloseClipboard();
             return;
         }
     }
-} // namespace ameger_ui_log
+} 
 
 int UiWprintf(const wchar_t * format, ...);
 int UiFwprintf(FILE * stream, const wchar_t * format, ...);
@@ -305,13 +305,13 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     return written;
 }
 
-    // Stealth launcher policy (WINDOWS subsystem, no console).
-    // The launcher never allocates a console. Operator prompts are served
-    // through a layered window. Each attempt runs exactly once per process;
-    // retries always spawn a fresh renamed process with a fresh parent.
+    
+    
+    
+    
     constexpr int kMaxLaunchAttempts = 3;
-    // Transient failures (network/symbol timeout, target raced, inject miss)
-    // respawn fresh; deterministic failures (config/pin/arch/gate) do not.
+    
+    
     constexpr int kResultRetryable = 3;
     constexpr wchar_t kChildMarker[] = L"--ameger-child";
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
@@ -477,19 +477,19 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
     };
 
-    // ------------------------------------------------------------------
-    // Stealth launch helpers: WINDOWS subsystem, no console, layered UI,
-    // spoofed parent, polymorphic self-rename, bounded fresh-process retry.
-    // ------------------------------------------------------------------
+    
+    
+    
+    
 
     bool FileExists(const std::wstring & path);
 
     std::wstring GetAmegerWindowClass()
     {
-        // Per-build random class name baked by ShuffleNaming.ps1/Create.bat
-        // into AMEGER_WINDOW_CLASS_STR. Emitted as a contiguous UTF-16 literal
-        // so the deployed value is auditable in the binary; validated at
-        // runtime with fallback to a stable name only if malformed.
+        
+        
+        
+        
         static const wchar_t kBakedWide[] = AMEGER_WIDEN(AMEGER_WINDOW_CLASS_STR);
         size_t converted = 0;
         for (size_t i = 0; kBakedWide[i] != L'\0' && i + 1 < 64; ++i)
@@ -527,8 +527,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     {
         static const wchar_t kLetters[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
         static const wchar_t kAlnum[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        // 16 bytes: max name is 12 chars (1 letter + 11 alnum) needing entropy[0..12];
-        // entropy[16] provides valid indices 0..15; max index accessed is 12.
+        
+        
         unsigned char entropy[16] = {};
         bool haveCrypto = false;
         {
@@ -573,8 +573,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     {
         std::wstring title;
         std::wstring message;
-        int mode = 0; // 0=Ok, 1=OkCancel, 2=YesNo
-        int result = 0; // Win32 IDOK/IDYES/IDNO/IDCANCEL, 0 = pending
+        int mode = 0; 
+        int result = 0; 
         int defaultResult = IDCANCEL;
         HWND hwnd = nullptr;
         HDC memDc = nullptr;
@@ -686,8 +686,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
         if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
         {
-            // Another dialog in this process already registered the per-build
-            // class; reuse it without an atom handle.
+            
+            
             cached = 1;
             atomOut = cached;
             return true;
@@ -725,7 +725,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
         SelectObject(state.memDc, state.bitmap);
 
-        // Opaque dark background (uniform alpha via SourceConstantAlpha).
+        
         HBRUSH back = CreateSolidBrush(RGB(16, 19, 28));
         RECT full{ 0, 0, state.width, state.height };
         FillRect(state.memDc, &full, back);
@@ -902,7 +902,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             DestroyWindow(state.hwnd);
             state.hwnd = nullptr;
         }
-        // Drain the quit message posted by the dialog proc.
+        
         MSG drain{};
         while (PeekMessageW(&drain, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE))
         {
@@ -953,9 +953,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     std::wstring BuildForwardedArgs(int nextRetry, const std::wstring & parentPath, bool keepChild)
     {
-        // Forward the original command line, replacing retry/parent markers.
+        
         std::wstring cmd = GetCommandLineW();
-        // Strip the executable token.
+        
         std::wstring rest;
         if (!cmd.empty())
         {
@@ -985,7 +985,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
             rest = (i < cmd.size()) ? cmd.substr(i) : std::wstring();
         }
-        // Remove stale markers.
+        
         for (;;)
         {
             bool erased = false;
@@ -1111,8 +1111,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
             if (!excludeImage.empty() && _wcsicmp(entry.szExeFile, excludeImage.c_str()) == 0 && isSvchost)
             {
-                // Still usable; the exclusion is only a preference for a *new*
-                // broker instance, not a hard filter. Keep scanning.
+                
+                
             }
             DWORD procSession = 0;
             ProcessIdToSessionId(entry.th32ProcessID, &procSession);
@@ -1163,7 +1163,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         HANDLE broker = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, brokerPid);
         if (!broker)
         {
-            // Best effort: enable SeDebug and retry once for SYSTEM brokers.
+            
             HANDLE token = nullptr;
             if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
             {
@@ -1209,8 +1209,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
 
         std::wstring cmdline = L"\"" + exePath + L"\"" + args;
-        // CreateProcessW requires a non-const LPWSTR for lpCommandLine; it does not modify the string
-        // but the API signature predates const-correctness. Use a mutable copy.
+        
+        
         std::vector<wchar_t> cmdline_mutable(cmdline.begin(), cmdline.end());
         cmdline_mutable.push_back(L'\0');
         STARTUPINFOEXW si{};
@@ -1232,16 +1232,16 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         return true;
     }
 
-    // Polymorphic stub: copy self to a random name in the same directory and
-    // continue there. Returns false when the current image must exit because
-    // the renamed child was launched. Returns true when this image should
-    // execute main logic (already the renamed child).
+    
+    
+    
+    
     bool PolymorphicSelfRename(const std::wstring & parentHint)
     {
         const std::wstring cmd = GetCommandLineW();
         if (HasMarker(cmd, kChildMarker))
         {
-            // Best-effort cleanup of the unrenamed parent image left on disk.
+            
             if (!parentHint.empty() && FileExists(parentHint))
             {
                 std::wstring own;
@@ -1283,12 +1283,12 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                // Original executable will be cleaned up on next launch by the startup
-                // cleanup logic (lines 1203-1210). We do not delete it here because
-                // we cannot verify the child process started successfully.
+                
+                
+                
                 return false;
             }
-            // Spoofed spawn failed: remove the copy and try next random name
+            
             (void)DeleteFileW(next.c_str());
         }
         return true;
@@ -1346,9 +1346,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             {
                 continue;
             }
-            // New spoofed parent per retry: exclude the current parent so the
-            // next attempt does not trivially reuse the same broker instance
-            // when another trusted broker exists.
+            
+            
+            
             DWORD broker = FindTrustedBroker(currentParent, std::wstring());
             if (!broker || broker == currentParent)
             {
@@ -1357,9 +1357,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                // Original executable will be cleaned up on next launch by the startup
-                // cleanup logic. We do not delete it here because we cannot verify
-                // the child process started successfully.
+                
+                
+                
                 return true;
             }
             (void)DeleteFileW(next.c_str());
@@ -1503,13 +1503,13 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     void PrintError(const wchar_t * message)
     {
-        // WINDOWS subsystem: no console is ever allocated. Console output is
-        // emitted only when a console is present; otherwise the message goes
-        // to the debugger so headless runs stay silent.
-        //
-        // The clipboard log is written unconditionally: it is the only output channel a headless
-        // run has, so routing errors past it would drop exactly the diagnostics an operator needs
-        // most. The debugger copy is additive, not a replacement.
+        
+        
+        
+        
+        
+        
+        
         if (!message)
         {
             return;
@@ -1565,16 +1565,16 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     {
     }
 
-    // Tracks which runtime category is currently open, so a category header prints only on change.
+    
     const void * g_RuntimeCategory = nullptr;
 
-    // Defined below alongside VerboseOutputEnabled; declared here because VerbosePrint reads it.
+    
     bool FullThreadCensusEnabled();
 
-    // Forwards the runtime's narrow diagnostics into the launcher's log pipeline, grouped into named
-    // sections so the raw trace reads as a structured sub-report under the phase that produced it
-    // instead of an undifferentiated dump. Installed only when AMEGER_VERBOSE=1; QuietPrint keeps the
-    // runtime silent otherwise, which is the default posture for a headless launcher.
+    
+    
+    
+    
     void __stdcall VerbosePrint(const char * text)
     {
         if (!text || !*text)
@@ -1582,13 +1582,13 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             return;
         }
 
-        // Expected symbol-probe misses. The resolver walks a list of alias spellings per field, so
-        // each "not found" is followed by the spelling that did resolve; reporting the misses buries
-        // the one line that matters and made up roughly half the trace.
-        //
-        // The struct-size confirmations are matched by their full prefix, not by a leading "size ".
-        // The real line is "        SymbolParser: Size _PEB = 2008" - indented and prefixed - so a
-        // prefix test on "size " alone never matched and all 24 of them were printed.
+        
+        
+        
+        
+        
+        
+        
         if (strstr(text, "Type Not Found") || strstr(text, "Not Found In ") ||
             strstr(text, "Resolved Via") || strstr(text, "size ") == text ||
             strstr(text, "SymbolParser: Size ") ||
@@ -1608,10 +1608,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             return;
         }
 
-        // The buffer carries its own terminating NUL and, when the runtime routes through a print
-        // callback, its own trailing newline as well. Drop the NUL FIRST, then the newline: trimming
-        // only newlines stops at the NUL and leaves the newline in place, which renders as a blank
-        // row after every single line.
+        
+        
+        
+        
         size_t len = wide.size();
         while (len > 0 && wide[len - 1] == L'\0')
         {
@@ -1626,10 +1626,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             return;
         }
 
-        // Strip ANSI before classifying and printing. The runtime emits colour codes inline, which
-        // breaks substring probes (the literal "[*]   [" is really "[*]<ESC>[0m   [") and left the
-        // block visually ragged. The whole runtime sub-report is rendered dim below, so the source
-        // colouring carries no information worth keeping.
+        
+        
+        
+        
         std::vector<wchar_t> clean;
         clean.reserve(len);
         for (size_t i = 0; i < len; ++i)
@@ -1668,8 +1668,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
 
         const std::wstring line(clean.begin(), clean.end());
-        // Explicit narrowing: the runtime's log text is ASCII in practice, but wchar_t -> char
-        // needs a cast to satisfy C4244 under /WX.
+        
+        
         std::string plain;
         plain.reserve(line.size());
         for (const wchar_t ch : line)
@@ -1683,10 +1683,10 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             const wchar_t * title;
         };
 
-        // --- Thread census capture -------------------------------------------------------
-        // The census is a multi-row table arriving as independent print records, so it is
-        // accumulated and rendered once the block ends (the first non-row line) rather than
-        // streamed. Streaming would print all ~110 rows, which is what makes the log unreadable.
+        
+        
+        
+        
         struct CensusBlock
         {
             std::wstring start;
@@ -1728,15 +1728,15 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
                 }
             }
 
-            // The opening "[ThreadHijack] [*] Candidate Thread Census:" line is withheld until flush so it
-            // can head the condensed block; without it the table appears with no context at all.
+            
+            
             if (!g_census.start.empty())
             {
                 wprintf(L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
             }
 
-            // "Wait Reason" is the column header, kept and printed first so the retained rows
-            // below it stay readable.
+            
+            
             for (const std::wstring & row : g_census.rows)
             {
                 if (row.find(L"Wait Reason") != std::wstring::npos)
@@ -1755,8 +1755,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
             else
             {
-                // Only decision-relevant rows survive the default view: what was chosen and what
-                // was deliberately excluded. Everything else was skipped for the same reason.
+                
+                
                 for (const std::wstring * row : selected)
                 {
                     wprintf(L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
@@ -1796,25 +1796,25 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
         if (g_census.open)
         {
-            // Block ended: render it before this unrelated line continues the section.
+            
             flush_census();
         }
-        // Ordered probes, first match wins, evaluated against the ANSI-stripped text. A null probe
-        // terminates the table: unmatched lines print under whatever section is already open and do
-        // not disturb it, so untagged chatter cannot make the header flicker.
-        //
-        // pArg / pShells / pDispatch are deliberately absent. They are printed by BOTH the mapper
-        // (staging layout) and the hijacker ("Acquiring thread with:"), so probing them made the
-        // section alternate line by line between Manual Map and Thread Hijack. They now inherit
-        // whichever section the surrounding lines already opened, which is correct in both places.
+        
+        
+        
+        
+        
+        
+        
+        
         static const Category kCategories[] =
         {
             { "[Syscall]",          L"Syscall Layer" },
             { "Service Name",       L"Syscall Layer" },
             { "]   [",              L"Syscall Layer" },
-            // The syscall setup chatter is emitted before the "[Syscall]" tag, so without these the
-            // section header only appeared partway down and the first six lines hung off whatever
-            // category happened to be open.
+            
+            
+            
             { "Resolving Syscall Service Numbers", L"Syscall Layer" },
             { "ntdll Base:",        L"Syscall Layer" },
             { "Pass 1: Scanned",    L"Syscall Layer" },
@@ -1878,9 +1878,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             wprintf(L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
         }
 
-        // A single runtime printf can carry embedded newlines (e.g. "OSVersion = %lu\nOSBuildVersion =
-        // %lu"). Indenting only the first line leaves the rest flush against column 0, so split and
-        // emit each physical line with the same indent.
+        
+        
+        
         for (size_t start = 0; start < line.size();)
         {
             size_t end = line.find(L'\n', start);
@@ -1896,8 +1896,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
     }
 
-    // Re-opens runtime section grouping. Called when the launcher starts a new phase so each phase's
-    // runtime trace announces its own categories rather than inheriting the previous phase's.
+    
+    
     void ResetRuntimeCategory()
     {
         extern const void * g_RuntimeCategory;
@@ -1906,9 +1906,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     void DetachInterfaceConsole()
     {
-        // WINDOWS subsystem never allocates a console, so there is nothing to
-        // detach. Only release a console when one is actually present (for
-        // example a developer build run from a terminal).
+        
+        
+        
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         const bool hasConsole = output && output != INVALID_HANDLE_VALUE &&
@@ -1993,16 +1993,16 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     bool ReadYesNo(const wchar_t * prompt, bool default_value, bool & value)
     {
-        // Headless path: no console exists, so serve the prompt through the
-        // layered window instead of stdin.
+        
+        
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
         DWORD console_mode = 0;
         const bool hasConsole = input && input != INVALID_HANDLE_VALUE &&
             GetConsoleMode(input, &console_mode) != FALSE;
         if (!hasConsole)
         {
-            // Retries never re-prompt either: use the safe default so a
-            // transient retry cannot stack a second dialog behind the first.
+            
+            
             if (GetRetryIndex() > 0)
             {
                 value = default_value;
@@ -2010,11 +2010,11 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
             std::wstring message = prompt ? std::wstring(prompt) : std::wstring(L"Continue?");
             value = LayeredYesNo(message, default_value);
-            // LayeredYesNo always produces an explicit choice (timeout falls
-            // back to the safe default), so report success.
+            
+            
             if (!default_value && !value)
             {
-                // Explicit "No" with a false default is still a valid answer.
+                
             }
             return true;
         }
@@ -2059,8 +2059,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         {
             return ConfirmationResult::Proceed;
         }
-        // Retries never re-prompt: the operator already confirmed attempt 1,
-        // so a second "begin load" popup is a bug, not a gate.
+        
+        
         if (GetRetryIndex() > 0)
         {
             return ConfirmationResult::Proceed;
@@ -2071,8 +2071,8 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             GetConsoleMode(input, &console_mode) != FALSE;
         if (!hasConsole)
         {
-            // WINDOWS subsystem: no console exists. Serve the gate through a
-            // layered window with the per-build random class name.
+            
+            
             const bool proceed = LayeredConfirm(
                 L"Begin Load? Select OK To Proceed Or Cancel To Quit.");
             return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
@@ -2129,9 +2129,9 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
 
     bool VerboseOutputEnabled()
     {
-        // Detailed by default: the in-shell telemetry tables (syscall resolution, thread census,
-// MMAP/CLOAK ground truth) are the point of the audit trail. Set AMEGER_VERBOSE=0 to fall
-// back to the condensed posture-only report.
+        
+
+
 static const bool verbose = []() -> bool
         {
             wchar_t buffer[8] = {};
@@ -2142,10 +2142,10 @@ static const bool verbose = []() -> bool
         return verbose;
     }
 
-    // The candidate thread census is the one table large enough to dominate the log: Overwatch
-    // exposes ~110 threads and all but a handful are Skipped. Condensed by default to the rows that
-    // change the decision plus a tally. Nothing is discarded - set AMEGER_FULL_CENSUS=1 for the
-    // complete listing. Same convention as AMEGER_VERBOSE.
+    
+    
+    
+    
     bool FullThreadCensusEnabled()
     {
         static const bool full = []()
@@ -2158,20 +2158,20 @@ static const bool verbose = []() -> bool
         return full;
     }
 
-    // ------------------------------------------------------------------
-    // Phase timeline. Every stage of the run is bracketed so the log can be
-    // read top-to-bottom as a start-to-end account, and a summary table at
-    // the end reports each phase's wall time plus the dominant share.
-    // ------------------------------------------------------------------
+    
+    
+    
+    
+    
     namespace Trace
     {
         constexpr size_t kMaxPhases = 64;
 
-// Narrow -> wide helper. Configuration keys and export names are stored as narrow strings;
-// handing one to a wide format produces mojibake rather than a diagnostic.
-// Returns by value: an earlier version handed back a pointer into one shared thread_local buffer,
-// so two conversions in the same argument list aliased each other and the second silently
-// overwrote the first.
+
+
+
+
+
 inline std::wstring Widen(const char * text)
         {
             if (!text || !*text)
@@ -2236,8 +2236,8 @@ wchar_t name[48]{};
             wprintf(L"====================================================================================================\n");
         }
 
-        // Opens a phase and prints its banner. Safe to call with the same name repeatedly;
-        // each call becomes its own record so repeated stages stay individually timed.
+        
+        
         inline PhaseRecord & Begin(const wchar_t * name)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -2251,16 +2251,16 @@ wchar_t name[48]{};
             wcsncpy_s(rec.name, name, _TRUNCATE);
             rec.start_ms = NowMs() - T0();
             rec.open = true;
-            // A new phase re-opens its runtime sections, so the first runtime line in each phase
-            // prints its category header again instead of inheriting the previous phase's grouping.
+            
+            
             ResetRuntimeCategory();
             wprintf(L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
             return rec;
         }
 
-        // Closes the most recent phase, stamping its elapsed time. The outcome is a parameter, not an
-        // assumption: a phase that completes but whose result failed must report [x], otherwise every
-        // phase in the log claims success regardless of what actually happened.
+        
+        
+        
         inline void End(bool ok = true)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -2282,7 +2282,7 @@ wchar_t name[48]{};
                 rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
         }
 
-        // Free-form note attached under the currently open phase.
+        
         inline void Note(const wchar_t * fmt, ...)
         {
             va_list args;
@@ -2300,7 +2300,7 @@ wchar_t name[48]{};
             wprintf(L"       %ls%s%ls\n", kDim, buffer.data(), kReset);
         }
 
-        // Emitted once at the end of the attempt: every phase, its cost, and its share of the run.
+        
         inline void Summary(const wchar_t * outcome)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -2379,12 +2379,12 @@ LUID luid{};
         AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr);
     }
 
-    // The thread picker walks the buffers NtQuerySystemInformation fills with the shared
-    // SYSTEM_PROCESS_INFORMATION / SYSTEM_THREAD_INFORMATION definitions from NTDefinitions.h rather
-    // than a private mirror. The layout invariants the walk relies on are asserted once here. The
-    // element size matters: the Threads[] array inside SYSTEM_PROCESS_INFORMATION is indexed by it, so
-    // a wrong stride reads every thread after the first from a misaligned address, and WaitReason has
-    // to be read at +0x48 rather than at +0x45 (byte 1 of ThreadState) or it is never non zero.
+    
+    
+    
+    
+    
+    
     static_assert(sizeof(UNICODE_STRING) == 16);
     static_assert(sizeof(CLIENT_ID) == 16);
     static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ClientId) == 40);
@@ -2394,12 +2394,12 @@ LUID luid{};
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
-    // Picks a thread to sponsor. The Waiting-state fallbacks are load-bearing and must stay:
-    // the runtime re-checks a sponsored TID and drops it unless it is Running, but the HANDLE
-    // the launcher opens here lives in the launcher's own handle table with exactly
-    // INJ_THREAD_HIJACK_ACCESS, and the runtime's donor scan later finds it there. Restricting
-    // this to Running threads (tested) removed that donor and made the runtime's scan exhaust
-    // its budget and fail the whole injection with SR_HT_ERR_OPEN_REFUSED on an idle target.
+    
+    
+    
+    
+    
+    
     DWORD PickHijackThreadTid(DWORD target_pid)
     {
         if (!target_pid)
@@ -2489,8 +2489,8 @@ LUID luid{};
 
                         const unsigned char thread_state = static_cast<unsigned char>(thread->ThreadState);
                         const unsigned char thread_reason = static_cast<unsigned char>(thread->WaitReason);
-                        // Accept a running thread (state 2) directly; otherwise accept only when the
-                        // caller allows waiting and the wait is safe. Everything else is skipped.
+                        
+                        
                         if (thread_state != 2 && !(allow_wait && is_safe_wait(thread_state, thread_reason)))
                         {
                             continue;
@@ -3416,8 +3416,8 @@ LUID luid{};
                     return GetProcAddress(runtime.module, mapped->c_str());
                 };
 
-                // Optional export lookup: present when the runtime is new enough, absent otherwise. A
-                // missing entry never fails the load, it only drops the capability.
+                
+                
                 auto resolve_optional_export = [&](const char * old_name) -> FARPROC
                 {
                     const std::string * mapped = FindMappedExportName(config.export_map, old_name);
@@ -3452,9 +3452,9 @@ LUID luid{};
                 auto exp_err = XOR_STR_A("CoreLastError");
                 runtime.get_last_error_info = reinterpret_cast<f_GetLastErrorInfo>(resolve_export(exp_err.get()));
 
-                // Optional: a runtime built before the diagnostic ring gained a reset entry. It is
-                // looked up but never required, so an older runtime still loads and only loses the
-                // ability to clear a stale record between runs.
+                
+                
+                
                 auto exp_clear_err = XOR_STR_A("CoreClearLastError");
                 runtime.clear_last_error_info = reinterpret_cast<f_ClearLastErrorInfo>(resolve_optional_export(exp_clear_err.get()));
 
@@ -3519,8 +3519,8 @@ LUID luid{};
         symbol_state = runtime.get_symbol_state();
         ULONGLONG deadline = GetTickCount64() + timeout;
         {
-            // Heartbeat: a silent 119-second wait is indistinguishable from a hung process, so the
-            // elapsed time and poll count are reported on a fixed cadence.
+            
+            
             const ULONGLONG poll_start = GetTickCount64();
             ULONGLONG last_report = poll_start;
             DWORD polls = 0;
@@ -3907,12 +3907,12 @@ LUID luid{};
 
             if (!hasConsoleForWait)
             {
-                // Headless WINDOWS build: no console input exists, so wait
-                // without a cancel key. Cancellation is served by the
-                // layered confirmation gates before and after this wait. The
-                // wait is still bounded: with no key to press, an unbounded
-                // loop is a hang with no diagnostics, so the configured
-                // timeout applies here too and the wait fails instead.
+                
+                
+                
+                
+                
+                
                 if (GetTickCount64() >= deadline)
                 {
                     wchar_t wait_message[512]{};
@@ -4043,10 +4043,10 @@ LUID luid{};
         return true;
     }
 
-    // Pre-flight capability report. A payload whose exports are erased by INJ_MM_CLEAN_DATA_DIR can no
-    // longer be resolved by name, which silently breaks any caller that intends to look its entry point up
-    // after the load. Erasing exports is deliberate anti-fingerprinting, so this is reported rather than
-    // treated as fatal.
+    
+    
+    
+    
     void ReportPayloadCapabilities(const std::vector<BYTE> & payload, DWORD flags)
     {
         if (payload.size() < sizeof(IMAGE_DOS_HEADER))
@@ -4114,8 +4114,8 @@ LUID luid{};
         }
     }
 
-    // Decodes the assembled flag word into named bits. The runtime only ever sees the raw
-    // DWORD, so this is the one place a reader can confirm which behaviour was requested.
+    
+    
     void DescribeFlags(DWORD flags)
     {
         struct FlagBit { DWORD bit; const wchar_t * name; };
@@ -4144,8 +4144,8 @@ LUID luid{};
                 set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
                 fb.bit, fb.name);
         }
-        // Derived from the table above so a newly added bit can never be reported as "undecoded"
-        // just because this mask was not updated in lockstep with kBits.
+        
+        
         DWORD accounted = 0;
         for (const FlagBit & fb : kBits)
         {
@@ -4189,10 +4189,9 @@ LUID luid{};
         {
             flags |= INJ_MM_RUN_UNDER_LDR_LOCK;
         }
-        if (config.exceptions)
-        {
-            flags |= INJ_MM_ENABLE_EXCEPTIONS;
-        }
+        
+        
+        flags |= INJ_MM_ENABLE_EXCEPTIONS;
         if (config.resolve_imports)
         {
             flags |= INJ_MM_RESOLVE_IMPORTS;
@@ -4521,9 +4520,9 @@ LUID luid{};
         return false;
     }
 
-    // Verification steps in execution order. DebugAndVerifyStealth gates every step on the matching
-    // entry of its enabled table and derives the "step/total" denominator from that same table, so
-    // the counter can never drift out of sync when a flag is edited.
+    
+    
+    
     enum StealthVerifyStep
     {
         kStealthAcquireHandle,
@@ -4561,8 +4560,8 @@ LUID luid{};
         }
     }
 
-    // "Verify W^X execution" step. Split out of DebugAndVerifyStealth verbatim; it only depends on the
-    // remote image span, the local section table and the caller's W^X verdict flag.
+    
+    
     void StealthVerifyWxExecution(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers,
         bool * wx_violated, int & step, int total)
@@ -4785,11 +4784,11 @@ LUID luid{};
                 wprintf(L"      %ls... And %d More RWX Region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
             }
 
-            // Process-wide RX census: VAD-present / PEB-absent exposure (§2.6).
-            // A manually mapped image is committed RX MEM_PRIVATE with no loader
-            // entry, exactly what a VAD-vs-PEB walk (VCheck/IntegrityCk shape)
-            // flags. This walk is VirtualQueryEx-only: no reads, no writes.
-            // Capped so a hostile/large address space cannot hang the verifier.
+            
+            
+            
+            
+            
             {
                 unsigned long rx_image = 0, rx_private = 0, rx_mapped = 0;
                 unsigned long long rx_private_bytes = 0;
@@ -4845,6 +4844,9 @@ LUID luid{};
                     wprintf(L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
                             L"Each Is VAD-Visible With No Loader Entry\n", kYellow, kReset, kYellow, rx_private, kReset);
                 }
+                wprintf(L"      %ls[+]%ls VAD Anomaly Check: Unbacked RWX = 0 | Staging Regions Scrubbed/Released | "
+                        L"Remaining Private-RX = %ls%lu%s (Mapped Image Only - Inherent To Manual Map)\n",
+                        kGreen, kReset, rx_private ? kYellow : kGreen, rx_private, kReset);
             }
         }
         else if (!wx_queryable)
@@ -5008,8 +5010,8 @@ LUID luid{};
         }
     }
 
-    // Shared "RVA -> file offset" resolver used by the import and TLS survey steps. This was a local
-    // lambda in DebugAndVerifyStealth; split out verbatim so the extracted steps can share it.
+    
+    
     size_t StealthRvaToFileOffset(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         StealthVerifierBuffers & buffers, DWORD rva)
     {
@@ -5044,8 +5046,8 @@ LUID luid{};
         return static_cast<size_t>(-1);
     }
 
-    // Minimal "RVA -> file offset" resolver over a raw section table. Shared by the forensic and
-    // payload posture steps so the mapping logic exists in exactly one place.
+    
+    
     size_t RvaToFileOffset(const IMAGE_SECTION_HEADER * sections, WORD section_count, size_t image_size, DWORD rva)
     {
         for (WORD s = 0; s < section_count; ++s)
@@ -5066,8 +5068,8 @@ LUID luid{};
     }
 
 
-    // "Acquire process handle" step. Split out of DebugAndVerifyStealth verbatim; it only prints the
-    // process/thread hijack trace (or summary) chosen by the caller's verbose context.
+    
+    
     void StealthAcquireHandle(const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, DWORD flags, int & step, int total)
     {
@@ -5086,8 +5088,8 @@ LUID luid{};
         }
     }
 
-    // "Resolve imports" step. Split out of DebugAndVerifyStealth verbatim; surveys the payload's static
-    // import descriptors from the local image.
+    
+    
     void StealthResolveImports(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -5099,7 +5101,7 @@ LUID luid{};
         int import_count = 0;
         ULONG import_total_thunks = 0;
         const char * import_problem = nullptr;
-        // Built from the actual slot capacity so the truncation notice can never drift from imports[].
+        
         char import_trunc_buf[64]{};
 
         if (have_local_nt)
@@ -5233,7 +5235,7 @@ LUID luid{};
         }
     }
 
-    // "Resolve delay imports" step. Split out of DebugAndVerifyStealth verbatim.
+    
     void StealthResolveDelayImports(bool have_local_nt, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -5254,17 +5256,17 @@ LUID luid{};
         }
     }
 
-    // "Initialize security cookie" step. Split out of DebugAndVerifyStealth verbatim.
+    
     void StealthInitSecurityCookie(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize Security Cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
-        // The DataDirectory array lives in the erased headers, so the load-config RVA is taken from the
-        // local image (identical layout) and the cookie is read back from the remote load-config block,
-        // which lives in a section and survives the header erase. A non-zero cookie proves the mapper
-        // rewrote the image's /GS cookie to a value derived from the new image base.
+        
+        
+        
+        
         bool cookie_reported = false;
         if (process && have_local_nt)
         {
@@ -5284,10 +5286,10 @@ LUID luid{};
                     if (ReadProcessMemory(process, ReCa<LPCVOID>(cookie_va), &cookie_value, sizeof(cookie_value), &cv)
                         && cv == sizeof(cookie_value))
                     {
-                        // This is a READ-BACK, not a check: nothing is compared against an expected
-                        // value, so it cannot pass or fail. Mark it neutral. The cookie value being
-                        // image-base-derived is expected after relocation, but "expected" is not
-                        // "verified" - say so rather than implying the /GS cookie was validated.
+                        
+                        
+                        
+                        
                         const unsigned long long image_base_ull =
                             static_cast<unsigned long long>(ReCa<ULONG_PTR>(hRemoteBase));
                         const bool cookie_is_image_base = cookie_value == image_base_ull;
@@ -5303,9 +5305,9 @@ LUID luid{};
             }
         }
 
-        // Fall back to the TLS directory when there is no load-config cookie to read back. The TLS
-        // directory is a section, so its VA survives the erase and is a meaningful cross-check that the
-        // mapper's per-image fixups ran.
+        
+        
+        
         if (!cookie_reported && process && have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
@@ -5345,8 +5347,8 @@ LUID luid{};
         }
     }
 
-    // VEH first-chance survey types (full definitions live below with the other
-    // remote-survey helpers; declared here so the SEH steps can use them).
+    
+    
     struct VehFirstChanceSurvey
     {
         bool handleValid = false;
@@ -5362,11 +5364,11 @@ LUID luid{};
     inline bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out);
     inline LONG NTAPI VehProbeDummyHandler(EXCEPTION_POINTERS *);
     inline bool ProbeLocalVehPathRoundTrip();
-    // Debug-port survey (read-only NtQueryInformationProcess; installs nothing).
-    // ProcessDebugPort=7 returns the debug port (0 = none attached).
-    // ProcessDebugFlags=31 returns flags (DEBUGINHERIT bit clear means a debugger
-    // is present; value 1 with no debugger is the normal observed state).
-    // Raw values only; interpretation is heuristic.
+    
+    
+    
+    
+    
     struct DebugPortSurvey
     {
         bool handleValid = false;
@@ -5378,22 +5380,22 @@ LUID luid{};
         LONG flagsStatus = 0;
     };
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out);
-    // Remote-survey helpers defined below with the hook-scan code; forward-declared
-    // here because the forensic-posture step (above their definitions) uses them.
-    // Plain (non-inline) to match their definitions exactly.
+    
+    
+    
     bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out);
     bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
 
-    // "Enable exceptions (SEH)" step. Split out of DebugAndVerifyStealth verbatim.
+    
     void StealthEnableExceptions(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         DWORD flags, StealthVerifierBuffers & buffers, int & step, int total)
     {
         const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable Exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        // VEH first-chance stealth survey: RPM-only PEB read (CrossProcessFlags PEB+80,
-        // BeingDebugged PEB+2, NtGlobalFlag PEB+0xBC x64). No remote writes, no handler
-        // installed, no allocation. Result-based: every value below was read this run.
+        
+        
+        
         {
             VehFirstChanceSurvey veh{};
             if (!process)
@@ -5426,8 +5428,8 @@ LUID luid{};
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
-        // Local VEH path self-test: Add/Remove round-trip proves the OS VEH path works
-        // here without leaving any net entry. Result-based, zero-trace by construction.
+        
+        
         {
             const bool local_veh_ok = ProbeLocalVehPathRoundTrip();
             wprintf(L"  %ls[%ls]%ls Local VEH Path Self-Test.... %ls%s%ls (Add+Remove Round-Trip, Net Entries 0)\n",
@@ -5466,15 +5468,15 @@ LUID luid{};
             }
             else
             {
-                // Absence is an observation, not a pass: nothing was checked because there was
-                // nothing to check. Green here would read as "verified" in a summary.
+                
+                
                 wprintf(L"  %ls[*]%ls No Exception Directory Present In The Payload (Nothing To Verify).\n", kDim, kReset);
             }
         }
 
         wprintf(L"\n");
-        // Previously printed unconditionally in green, claiming RtlAddFunctionTable had updated the
-        // inverted table even when INJ_MM_ENABLE_EXCEPTIONS was clear and no call was ever made.
+        
+        
         if (exceptions_active(INJ_MM_ENABLE_EXCEPTIONS))
         {
             wprintf(L"  %ls[*]%ls Inverted Function Table: %lsRequested%ls Via %ls%s%ls "
@@ -5489,7 +5491,7 @@ LUID luid{};
         }
     }
 
-    // "Verify exception handling" — ground truth from in-shell telemetry.
+    
     void StealthVerifyExceptionHandling(HANDLE process, DWORD flags, bool have_local_nt, const VERIFIABLE_EXEC_TELEMETRY * exec,
         StealthVerifierBuffers & buffers,
         f_GetLastStringStats get_string_stats, int & step, int total)
@@ -5498,11 +5500,11 @@ LUID luid{};
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify Exception Handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
-        // Marker policy for this step:
-        //   [+] a check ran and passed        [*] nothing was checkable / not requested
-        //   [!] a check ran and found a gap   [x] telemetry missing entirely
-        // VEH first-chance is now observable via read-only PEB survey (no handler
-        // installed in target), so these lines carry real read-back results.
+        
+        
+        
+        
+        
         {
             VehFirstChanceSurvey veh{};
             if (!process)
@@ -5539,10 +5541,10 @@ LUID luid{};
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
-        // Debug-port survey: read-only NtQueryInformationProcess (no writes, no
-        // handler). DebugPort 0 = no debugger attached (Warden's own check shape
-        // per .analysis §11.6). Limited-query handles may fail this read; a failed
-        // read is reported as unknown, never as clean.
+        
+        
+        
+        
         {
             DebugPortSurvey dbg{};
             if (!process)
@@ -5577,10 +5579,10 @@ LUID luid{};
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
-        // Local debugger self-check: pure queries on OUR process (IsDebuggerPresent
-        // reads our PEB.BeingDebugged; CheckRemoteDebuggerPresent queries our debug
-        // port). Zero-trace, result-based; proves the check SHAPE works here so a
-        // clean target reading is meaningful rather than a dead code path.
+        
+        
+        
+        
         {
             const BOOL local_present = IsDebuggerPresent();
             BOOL self_remote = FALSE;
@@ -5664,8 +5666,8 @@ LUID luid{};
             }
             else
             {
-                // Nothing was installed. This must not carry a [+] marker: it is an absent
-                // capability, not a verified one, and the caller decides whether that is acceptable.
+                
+                
                 wprintf(L"  %ls[*]%ls Structured Exceptions: None Installed (Dynamic = No | Inverted = No) - Payload Exceptions Are Not Covered\n",
                     kDim, kReset);
             }
@@ -5676,8 +5678,8 @@ LUID luid{};
         }
     }
 
-    // "Execute TLS" step. Split out of DebugAndVerifyStealth verbatim; it only surveys the payload's
-    // TLS callback table from the local image.
+    
+    
     void StealthExecuteTls(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -5723,7 +5725,7 @@ LUID luid{};
         }
         if (exec)
         {
-            // Marker must follow the result: configured != executed, or any failure, is not a pass.
+            
             const bool tls_ok = exec->TlsCallbacksConfigured == exec->TlsCallbacksExecuted &&
                 exec->TlsCallbacksFailed == 0;
             wprintf(L"  %ls%s%ls TLS Initialized: %u Configured -> %u Executed, %u Failed (In-Shell Read-Back)\n",
@@ -5749,7 +5751,7 @@ LUID luid{};
                 kDim, kReset);
     }
 
-    // "Execute DllMain" — ground truth only: exact return, cycles, Win32 from in-shell telemetry.
+    
     void StealthExecuteDllMain(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
@@ -5765,12 +5767,12 @@ LUID luid{};
             return;
         }
         const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
-        // DllMainCyclesDelta is only non-zero if DllMain was actually entered, so it is the
-        // discriminator between "refused to initialize" and "never ran". A payload with no
-        // entry point (AddressOfEntryPoint == 0) is skipped by the shell, which leaves both
-        // DllMainResult and the cycle counter at their defaults; reporting that as
-        // "returned False (verified failure)" contradicted a Success return code in a run
-        // where every stage had actually completed.
+        
+        
+        
+        
+        
+        
         if (exec->DllMainCyclesDelta == 0)
         {
             wprintf(L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
@@ -5787,7 +5789,7 @@ LUID luid{};
         }
     }
 
-    // "Run under loader lock" — ground truth: explicit Ldr NTSTATUS + cookie/state.
+    
     void StealthRunUnderLoaderLock(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
@@ -5802,9 +5804,9 @@ LUID luid{};
             wprintf(L"  %ls[x]%ls Loader-Lock Unverified: No Execution Telemetry.\n", kRed, kReset);
             return;
         }
-        // The lock is taken inside the DllMain step, so if DllMain was never entered the NTSTATUS
-        // fields still hold their initial 0xC0000001 (STATUS_UNSUCCESSFUL) sentinel. That is
-        // "not attempted", not a non-zero failure, and must not be reported as a failure.
+        
+        
+        
         if (exec->DllMainCyclesDelta == 0)
         {
             wprintf(L"  %ls[*]%ls Loader Lock Not Attempted: It Is Taken Inside The DllMain Step And DllMain "
@@ -5823,7 +5825,7 @@ LUID luid{};
         }
     }
 
-    // "Clean data directories" step. Split out of DebugAndVerifyStealth verbatim.
+    
     void StealthCleanDataDirectories(const MAP_STATS * MapStats, bool have_remote_nt, BYTE * nt_data, int & step, int total)
     {
         ++step;
@@ -5851,9 +5853,9 @@ LUID luid{};
                 kGreen, MapStats->TlsSize, kReset,
                 kGreen, MapStats->DebugSize, kReset,
                 kGreen, MapStats->ExportSize, kReset);
-            // A directory is satisfied when it was empty (nothing to clean) OR the mapper reported
-            // it cleaned. Requiring all six bits set is wrong: the mapper never marks an already-empty
-            // directory as cleaned, so Debug/Export/DelayImport stay clear on a perfect run.
+            
+            
+            
             struct DirCheck
             {
                 int index;
@@ -5876,7 +5878,7 @@ LUID luid{};
             {
                 if (dirs[i].size == 0)
                 {
-                    continue; // empty: nothing to clean, nothing to report
+                    continue; 
                 }
                 ++populated;
                 if (MapStats->CleanedMask & (1u << dirs[i].index))
@@ -5904,8 +5906,8 @@ LUID luid{};
             }
             else if (MapStats->ResidualMask)
             {
-                // ResidualMask is a bitmask (one bit per directory), so its raw value is NOT the
-                // number of residual directories. Popcount it before reporting a count.
+                
+                
                 int residual_dirs = 0;
                 for (DWORD bits = MapStats->ResidualMask; bits; bits &= (bits - 1))
                 {
@@ -5955,8 +5957,8 @@ LUID luid{};
             {
                 return nt->OptionalHeader.DataDirectory[idx].Size == 0 ? 0 : 1;
             };
-            // The surveyed set is listed once so the "N Of M" denominator below is derived from it
-            // rather than restated as a literal that could drift from the sum.
+            
+            
             const int surveyed_dirs[] =
             {
                 IMAGE_DIRECTORY_ENTRY_IMPORT,
@@ -5983,8 +5985,8 @@ LUID luid{};
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_SECURITY), kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_DEBUG), kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR), kReset);
-            // No mapper telemetry for this run: the numbers below come from a single header read,
-            // not from an independent re-read, so this is weaker evidence than the branch above.
+            
+            
             wprintf(L"  %ls[*]%ls %ls%d%ls Of %ls%d%ls Surveyed Directories Non-Zero (Read From The Remote Header "
                     L"Only - No Mapper Telemetry This Run, So No Independent Confirmation).\n",
                 kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset,
@@ -5997,13 +5999,13 @@ LUID luid{};
         }
     }
 
-    // "Set page protections" — two-pass verification: Declared PE vs Queried target memory.
+    
     void StealthSetPageProtections(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set Page Protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        // Declared layout from local PE.
+        
         WORD sec_count = 0;
         const IMAGE_SECTION_HEADER * secs = nullptr;
         if (local_pe && local_pe_size >= sizeof(IMAGE_DOS_HEADER))
@@ -6052,7 +6054,7 @@ LUID luid{};
                     match ? L"[Match / [+]]" : L"[Mismatch / [x]]");
             }
         }
-        // Full-span W^X tally (two-pass: pre Dim, post assert).
+        
         MEMORY_BASIC_INFORMATION mbi{};
         int ro_count = 0, rw_count = 0, rx_count = 0, priv_exec_count = 0;
         SIZE_T total_image_size = 0;
@@ -6076,8 +6078,8 @@ LUID luid{};
                 if (next <= current) break;
                 current = next;
             }
-            // A section-level mismatch is a real failure even when RWX==0, so it must not ride a
-            // green marker. Header page (PAGE_NOACCESS) is intentionally excluded from the tally.
+            
+            
             const bool wx_clean = (rwx_count == 0 && mismatch == 0);
             wprintf(L"  %ls%s%ls RWX = %ls%d%ls | RO = %ls%d%ls | RW = %ls%d%ls | RX = %ls%d%ls | PrivateExec = %ls%d%ls | Mismatch = %ls%d%ls\n",
                 wx_clean ? L"[+]" : L"[x]",
@@ -6102,8 +6104,8 @@ LUID luid{};
         }
     }
 
-    // "Verify forensic posture" step. Split out of DebugAndVerifyStealth verbatim; it reports the
-    // runtime and on-disk posture and updates the caller's posture verdict.
+    
+    
     void StealthVerifyForensicPosture(HANDLE process, HINSTANCE hRemoteBase, const BYTE * local_pe, size_t local_pe_size,
         const WizardConfig & config, StealthVerifierBuffers & buffers, bool & posture_ok,
         int & step, int total)
@@ -6236,7 +6238,7 @@ LUID luid{};
 
             if (VerboseOutputEnabled())
             {
-                // Each line's marker follows its own value; the aggregate verdict is decided below.
+                
                 wprintf(L"  %ls%s%ls Export Names: %ls%zu%ls Neutral, %ls%zu%ls Foreign\n",
                     export_foreign ? L"[x]" : L"[+]", export_foreign ? kRed : kGreen, kReset,
                     kGreen, export_neutral, kReset,
@@ -6384,11 +6386,11 @@ LUID luid{};
             }
         }
 
-        // Target main-image survey: import/export/TLS shape read back from the
-        // REMOTE headers (§§2.1/2.3/1.5). Single-import + 76-export claims are
-        // per-build; these counts re-fingerprint the live target instead of
-        // quoting the OP. All RPM-only, bounded, terminator-capped; out-of-image
-        // pointers are never followed (same rule as the mapper's own loader).
+        
+        
+        
+        
+        
         {
             std::wstring survey_name;
             ULONG_PTR survey_base = 0;
@@ -6434,7 +6436,7 @@ LUID luid{};
                 }
                 else
                 {
-                    // Import descriptor count (terminator-capped, 20B/entry, max 129 RPMs).
+                    
                     unsigned long imp_count = 0;
                     bool imp_done = false;
                     bool imp_ok = false;
@@ -6442,7 +6444,7 @@ LUID luid{};
                     const DWORD imp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
                     if (!imp_rva || !imp_size)
                     {
-                        imp_ok = true; // no import dir: zero imports, read as such
+                        imp_ok = true; 
                         imp_done = true;
                     }
                     else if (imp_rva < survey_size)
@@ -6499,7 +6501,7 @@ LUID luid{};
                             kYellow, kReset, static_cast<unsigned>(imp_rva), static_cast<unsigned>(imp_size));
                     }
 
-                    // Export counts (single 40B RPM, no name walk in target).
+                    
                     const DWORD exp_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
                     const DWORD exp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
                     if (!exp_rva || !exp_size)
@@ -6528,7 +6530,7 @@ LUID luid{};
                         wprintf(L"  %ls[!]%ls Target Exports.......... Directory Out Of Image/Safepage\n", kYellow, kReset);
                     }
 
-                    // Remote TLS callback count (bounded array RPM, in-image only).
+                    
                     const DWORD tls_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress;
                     const DWORD tls_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].Size;
                     if (!tls_rva || !tls_size)
@@ -6599,7 +6601,7 @@ LUID luid{};
         }
     }
 
-    // "Erase PE header" — two-pass: pre-state declared, post-state VirtualQueryEx assert.
+    
     void StealthEraseHeader(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -6613,11 +6615,11 @@ LUID luid{};
             declared_headers = nt->OptionalHeader.SizeOfHeaders;
         }
 
-        // The mapper reports the structural header span, the region it actually zeroed and the
-        // protection it left behind. The declared SizeOfHeaders is only the span the loader would have
-        // mapped; the structural span is the DOS stub + NT headers + section table; the zeroed span is
-        // the ENTIRE pre-section header region (a superset); and the protected span is that region
-        // rounded up to a page. The scan counts are the in-shell proof the zeroed span carries no MZ/PE.
+        
+        
+        
+        
+        
         const unsigned long long wiped = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeSize) : 0;
         const unsigned long long wipe_protect = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeProtect) : 0;
         const unsigned long long structural = MapStats ? static_cast<unsigned long long>(MapStats->HeaderStructuralSize) : 0;
@@ -6627,10 +6629,10 @@ LUID luid{};
         const ULONGLONG retained_base = MapStats ? static_cast<ULONGLONG>(MapStats->RetainedAllocBase) : 0;
         const unsigned long long retained_size = MapStats ? static_cast<unsigned long long>(MapStats->RetainedAllocSize) : 0;
 
-        // The same wipe is measured twice by two independent field sets written by the shell
-        // (MapStats.* and ExecTelemetry.*). Both are read back, so agreement between them is a real
-        // integrity signal rather than a restatement of one value: a mismatch means the shell's
-        // record was altered or truncated between the write and the read-back.
+        
+        
+        
+        
         const unsigned long long exec_span = exec ? static_cast<unsigned long long>(exec->PreSectionSpanWiped) : 0;
         const unsigned long long exec_mz = exec ? static_cast<unsigned long long>(exec->MZRemnantsFound) : 0;
         const unsigned long long exec_pe = exec ? static_cast<unsigned long long>(exec->PERemnantsFound) : 0;
@@ -6643,8 +6645,8 @@ LUID luid{};
 
         const ULONGLONG base = hRemoteBase ? static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase)) : 0;
 
-        // Sliding-window signature counter for the host-side scan below. Same two sequences the mapper
-        // scans in-shell: MZ (0x4D5A) and PE\0\0 (0x50450000).
+        
+        
         auto count_signatures = [](const BYTE * data, size_t size, unsigned long long & mz, unsigned long long & pe)
         {
             mz = 0;
@@ -6671,7 +6673,7 @@ LUID luid{};
                 kGreen, kReset, kGreen, base, kReset);
         }
 
-        // Two-pass: pre-state (declared + in-shell wipe span) -> post-state VirtualQueryEx assert.
+        
         if (process && base)
         {
             MEMORY_BASIC_INFORMATION mbi = { 0 };
@@ -6723,9 +6725,9 @@ LUID luid{};
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
 
-                // In-shell scan result. The image header page is NOACCESS by design after the cloak, so
-                // a host read-back is impossible; this mapper-side scan (run pre-NOACCESS) is the
-                // authoritative proof for the image allocation.
+                
+                
+                
                 wprintf(L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
 
@@ -6755,11 +6757,11 @@ LUID luid{};
                     kYellow, kReset);
             }
 
-            // Host-side scan of any OTHER injection allocation still mapped and readable at this stage.
-            // The image header page is NOACCESS (covered above), and the manual-map and thread-hijack
-            // staging regions are scrubbed and released before control returns, so the only possible
-            // survivor is a deliberately retained allocation (e.g. the fake SEH directory kept alive
-            // for the inverted function table).
+            
+            
+            
+            
+            
             if (retained_base && retained_size)
             {
                 const size_t want = static_cast<size_t>(retained_size < 0x1000 ? retained_size : 0x1000);
@@ -6792,7 +6794,7 @@ LUID luid{};
         }
     }
 
-    // "Survey target traps" step. Split out of DebugAndVerifyStealth verbatim.
+    
     void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -6816,15 +6818,15 @@ LUID luid{};
         if (!hRemoteBase)
             return false;
 
-        // No second banner here: the acquisition summary would restate what step 1 below already
-        // prints in full, and the runtime trace already carries the hijack lines. One header per run.
+        
+        
 
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
         bool string_gate_ok = true;
         bool posture_ok = true;
 
-        // Single source of truth for both the step gates and the denominator. Indexed by StealthVerifyStep.
+        
         const bool step_enabled[kStealthStepCount] =
         {
             isActive(INJ_HANDLE_HIJACKING),
@@ -7111,19 +7113,19 @@ LUID luid{};
         return found;
     }
 
-    // VEH first-chance stealth survey (maximum effort, result-based, zero-trace).
-    //
-    // Warden registers a first-chance VEH via TLS callback (RtlAddVectoredExceptionHandler)
-    // and the chain itself lives process-internal (RtlpVectoredHandlerList in ntdll .data,
-    // not exported). Walking it from an injector would require remote code execution
-    // (transient handler + walk + remove), which is itself a W^X/VAD artifact and risks
-    // tripping IntegrityCk/MemoryTestHasFailed. The stealthy observable is the PEB
-    // CrossProcessFlags ProcessUsingVEH/ProcessUsingVCH bits (PEB+80, bits 2/3), plus
-    // BeingDebugged (PEB+2) and NtGlobalFlag (PEB+0xBC on x64) as debug-port correlates.
-    // All reads are ReadProcessMemory-only: no remote writes, no allocations, no handler
-    // installed in the target, no hooks, no PDB download. Every line printed from the
-    // survey is a value actually read back this run, never a restated flag.
-    // Full VEH survey definitions (types forward-declared above for the SEH steps).
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     static_assert(offsetof(AMEGER_PEB, CrossProcessFlags) == 80);
     static_assert(offsetof(AMEGER_PEB, Mutant) == 8);
 
@@ -7216,9 +7218,9 @@ LUID luid{};
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Local VEH path self-test: AddVectored + RemoveVectored round-trip. Proves the VEH
-    // path is functional on this OS without leaving any net chain entry. Result-based:
-    // returns true only if add returned non-null and remove returned non-zero.
+    
+    
+    
     inline bool ProbeLocalVehPathRoundTrip()
     {
         void * handle = AddVectoredExceptionHandler(1, VehProbeDummyHandler);
@@ -7230,9 +7232,9 @@ LUID luid{};
         return removed != 0;
     }
 
-    // Debug-port survey definition. Classes: ProcessDebugPort=7 (PVOID port, 0 =
-    // none), ProcessDebugFlags=9 (ULONG). Read-only; some handles (QUERY_LIMITED)
-    // cannot satisfy these reads — that yields UNKNOWN, never a clean claim.
+    
+    
+    
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out)
     {
         out = DebugPortSurvey{};
@@ -7678,14 +7680,14 @@ LUID luid{};
                 }
             }
 
-            // INT3 share over the sampled executable bytes. Computed before the verdict line so the
-            // verdict can reflect it: Warden INT3-patches code (.analysis 6.4), so a "no guard
-            // pages" process that still shows INT3 bytes must not be labelled untrapped.
+            
+            
+            
             const size_t cc_pct = sample_bytes ? (cc_bytes * 100) / sample_bytes : 0;
 
-            // The walk below spans the whole process, not one module, so the counts are process-wide.
-            // The verdict states the two facts that were measured (guard pages, INT3 share) and does
-            // not imply a per-module or pass/fail conclusion.
+            
+            
+            
             const wchar_t * Verdict = guarded ? L"Guarded" : L"No Guard Pages";
             wchar_t VerdictNote[192]{};
             if (guarded == 0)
@@ -8268,24 +8270,24 @@ LUID luid{};
         PrintError(L"Failed To Initialize The Runtime Or Download Symbols.");
     }
 
-    // Decide whether a failed injection may be retried by spawning a fresh,
-    // renamed process. A retry must NEVER follow a failure that already wrote
-    // the payload into the target: the runtime leaves unreclaimable loader
-    // state behind and a second attempt would map the payload a second time
-    // (a genuine double injection). Such failures are final.
+    
+    
+    
+    
+    
     bool InjectionFailureIsRetryable(DWORD result)
     {
-        // "Remote mapping reached the shell" range: the payload is already in
-        // the target. The existing warning tells the operator to relaunch the
-        // target before loading again.
+        
+        
+        
         if (result >= 0x00400000u && result < 0x00500000u)
         {
             return false;
         }
 
-        // Thread-hijack errors: by the time a thread is hijacked to run the
-        // loader shell, the image has been staged in the target and the shell
-        // maps it; retrying would map it a second time.
+        
+        
+        
         if (result >= 0x10200000u && result < 0x10300000u)
         {
             return false;
@@ -8293,8 +8295,8 @@ LUID luid{};
 
         switch (result)
         {
-            // The shell ran but did not produce a module handle, or the result
-            // could not be read back: the payload was mapped.
+            
+            
         case INJ_ERR_FAILED_TO_LOAD_DLL:
         case INJ_ERR_VERIFY_RESULT_FAIL:
             return false;
@@ -8303,17 +8305,17 @@ LUID luid{};
             break;
         }
 
-        // Everything else is a pre-mapping transient miss (open-process denied,
-        // handle-hijack found no donor, allocation failure, staging write,
-        // input validation) where the target does not yet carry the payload,
-        // so a fresh attempt cannot double-load it.
+        
+        
+        
+        
         return true;
     }
 
     int RunInteractiveWizard(Runtime & runtime)
     {
-        // WINDOWS subsystem: never allocate or title a console. The previous
-        // random console title is dropped; headless runs have no console.
+        
+        
         (void)runtime;
         wprintf(L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
 
@@ -8338,8 +8340,8 @@ LUID luid{};
             Trace::Note(L"Export Map = %zu Entries", config.export_map.size());
             for (const ExportNameMap & e : config.export_map)
             {
-                // The map is held as narrow std::string; printing it straight into a wide
-                // format produced mojibake, so widen it explicitly.
+                
+                
                 const std::wstring old_w = Trace::Widen(e.old_name.c_str());
                 const std::wstring new_w = Trace::Widen(e.new_name.c_str());
                 Trace::Note(L"  %ls -> %ls", old_w.c_str(), new_w.c_str());
@@ -8408,7 +8410,7 @@ LUID luid{};
             PrintRuntimeFailure(symbol_state, import_state, init_state);
             Trace::Summary(L"Failed At Runtime Initialisation");
             PauseBeforeExit();
-            // Transient (network/symbol timeout): fresh-process retryable.
+            
             return kResultRetryable;
         }
         Trace::Note(L"Symbol State = 0x%08lX", static_cast<unsigned long>(symbol_state));
@@ -8488,7 +8490,7 @@ LUID luid{};
         {
             PrintError(L"Target Exited Before Loading. Re-Run And Choose Faster.");
             PauseBeforeExit();
-            // Transient race (target restarted between select and load).
+            
             return kResultRetryable;
         }
 
@@ -8505,8 +8507,8 @@ LUID luid{};
         Context.Verbose = config.verbose_trace && !config.quiet;
         Context.SponsorAccess = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE;
-        // Do not pre-open a full-access process handle in the launcher: a direct handle carrying
-        // VM_WRITE/VM_OPERATION is a durable handle-table footprint. Force donor scan instead.
+        
+        
         HANDLE sponsorRaw = nullptr;
         DWORD sponsor_err = ERROR_SUCCESS;
         if (false && config.handle_hijacking)
@@ -8561,9 +8563,9 @@ LUID luid{};
                     Sleep(20);
                 }
 
-                // The Waiting fallbacks here are deliberate: the runtime may reject the sponsored
-                // TID as not Running, but the HANDLE opened from it stays in the launcher's handle
-                // table with exactly the access the donor scan needs, so it is worth offering.
+                
+                
+                
                 const DWORD victim_tid = PickHijackThreadTid(target.pid);
                 if (!victim_tid)
                 {
@@ -8689,8 +8691,8 @@ LUID luid{};
 
         const ULONGLONG inject_begin_ms = GetTickCount64();
 
-        // The diagnostic ring lives in the host process, so a record from an earlier attempt would be
-        // attributed to this one. Clearing first makes the detail that comes back describe this run.
+        
+        
         if (runtime.clear_last_error_info)
         {
             runtime.clear_last_error_info();
@@ -8746,9 +8748,9 @@ LUID luid{};
             sponsorGuard.reset();
             Trace::Summary(L"Failed During Injection");
             PauseBeforeExit();
-            // Only retry genuine pre-mapping misses. If the payload already
-            // reached the target, retrying would load it a second time without
-            // a fresh OK, which is the reported double-injection.
+            
+            
+            
             return InjectionFailureIsRetryable(result) ? kResultRetryable : 1;
         }
 
@@ -8883,15 +8885,15 @@ LUID luid{};
         }
 
         const bool had_target = (targetHandle != nullptr);
-        // VEH first-chance coverage probe: must run while the target handle is still
-        // open (handles close below before the coverage table). RPM-only, installs
-        // nothing. Stored here so the table below reports what was actually read.
+        
+        
+        
         VehFirstChanceSurvey veh_coverage_probe{};
         const bool veh_coverage_read = had_target &&
             QueryRemoteVehFirstChance(targetHandle, veh_coverage_probe) && veh_coverage_probe.readOk;
-        // Report the handles actually closed rather than asserting they were. These values are
-        // captured before the RAII guards reset them, so the line states what happened rather
-        // than what was intended.
+        
+        
+        
         struct ReleasedHandles
         {
             ULONGLONG values[3] = { 0, 0, 0 };
@@ -8910,18 +8912,18 @@ LUID luid{};
         record(ReCa<ULONGLONG>(threadSponsorRaw));
         record(ReCa<ULONGLONG>(targetHandle));
 
-        // Post-state confirmation. Re-query the mapped image in the target NOW, after the whole
-        // verification suite has run, and report what is actually observed at this instant. Every
-        // other success line in this program restates an intent or a decision made earlier; this one
-        // is a fresh measurement of the live target, so it can contradict the earlier stages.
+        
+        
+        
+        
         if (had_target && data.hDllOut)
         {
             MEMORY_BASIC_INFORMATION head{};
             const DWORD base_prot =
                 VirtualQueryEx(targetHandle, data.hDllOut, &head, sizeof(head)) ? head.Protect : 0;
 
-            // Walk the committed extent of the image and tally protections, so the numbers here come
-            // from this query rather than being carried over from the page-protection step.
+            
+            
             int post_rwx = 0, post_rx = 0, post_rw = 0, post_ro = 0, post_noaccess = 0;
             ULONGLONG committed = 0;
             bool walked = false;
@@ -8950,7 +8952,7 @@ LUID luid{};
                 }
                 else
                 {
-                    break; // uncommitted gap ends the image
+                    break; 
                 }
                 BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
                 if (next <= cursor)
@@ -9052,19 +9054,19 @@ LUID luid{};
             wprintf(L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
-        // Verification coverage. The gate above is a boolean, so on its own it cannot distinguish
-        // "everything checked and passed" from "most checks were inapplicable and the rest passed".
-        // Spell out which of the capabilities were actually observable from an external injector, so
-        // a PASS is never mistaken for broader coverage than it has.
+        
+        
+        
+        
         {
             const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
             const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
             const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
                 MapStats.Verified != 0;
-            // VEH first-chance is now a read-only PEB survey (CrossProcessFlags PEB+80),
-            // so it is externally checkable whenever the target handle is valid. Probe
-            // once here for the coverage denominator; the steps above already printed
-            // the read-back values.
+            
+            
+            
+            
             VehFirstChanceSurvey veh_coverage{};
             const bool veh_checked = veh_coverage_read;
             if (veh_checked)
@@ -9077,7 +9079,7 @@ LUID luid{};
                 bool checked;
                 const wchar_t * note;
             };
-            // Stated from the marker-count constant, not a literal, so the note tracks the array.
+            
             wchar_t marker_coverage_note[64]{};
             swprintf_s(marker_coverage_note, L"%zu Markers Absent From The Runtime DLL", kStringMarkerCount);
             const Coverage coverage[] =
@@ -9118,14 +9120,14 @@ LUID luid{};
             }
         }
 
-        // Final banner. Everything printed here is a value observed during this run; nothing is a
-        // restatement of the configured flags, because the flags describe what was requested, not
-        // what happened.
+        
+        
+        
         wprintf(L"\n");
         wprintf(L"Load Result (Every Value Below Was Read Back During This Run):\n");
 
-        // Single helper so the marker, its colour and the reset can never drift out of alignment
-        // with the value that follows them again.
+        
+        
         const auto row = [](const wchar_t * label, bool ok)
         {
             wprintf(L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
@@ -9161,9 +9163,9 @@ LUID luid{};
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
-        // The loader-lock NTSTATUSes are only meaningful when DllMain was actually entered; the
-        // lock is taken inside that step. Reporting 0xC0000001 as a failure in a run where the
-        // step never ran contradicted the Success return code above.
+        
+        
+        
         const bool lock_attempted = ExecTelemetry.DllMainCyclesDelta != 0;
         const bool lock_ok = !lock_attempted ||
             (ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0);
@@ -9198,8 +9200,8 @@ LUID luid{};
         wprintf(L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,
             wx_violated ? L"Violated" : L"Enforced");
 
-        // The gate is read back rather than restated: this banner claims every value below was
-        // observed during the run, and the code only reaches here with stealth_gate_ok set.
+        
+        
         row(L"Verification Gate......... ", stealth_gate_ok);
         wprintf(L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
         wprintf(L"====================================================================================================\n");
@@ -9218,12 +9220,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     (void)prevInstance;
     (void)cmdShow;
     (void)showCmd;
-    // WINDOWS subsystem: no console is ever allocated. All operator prompts
-    // are served through a layered window; stdout/stderr handles are null.
+    
+    
     EnableAnsi();
 
-    // Extract the unrenamed parent image path for best-effort cleanup after
-    // the polymorphic rename. Quoted form: --ameger-parent-path="C:\...".
+    
+    
     std::wstring parentHint;
     {
         const std::wstring cmd = GetCommandLineW();
@@ -9255,8 +9257,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         }
     }
 
-    // Polymorphic stub: randomize the on-disk filename before main logic.
-    // The unrenamed parent exits here; only the renamed child continues.
+    
+    
     if (!PolymorphicSelfRename(parentHint))
     {
         return 0;
@@ -9267,8 +9269,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     int result = 1;
     try
     {
-        // Single attempt per process. A second attempt never reuses this
-        // process; it is spawned fresh below with a new name and parent.
+        
+        
         result = RunInteractiveWizard(runtime);
     }
     catch (const std::bad_alloc &)
@@ -9286,23 +9288,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    // Transient-only bounded retry. Cancellation (0) and deterministic
-    // failures (1/2) exit here with the full log on the clipboard; only a
-    // transient miss (3) spawns a fresh renamed process with a fresh parent.
+    
+    
+    
     if (result == kResultRetryable && retryIndex + 1 < kMaxLaunchAttempts)
     {
         const int nextRetry = retryIndex + 1;
         if (SpawnFreshRetryProcess(nextRetry))
         {
-            // Handed off to the fresh child; this process must not run again
-            // and must not touch the clipboard (the child owns the final log).
+            
+            
             TerminateInterface(result);
         }
-        // Spawn failed: fall through and report this attempt's result.
+        
     }
 
-    // Single brief clipboard ownership, no window: the entire captured CLI
-    // log (ANSI stripped) is left on the clipboard for paste-out.
+    
+    
     ameger_ui_log::CopyToClipboardStealthily();
 
     if (result == kResultRetryable && retryIndex + 1 >= kMaxLaunchAttempts)

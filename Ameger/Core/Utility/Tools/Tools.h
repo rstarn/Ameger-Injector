@@ -92,34 +92,34 @@ bool GetOwnModulePathW(std::wstring & out);
 
 bool GetSymbolCacheRoot(std::wstring & out);
 
-// Deletes a symbol cache root previously handed back by GetSymbolCacheRoot. This is a recursive
-// delete, so the root is validated against an ownership allowlist first and the call fails closed
-// rather than removing anything outside scratch storage. Never pass the injector's own install
-// directory here.
+
+
+
+
 bool DeleteSymbolCacheRoot(const std::wstring & root);
 
-// True when "root" is a directory this library created for scratch use and therefore owns. Used by
-// the cache teardown paths to make a destructive delete impossible to point at the install folder,
-// the Windows directory, or a drive root.
+
+
+
 bool IsOwnedScratchRoot(const std::wstring & root);
 
-// Scratch directory name used when the per user cache location is unavailable. It is deliberately a
-// subdirectory of the install folder, never the install folder itself, so that cleaning it up can
-// never delete the runtime.
+
+
+
 #define AMEGER_SCRATCH_LEAF_DIR L".symbols"
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code = nullptr);
 
-// Explicit opt-in that re-enables the direct NtOpenProcess / NtOpenThread fallback when handle
-// acquisition finds no donor. It is off by default so the fail-closed path is the shipped behaviour;
-// set INJ_ALLOW_DIRECT_FALLBACK=1 to restore the legacy direct open.
+
+
+
 bool AllowDirectHandleFallback();
 
-// Opt-out of the only network operation the runtime performs. By default the symbol resolver is
-// allowed to fetch the ntdll PDB from the symbol server and caches it, so the second and later runs
-// work with no connectivity at all. Set AMEGER_SYMBOL_DOWNLOAD=0 to make an uncached PDB a hard
-// error instead, which keeps the runtime from ever opening a socket on a machine that must not make
-// outbound connections.
+
+
+
+
+
 bool SymbolDownloadDisabled();
 
 void ErrorLog(const ERROR_INFO & info);
@@ -137,11 +137,11 @@ bool PollAsyncWorker(ASYNC_WORKER_SLOT & slot);
 
 void JoinAsyncWorker(ASYNC_WORKER_SLOT & slot);
 
-// Blocks until the worker thread has actually exited, WITHOUT closing either handle. The Done event
-// is signalled by the worker before it finishes unwinding and emitting its trailing telemetry, so a
-// caller that only polls Done can observe "complete" while the thread is still logging. JoinAsyncWorker
-// would also fix the ordering but consumes the handles, which breaks any later PollAsyncWorker call
-// (WaitForSingleObject on a closed handle fails, reading as "not done"). This waits without consuming.
+
+
+
+
+
 bool WaitAsyncWorkerThread(const ASYNC_WORKER_SLOT & slot);
 
 std::wstring CharArrayToStdWstring(const char * szString);

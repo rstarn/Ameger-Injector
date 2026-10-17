@@ -15,8 +15,8 @@
 
 #define BASE_ALIGNMENT 0x10
 
-// Upper bound for the section-table snapshot kept in MANUAL_MAPPING_DATA. The PE format caps the
-// section count at 96, so a larger value cannot come from a well-formed image.
+
+
 #define MM_MAX_CACHED_SECTIONS 96
 
 namespace MMAP_NATIVE
@@ -76,6 +76,9 @@ namespace MMAP_NATIVE
 	ALIGN NT_FUNC_LOCAL(NtAllocateVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtProtectVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtFreeVirtualMemory);
+		ALIGN NT_FUNC_LOCAL(NtCreateSection);
+		ALIGN NT_FUNC_LOCAL(NtMapViewOfSection);
+		ALIGN NT_FUNC_LOCAL(NtUnmapViewOfSection);
 
 		ALIGN NT_FUNC_LOCAL(memmove);
 		ALIGN NT_FUNC_LOCAL(RtlZeroMemory);
@@ -130,8 +133,9 @@ namespace MMAP_NATIVE
 
 		bool IsValid() const
 		{
-				return NtClose &&
-		NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory &&
+		return NtClose &&
+	NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory &&
+	NtCreateSection && NtMapViewOfSection && NtUnmapViewOfSection &&
 		memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
 		LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
 		RtlAnsiStringToUnicodeString &&
@@ -155,8 +159,9 @@ namespace MMAP_NATIVE
 
  		ALIGN DWORD	InvertedTableInstalled = 0;
 
- 		ALIGN BYTE *	pAllocationBase	= nullptr;
- 		ALIGN BYTE *	pImageBase		= nullptr;
+	ALIGN BYTE *	pAllocationBase	= nullptr;
+	ALIGN HANDLE	pSectionHandle	= nullptr;
+	ALIGN BYTE *	pImageBase		= nullptr;
  		ALIGN BYTE *	pRawData		= nullptr;
  		ALIGN DWORD		RawSize			= 0;
 
@@ -174,32 +179,32 @@ namespace MMAP_NATIVE
 
  		ALIGN DYNAMIC_NT_OFFSETS NtOffsets{};
 
-		// Exec section protection bookkeeping. Three of the stages used to walk the section table and
-		// issue NtProtectVirtualMemory independently, which turned one mapped image into six separate
-		// RW->RX->RW->RX transitions on the same pages. Everything now routes through one flag so the
-		// whole image is promoted exactly twice.
+		
+		
+		
+		
 		ALIGN DWORD ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
 
-		// Payload obfuscation. The image bytes never cross the boundary in the clear: the host stores
-		// a keystream transform and the remote side recovers the plaintext while copying it into place,
-		// so neither the transfer nor the staging region ever holds a recognisable PE.
+		
+		
+		
 		ALIGN DWORD64	PayloadSeed0	= 0;
 		ALIGN DWORD64	PayloadSeed1	= 0;
 		ALIGN DWORD		PayloadEncoded	= 0;
 
-		// Per-callback TLS diagnostics. When a TLS callback is rejected the remote side records which
-		// entry failed and at what address, so the host can name the exact callback instead of only
-		// reporting the aggregate range error.
+		
+		
+		
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
 
-		// Snapshot of the header values the stages that run *after* the erase still need.
-		// The shell erases the headers before any payload code runs, so the module-load
-		// finalisation steps (clean data directories, page protections) and the payload
-		// drivers (TLS, entry point) can no longer read them from the image. The snapshot
-		// is captured in MMI_MapSections while the raw headers are still intact, and the
-		// MMI_* accessors below consult it only when INJ_ERASE_HEADER is set, so a run
-		// without header erasure reads the live headers exactly as before.
+		
+		
+		
+		
+		
+		
+		
 		ALIGN DWORD					CachedSizeOfImage	= 0;
 		ALIGN DWORD					CachedSizeOfHeaders	= 0;
 		ALIGN DWORD					CachedEntryPoint	= 0;
@@ -207,26 +212,26 @@ namespace MMAP_NATIVE
 		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
 
- 		// Transient TLS state. MMI_HandleTLS registers the payload's TLS data (LdrpHandleTlsData
- 		// reads the image's own headers to find the TLS directory, so the erase has to follow it),
- 		// then the header erase runs, then MMI_RunTlsCallbacks drives the callbacks. These three
- 		// pointers carry the setup across that boundary; they are heap objects and section data, not
- 		// header bytes, so they survive the erase.
- 		ALIGN void *	TlsDirectory	= nullptr;	// IMAGE_TLS_DIRECTORY * inside the mapped image
- 		ALIGN void *	TlsDummyLdr		= nullptr;	// fake LDR_DATA_TABLE_ENTRY handed to LdrpHandleTlsData
- 		ALIGN void *	TlsDdagNode		= nullptr;	// fake LDR_DDAG_NODE linked from the fake entry
+ 		
+ 		
+ 		
+ 		
+ 		
+ 		ALIGN void *	TlsDirectory	= nullptr;	
+ 		ALIGN void *	TlsDummyLdr		= nullptr;	
+ 		ALIGN void *	TlsDdagNode		= nullptr;	
 
- 		// Verifiable execution telemetry. Written in-shell from explicit NTSTATUS,
- 		// DllMain return, rdtsc deltas, and sliding-window scans — never inferred.
+ 		
+ 		
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
 
- 		// Per-section page-protection ground truth recorded in-shell.
+ 		
  		ALIGN DWORD SectionProtCount = 0;
  		ALIGN SECTION_PROT_RECORD SectionProt[MM_MAX_PROT_RECORDS]{};
   	};
 }
 
-// Both sides of the transfer need the same rotation helper.
+
 __forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
 {
 	constexpr unsigned kBits = sizeof(DWORD64) * 8u;
@@ -242,9 +247,9 @@ __forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
 
 #pragma region inlined helper functions
 
-// Position indexed key stream. Both the host encoder and the remote decoder evaluate the same
-// function for the same offset, so sections can be recovered in any order and in any granularity
-// without carrying a running cipher state between passes.
+
+
+
 __forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
 {
 	DWORD64 x = Seed0 ^ (Index * 0x9E3779B97F4A7C15ULL);
@@ -260,8 +265,8 @@ __forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
 	return x;
 }
 
-// Transforms a byte range in place. Applying the function twice is the identity, so the same routine
-// encodes on the host and decodes in the target.
+
+
 __forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
 {
 	if (!Data || !Size)
@@ -291,7 +296,7 @@ __forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 See
 	}
 }
 
-// Streams a transformed copy without touching the source.
+
 __forceinline void MMI_KeyTransformCopy(BYTE * Destination, const BYTE * Source, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
 {
 	if (!Destination || !Source || !Size)
@@ -364,9 +369,9 @@ __forceinline void * ReadPtrField(const void * Base, DWORD Off)
 	return *ReCa<void * const *>(ReCa<const BYTE *>(Base) + Off);
 }
 
-// Header accessors. When the header region has been erased the live pointers address zeroed,
-// no-access pages, so every post-erase read is served from the snapshot instead. When erasure is
-// off the accessors are pass-throughs onto the mapped headers, keeping the unerased run identical.
+
+
+
 __forceinline IMAGE_SECTION_HEADER * MMI_Sections(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
 {
 	if (pData->Flags & INJ_ERASE_HEADER)

@@ -7,14 +7,14 @@
 namespace
 {
 
-	// The runtime state machine. Every transition goes through a compare exchange on this value, so a
-	// re-entrant or concurrent caller observes one of five stable states rather than a half built one.
-	//
-	// RUNTIME_STATE_FAILED and RUNTIME_STATE_SHUT_DOWN are deliberately *retryable*: a symbol download
-	// that timed out, or a launcher that shut the runtime down and then wants it back, must not leave
-	// the host process permanently unable to inject. The previous behaviour latched the failure state
-	// (and, worse, left the shut-down state behind after a no-op shutdown), which turned both into a
-	// permanent INJ_ERR_NOT_IMPLEMENTED.
+	
+	
+	
+	
+	
+	
+	
+	
 	enum : LONG
 	{
 		RUNTIME_STATE_UNINITIALIZED = 0,
@@ -50,9 +50,9 @@ namespace
 		std::wstring CacheRoot;
 	};
 
-	// Signals the workers and waits for them, then closes the events. The order matters: a worker that
-	// is still running when its event handle is closed would be signing a destroyed object, so the
-	// join always happens first. Both calls are idempotent, so this is safe at any construction depth.
+	
+	
+	
 	void StopRuntimeWorkers()
 	{
 		sym_ntdll_native.Interrupt();
@@ -64,7 +64,7 @@ namespace
 		JoinAsyncWorker(import_handler_ret);
 	}
 
-	// Full teardown back to the uninitialized state, for a clean shutdown or a retry after a failure.
+	
 	void TeardownRuntime()
 	{
 		StopRuntimeWorkers();
@@ -131,14 +131,14 @@ namespace
 
 	DWORD RuntimeInitializationFailed(DWORD error_code)
 	{
-		// A later step can fail after the workers are already running, so they are stopped here rather
-		// than only at the launch-failure branch below.
+		
+		
 		StopRuntimeWorkers();
 
 		CloseRuntimeEvents();
 
-		// The failure state is retryable: InitializeRuntime claims it again on the next attempt instead
-		// of latching the failure for the rest of the host process's lifetime.
+		
+		
 		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
 
 		return error_code;
@@ -149,9 +149,9 @@ DWORD __stdcall InitializeRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStart", __FUNCDNAME__)
 
-	// Claim the uninitialized state. READY and INITIALIZING are reported as they are; FAILED and
-	// SHUT_DOWN fall through so a previous attempt can be retried instead of returning a permanent
-	// failure.
+	
+	
+	
 	const LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
 	if (previous_state == RUNTIME_STATE_READY)
 	{
@@ -210,10 +210,10 @@ DWORD __stdcall InitializeRuntime()
 	std::wstring symbol_cache_root;
 	if (!GetSymbolCacheRoot(symbol_cache_root))
 	{
-		// The per user cache location was unavailable, so scratch storage moves into a dedicated
-		// subdirectory of the install folder. It must be a subdirectory: DeleteSymbolCacheRoot does a
-		// recursive delete, and handing it the install folder itself would take the runtime, the
-		// payload and the launcher with it.
+		
+		
+		
+		
 		symbol_cache_root = g_RootPathW + AMEGER_SCRATCH_LEAF_DIR + L"\\";
 
 		if (!CreateDirectoryW(symbol_cache_root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
@@ -259,8 +259,8 @@ DWORD __stdcall ShutdownRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStop", __FUNCDNAME__)
 
-	// Read the state without publishing anything. A state of UNINITIALIZED or SHUT_DOWN is already
-	// idle, so a redundant shutdown is a no-op that leaves the state alone rather than overwriting it.
+	
+	
 	const LONG state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_UNINITIALIZED, RUNTIME_STATE_UNINITIALIZED);
 	if (state == RUNTIME_STATE_UNINITIALIZED || state == RUNTIME_STATE_SHUT_DOWN)
 	{
@@ -274,20 +274,20 @@ DWORD __stdcall ShutdownRuntime()
 
 	if (state == RUNTIME_STATE_READY && InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
 	{
-		// A load is in flight; leave the state to the gate owner.
+		
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
-	// RUNTIME_STATE_READY and RUNTIME_STATE_FAILED both tear down through the same path. A failed init
-	// can leave a partially constructed worker set behind, so the teardown has to be unconditional.
+	
+	
 	try
 	{
 		TeardownRuntime();
 	}
 	catch (...)
 	{
-		// The runtime is left in the retryable failure state rather than wedged, so the caller can
-		// simply call InitializeRuntime again instead of the whole host being poisoned.
+		
+		
 		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
 
 		return INJ_ERR_INTERRUPT;

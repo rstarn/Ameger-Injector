@@ -2,7 +2,7 @@
 
 #include "Core/Foundation/Error.h"
 
-// Serializes custom_print emission across runtime threads. See the comment at the emit site.
+
 static SRWLOCK g_print_lock = SRWLOCK_INIT;
 
 DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
@@ -97,14 +97,14 @@ void custom_print(int indention_offset, const char * format, ...)
 
 	if (result > 0)
 	{
-		// Serialize emission. The runtime logs from several threads concurrently (the symbol loader
-		// and the import handler both start during init), and an unsynchronised callback interleaves
-		// their records mid-sequence - e.g. "OSVersion" / "OSBuildVersion" end up separated by an
-		// unrelated loader line. The lock makes each record atomic with respect to other log calls.
-		//
-		// Safe here because the callback only formats and writes; it never re-enters custom_print.
-		// SRWLOCK is sufficient and non-recursive, which would surface a re-entrancy bug rather than
-		// silently allow it.
+		
+		
+		
+		
+		
+		
+		
+		
 		AcquireSRWLockExclusive(&g_print_lock);
 
 		if (f_raw_print_callback callback = g_print_raw_callback.load())

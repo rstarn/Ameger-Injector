@@ -61,8 +61,8 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 {
 	LOG(1, "ResolveImports Called\n");
 
-	// Counters describe one resolution pass, so a retry starts from a clean slate instead of reporting
-	// the previous attempt's declarations alongside the current attempt's results.
+	
+	
 	g_string_stats = STRING_STATS{};
 
 	DWORD err = ERROR_SUCCESS;
@@ -97,9 +97,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	}
 
 	LOG(1, "Native OS Module Loaded At %p\n", g_hNTDLL);
-	// One record per line, not a single printf with an embedded newline. custom_print() dispatches
-	// synchronously but the runtime logs from several threads, so a multi-line record can be torn
-	// apart by an unrelated line landing between the two halves.
+	
+	
+	
 	LOG(1, "OSVersion = %lu\n", GetOSVersion());
 	LOG(1, "OSBuildVersion = %lu\n", GetOSBuildVersion());
 
@@ -114,10 +114,10 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		return INJ_ERR_KERNEL32_MISSING;
 	}
 
-	// kernel32 is pinned only so that its absence is reported as its own failure rather than surfacing
-	// later as a null GetProcAddress result. Every native routine the runtime needs is resolved below
-	// by RVA out of the ntdll symbols, never by name through a public export, so nothing here is looked
-	// up through kernel32 and no kernel32 pointer is cached.
+	
+	
+	
+	
 	(void)hK32;
 
 	LOG(1, "Waiting For Native Symbol Parser To Finish Initialization\n");
@@ -179,6 +179,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	if (LoadSymbolNative(S_FUNC(NtAllocateVirtualMemory)))				return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(NtFreeVirtualMemory)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(NtProtectVirtualMemory)))				return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(NtCreateSection)))						return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(NtMapViewOfSection)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(NtUnmapViewOfSection)))				return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
 	if (LoadSymbolNative(S_FUNC(RtlInsertInvertedFunctionTable)))		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(LdrpHandleTlsData)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;

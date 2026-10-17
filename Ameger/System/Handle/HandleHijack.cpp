@@ -16,10 +16,10 @@ namespace
 
 	constexpr size_t kMaxForeignOwners = 16;
 
-	// A donor thread handle is only found by duplicating candidates and asking the kernel which thread
-	// each one actually refers to, so a rejected candidate costs an attempt. The cap is sized so that a
-	// busy system, where thousands of unrelated thread handles are live at once, still reaches the
-	// handful of handles that point at the wanted thread.
+	
+	
+	
+	
 	constexpr size_t kMaxDupAttempts = 4096;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
@@ -90,9 +90,9 @@ namespace
 
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
-		// Only the locally built syscall stubs are needed from here on. Nothing in this file resolves a
-		// system routine through a public ntdll export, so an inline hook has no entry point to sit on
-		// and no stack to walk backwards from.
+		
+		
+		
 		Out.NtQuerySystemInformation = ReCa<f_NtQuerySystemInformationLocal>(SyscallStub(SC_NtQuerySystemInformation));
 		Out.NtDuplicateObject = ReCa<f_NtDuplicateObjectLocal>(SyscallStub(SC_NtDuplicateObject));
 
@@ -308,18 +308,18 @@ namespace
 		return false;
 	}
 
-	// How a candidate process handle is proven to actually be usable for cross process memory work.
-	//
-	//   reserve  (default) reserve and immediately release one page in the target. The strongest proof
-	//             that the handle carries PROCESS_VM_OPERATION, because only a real MEM_RESERVE in the
-	//             target answers, but every candidate leaves a transient reservation in the victim's
-	//             address space and therefore a short-lived VAD.
-	//   protect  re-protect a page the target already has committed to the protection it already
-	//             carries. Proves the same access mask without mutating the address space at all, so
-	//             a busy scan no longer churns the victim's VADs. Slightly weaker: it does not prove
-	//             the caller may commit new memory.
-	//   none     skip the probe entirely and trust the pid + image name checks alone. For callers that
-	//             already hold a verified sponsor handle.
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 	enum class VM_PROBE_POLICY
 	{
 		Reserve = 0,
@@ -380,16 +380,16 @@ namespace
 		{
 			case VM_PROBE_POLICY::None:
 			{
-				// Deliberately not a failure: the caller explicitly declined the probe, so the donor is
-				// judged on its pid and image name alone.
+				
+				
 				return true;
 			}
 
 			case VM_PROBE_POLICY::Protect:
 			{
-				// Re-protect an already committed readable page to its existing protection. The kernel
-				// treats this as a no-op on the page contents, so nothing in the target changes, while
-				// the call still goes through the same access check that gates every later mapper stage.
+				
+				
+				
 				MEMORY_BASIC_INFORMATION info{ 0 };
 				if (!VirtualQueryEx(Candidate, nullptr, &info, sizeof(info)) || info.State != MEM_COMMIT)
 				{
@@ -412,8 +412,8 @@ namespace
 			}
 		}
 
-		// Reservation only, no commit. A probe that never materialises a page leaves the target's
-		// address space untouched, and the reservation is released immediately afterwards.
+		
+		
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
 		if (!Page)
 		{
@@ -472,9 +472,9 @@ namespace
 		{
 			return nullptr;
 		}
-		// Reserve first so the only throwing step happens while Owner still exclusively owns the
-		// handle. Releasing before the insert put two owners on the same raw handle: the temporary
-		// closed it on a throwing reallocation and the catch closed it a second time.
+		
+		
+		
 		try
 		{
 			Owners.reserve(Owners.size() + 1);
@@ -964,17 +964,17 @@ namespace
 
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
-		// Trust model: this is the strongest and loudest probe in the file, and it is only reached on
-		// the sponsor path (a handle the launcher opened itself). It exists to prove the *duplicated*
-		// handle really maps the target's address space and carries both PROCESS_VM_WRITE and
-		// PROCESS_VM_READ, defeating handle-value reuse/confusion that a pid+image-name check alone
-		// cannot catch.
-		//
-		// A quieter alternative was considered and rejected: probing an existing readable region only
-		// proves VM_READ and never exercises VM_WRITE, and writing into an arbitrary pre-existing
-		// region risks corrupting the target. Because no read-only or in-place probe is provably
-		// equivalent, the allocate/write/read-back/free roundtrip is kept. It is deliberately a single
-		// minimal (0x1000) page, released immediately, and is skippable via INJ_SKIP_SPONSOR_ROUNDTRIP.
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
 		if (!Page)
 		{

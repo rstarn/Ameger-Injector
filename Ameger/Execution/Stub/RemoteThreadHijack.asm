@@ -7,10 +7,10 @@ PUBLIC RemoteThreadHijackEnd
 PUBLIC RemoteThreadReturnTarget
 PUBLIC RemoteThreadState
 
-; Patch-site labels. The C++ trampoline builder derives every relocation
-; site from these exported labels instead of scanning for opcode bytes, so a
-; change in the assembler's encoding fails closed at a named site rather than
-; silently patching the wrong location.
+
+
+
+
 PUBLIC RemoteThreadLeaStateIn
 PUBLIC RemoteThreadLeaStateOut
 PUBLIC RemoteThreadJmpReturn
@@ -89,7 +89,7 @@ RemoteThreadTebReadIn:
     mov r11d, gs:[TEB_LAST_ERROR]
     mov [rbx+SR_BUFFER], r11d
     mov qword ptr [rbx+SR_STATE], 1
-    ; Ground-truth cycle capture: t0 -> [SR_CYCLES_DELTA] temp, then delta after call.
+
     rdtsc
     shl rdx, 32
     or rax, rdx
@@ -97,7 +97,7 @@ RemoteThreadTebReadIn:
     mov rax, r15
     call rax
     mov [rbx+SR_RET], eax
-    ; t1 - t0 -> RoutineCyclesDelta.
+
     push rcx
     push rdx
     rdtsc
@@ -141,18 +141,18 @@ ELSE
     fxrstor [r10]
 ENDIF
     StubFpRestoreDone:
-    ; Scrub every dead stack slot the hijack touched, from the saved RSP down to
-    ; the thread's current stack limit. The stub's own frame ends only 0x48 below
-    ; r12, but the shell/payload ran far deeper on this same stack, so the floor
-    ; has to be StackLimit (TEB::StackLimit, gs:[0x10]) - a fixed r12-relative
-    ; floor leaves the shell's frames, and the pointers into the payload they
-    ; hold, in place. StackLimit is the lowest committed page, so the walk never
-    ; reaches the guard page. rdi/r10/rdx/r8 are all restored by the pops below.
+
+
+
+
+
+
+
     lea rdi, [r12]
     mov r10, gs:[10h]
     cmp r10, rdi
     jae StubStackScrubDone
-    ; Ground-truth scrub audit: (saved_rsp - StackLimit) in bytes.
+
     mov rax, r12
     sub rax, r10
     mov [rbx+SR_SCRUB_BYTES], rax

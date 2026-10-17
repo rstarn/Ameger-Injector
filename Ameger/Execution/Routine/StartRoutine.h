@@ -31,9 +31,9 @@ ALIGN struct SR_REMOTE_DATA
 	ALIGN DWORD				FpMask				= 0;
 	ALIGN WORD				ShellCw				= 0x037F;
 	ALIGN DWORD				ShellMxcsr			= 0x01F80;
-	// Forensic stub telemetry written by RemoteThreadHijack.asm.
-	// RoutineCyclesDelta: __rdtsc delta across `call rax`.
-	// StackScrubbedBytes: (saved_rsp - TEB.StackLimit) zeroed by the scrub loop.
+	
+	
+	
 	ALIGN unsigned __int64	RoutineCyclesDelta	= 0;
 	ALIGN SIZE_T			StackScrubbedBytes	= 0;
 };

@@ -2,12 +2,12 @@
 
 #include "Native/Syscall.h"
 
-// ------------------------------------------------------------------------------------------------
-// Syscall verbose logging (enabled via AMEGER_SYSCALL_VERBOSE=1)
+
+
 inline bool SyscallVerbose()
 {
-    // Detailed by default so the resolution table is part of the normal audit trail.
-    // Set AMEGER_SYSCALL_VERBOSE=0 to silence it.
+    
+    
     static const bool verbose = []() -> bool
     {
         wchar_t buffer[8] = {};
@@ -17,10 +17,10 @@ inline bool SyscallVerbose()
     return verbose;
 }
 
-// The CRT's default invalid parameter handler terminates the process. Logging is the last thing that
-// should be able to do that, so it is suppressed for the duration of the vsprintf_s below. This is a
-// no-op on a correctly formed call and only matters if a format string and its argument list ever
-// drift apart.
+
+
+
+
 namespace
 {
 	void SilencedInvalidParameter(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t) noexcept
@@ -64,21 +64,21 @@ void SyscallLog(int level, const char * fmt, ...)
     }
 }
 
-// No colour codes. The runtime's primary output sink is the launcher's clipboard log, where ANSI is
-// inert, so these SGR sequences only added bytes that had to be stripped again downstream. The
-// bracketed markers carry the meaning and remain.
+
+
+
 #define SC_LOG_OK(...)    SyscallLog(1, "[+] " __VA_ARGS__)
 #define SC_LOG_WARN(...)  SyscallLog(1, "[!] " __VA_ARGS__)
 #define SC_LOG_ERR(...)   SyscallLog(1, "[x] " __VA_ARGS__)
 #define SC_LOG_INFO(...)  SyscallLog(1, "[*] " __VA_ARGS__)
 
-// ------------------------------------------------------------------------------------------------
-// Service number extraction, stub generation, and the single stub pool the host side calls through.
-//
-// The pool is generated once and left execute+read only. An RWX stub pool would itself be a strong
-// fingerprint of a mapped module inside the host process, so the generation page is made writable,
-// filled, and immediately dropped back to PAGE_EXECUTE_READ.
-// ------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
 
 namespace
 {
@@ -100,7 +100,7 @@ namespace
 		DWORD	Service		= 0;
 	};
 
-	// Filled in on the first resolution pass, so this table doubles as the per process cache.
+	
 	SYSCALL_ENTRY g_SyscallTable[] =
 	{
 		{ SC_NtOpenProcess,					kServiceUnknown, nullptr },
@@ -113,6 +113,9 @@ namespace
 		{ SC_NtAllocateVirtualMemory,		kServiceUnknown, nullptr },
 		{ SC_NtFreeVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtProtectVirtualMemory,		kServiceUnknown, nullptr },
+		{ SC_NtCreateSection,				kServiceUnknown, nullptr },
+		{ SC_NtMapViewOfSection,			kServiceUnknown, nullptr },
+		{ SC_NtUnmapViewOfSection,			kServiceUnknown, nullptr },
 		{ SC_NtWriteVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtReadVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtSuspendThread,				kServiceUnknown, nullptr },
@@ -136,6 +139,9 @@ namespace
 		"NtAllocateVirtualMemory",
 		"NtFreeVirtualMemory",
 		"NtProtectVirtualMemory",
+		"NtCreateSection",
+		"NtMapViewOfSection",
+		"NtUnmapViewOfSection",
 		"NtWriteVirtualMemory",
 		"NtReadVirtualMemory",
 		"NtSuspendThread",
@@ -160,10 +166,10 @@ namespace
 	std::atomic<bool>	g_SyscallPoolReady{ false };
 	std::atomic<void *>	g_SyscallPool{ nullptr };
 
-	// The runtime brings two worker threads up concurrently, and both the import handler and the process
-	// enumeration reach the syscall layer before the pool exists. A one-time initialiser is used rather
-	// than a hand rolled flag, because a flag that is published before the primitive it guards has been
-	// initialised lets a second thread enter an uninitialised critical section.
+	
+	
+	
+	
 	INIT_ONCE	g_SyscallOnce = INIT_ONCE_STATIC_INIT;
 	SRWLOCK		g_SyscallLock{ };
 
@@ -176,7 +182,7 @@ namespace
 
 	BOOL CALLBACK InitializeLockOnce(PINIT_ONCE, PVOID, PVOID *)
 	{
-		// SRWLOCK needs no explicit initialisation; acquiring it is already safe.
+		
 		return TRUE;
 	}
 
@@ -198,7 +204,7 @@ namespace
 		return nullptr;
 	}
 
-	// Maximum bytes StubLooksHealthy may inspect (prologue + imm32 + scan window + 1).
+	
 	constexpr DWORD kStubProbeSize = 0x22;
 
 	bool StubLooksHealthy(const BYTE * Code, DWORD Available, DWORD & ServiceOut)
@@ -208,7 +214,7 @@ namespace
 			return false;
 		}
 
-		// mov r10, rcx ; mov eax, imm32
+		
 		if (memcmp(Code, kPrologueHealthy, sizeof(kPrologueHealthy)) != 0)
 		{
 			return false;
@@ -216,15 +222,15 @@ namespace
 
 		const DWORD Candidate = *ReCa<const DWORD *>(Code + sizeof(kPrologueHealthy));
 
-		// Service numbers of the thunks on supported builds are two bytes wide. Anything outside that
-		// range means the "imm32" is the tail of some unrelated instruction stream.
+		
+		
 		if (Candidate > 0xFFFF)
 		{
 			return false;
 		}
 
-		// A real syscall must still be reachable, and the thunk body must not have been replaced by a
-		// jump or an early ret.
+		
+		
 		for (DWORD i = sizeof(kPrologueHealthy) + sizeof(DWORD); i + 1 < Available && i <= 0x20; ++i)
 		{
 			if (Code[i] == 0x0F && Code[i + 1] == 0x05)
@@ -338,12 +344,12 @@ bool BuildPool()
 {
 	SC_LOG_INFO("Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...", kSyscallTableCount, SC_STUB_SIZE);
 
-	// Re-resolution (e.g. an incomplete pool whose readiness flag was left false) re-enters this
-	// function via SyscallResolveAll, which holds the syscall lock the whole time. To avoid leaking the
-	// previous allocation, free any pool still stored before building a new one. We also null every
-	// g_SyscallTable[i].Stub first so no entry keeps a dangling pointer into the region about to be
-	// freed. This is safe: every Stub read site either runs after g_SyscallPoolReady is latched (under
-	// the lock) or is SyscallResolveAll itself, so no caller is mid-use of the old stubs here.
+	
+	
+	
+	
+	
+	
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
 		g_SyscallTable[i].Stub = nullptr;
@@ -439,10 +445,10 @@ DWORD SyscallResolveAll()
 
 	SC_LOG_INFO("ntdll Base: %p | ImageSize: 0x%X | Exports: %u", Ntdll, ImageSize, Export->NumberOfNames);
 
-	// Pass 1: read every matching entry point that has not been rerouted, and remember the address it
-	// was read from so that a rerouted neighbour can be reconstructed.
-	// Heap-backed: the previous 128KB stack array risked stack exhaustion
-	// under the default 1MB thread stack once inlined callees were counted.
+	
+	
+	
+	
 	std::vector<HARVESTED_ENTRY> HarvestedStorage;
 	try
 	{
@@ -476,8 +482,8 @@ DWORD SyscallResolveAll()
 
 		DWORD Hash = 0;
 		{
-			// Bound the export-name read to the mapped image so a corrupt
-			// directory cannot pull the hash scan out of bounds.
+			
+			
 			const DWORD NameLimit = ImageSize > NameRva ? ImageSize - NameRva : 0;
 			const char * Name = ReCa<const char *>(Ntdll + NameRva);
 			DWORD h = 0x811C9DC5u;
@@ -509,8 +515,8 @@ DWORD SyscallResolveAll()
 				Entry->Service = kInvalidService;
 			}
 
-			// Either a forwarded export (no code of its own) or a pointer that lands outside the mapped
-			// image. Both mean there is nothing here to read a service number out of.
+			
+			
 			if (Entry)
 			{
 				++oob;
@@ -545,7 +551,7 @@ DWORD SyscallResolveAll()
 				}
 				catch (...)
 				{
-					// Out of memory while harvesting: keep what was collected.
+					
 				}
 			}
 
@@ -555,7 +561,7 @@ DWORD SyscallResolveAll()
 		}
 		else if (Entry && Entry->Service == kServiceUnknown)
 		{
-			// Rerouted entry point. Keep the name hash but mark the service for reconstruction.
+			
 			Entry->Service = kInvalidService;
 			const size_t idx = static_cast<size_t>(Entry - g_SyscallTable);
 			if (idx < kSyscallTableCount)
@@ -575,8 +581,8 @@ DWORD SyscallResolveAll()
 	SC_LOG_INFO("Pass 1: Scanned %u Exports | Matched %u | Healthy %u | Rerouted %u | Unreadable %u",
 		Export->NumberOfNames, matched, healthy, rerouted, oob);
 
-	// Pass 2: reconstruct anything that could not be read directly. Service numbers on the thunks are
-	// dense in address order, so a healthy neighbour plus its address delta recovers the value.
+	
+	
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
 		if (g_SyscallTable[i].Service != kInvalidService)
@@ -627,7 +633,7 @@ DWORD SyscallResolveAll()
 				break;
 			}
 
-			// Walk the harvested set for the nearest healthy entries on both sides.
+			
 			const HARVESTED_ENTRY * Lower = nullptr;
 			const HARVESTED_ENTRY * Upper = nullptr;
 
@@ -654,14 +660,14 @@ DWORD SyscallResolveAll()
 				const DWORD span_rva		= Upper->Rva - Lower->Rva;
 				const int	span_service	= static_cast<int>(Upper->Service) - static_cast<int>(Lower->Service);
 
-				// Uniform stride means straight interpolation is exact, so it is the only shape that is
-				// accepted. A non uniform layout is left unresolved on purpose: guessing the nearest
-				// neighbour's number would let a rerouted or obfuscated thunk issue a WRONG syscall in
-				// the target, which is far worse than issuing none. The entry keeps kInvalidService, no
-				// stub is built for it, and the Sc* wrapper fails loudly with STATUS_ENTRYPOINT_NOT_FOUND.
-				// Note that span_rva is a byte distance while span_service is an index distance, so requiring
-				// the two to be equal demanded exactly one byte of thunk spacing per service number, which no
-				// ntdll layout has, and therefore this recovery path never fired at all.
+				
+				
+				
+				
+				
+				
+				
+				
 				if (span_rva > 0 && span_service > 0 && (span_rva % static_cast<DWORD>(span_service)) == 0)
 				{
 					const DWORD stride_bytes = span_rva / static_cast<DWORD>(span_service);
@@ -696,10 +702,10 @@ DWORD SyscallResolveAll()
 		return 0;
 	}
 
-	// The readiness flag is latched only once every stub is built (see the check below). BuildPool()
-	// returns true as long as at least one stub was written, so a partially resolved table here must
-	// not be advertised as ready: SyscallStub would then hand out a null stub for an unresolved entry
-	// instead of re-resolving. The flag is gated accordingly; do not move it above this point.
+	
+	
+	
+	
 	DWORD Ready = 0;
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
@@ -709,7 +715,7 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	// Forensic resolution table: two-pass verification output.
+	
 	SC_LOG_INFO("[Syscall] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
 	SC_LOG_INFO("[Syscall] [*] Export Census: %u Total Exports Harvested (%u Healthy)\n", Export->NumberOfNames, healthy);
 	SC_LOG_INFO("[Syscall] [=] System Service Resolution Table:\n");
@@ -740,9 +746,9 @@ DWORD SyscallResolveAll()
 			if (is_rx)
 			{
 				SC_LOG_OK("[Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n", pool, kStubAreaSize);
-				// rwx_count is printed from the query result rather than hardcoded: in this branch it is
-				// necessarily 0 (it is only raised for PAGE_EXECUTE_READWRITE, which is the else),
-				// but a literal here would still be a claim rather than a reported value.
+				
+				
+				
 				SC_LOG_OK("[Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n",
 					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
 			}
@@ -757,9 +763,9 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	// "ready" is only true when every table entry resolved. A partial pool must not read as ready:
-	// BuildPool() succeeds once a single stub exists, so latch the flag only when the whole table
-	// resolved, otherwise SyscallStub re-resolves instead of trusting a hole.
+	
+	
+	
 	if (Ready == kSyscallTableCount)
 	{
 		g_SyscallPoolReady.store(true, std::memory_order_release);
@@ -775,8 +781,8 @@ DWORD SyscallResolveAll()
 
 void * SyscallStub(DWORD NameHash)
 {
-	// Resolution runs before the lock is taken, because SyscallResolveAll takes the lock itself and the
-	// exclusive lock below is not reentrant.
+	
+	
 	if (!g_SyscallPoolReady.load(std::memory_order_acquire))
 	{
 		if (!SyscallResolveAll())
@@ -828,9 +834,9 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 		return 0;
 	}
 
-	// The zero length probe is not relied upon: this information class does not consistently populate
-	// the return length when handed a null buffer. A working buffer is supplied straight away and grown
-	// on a length mismatch instead.
+	
+	
+	
 	ULONG Size = 0x400;
 	std::vector<BYTE> Scratch;
 
@@ -838,7 +844,7 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	{
 		try
 		{
-			// Slack for the UNICODE_STRING header the kernel writes in front of the path.
+			
 			Scratch.assign(Size + sizeof(wchar_t) * 2, 0);
 		}
 		catch (...)
@@ -850,9 +856,9 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 
 		if (Status == static_cast<NTSTATUS>(0xC0000004))
 		{
-			// Some builds return zero as the required length. Doubling zero
-			// stays zero and retries with the same undersized buffer, so grow
-			// from the buffer actually attempted instead.
+			
+			
+			
 			if (!Size)
 			{
 				const SIZE_T Attempted = Scratch.size();
@@ -905,7 +911,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 		return 0;
 	}
 
-	// Resolution runs first because it takes the lock itself.
+	
 	if (!g_SyscallPoolReady.load(std::memory_order_acquire))
 	{
 		if (!SyscallResolveAll())
@@ -917,8 +923,8 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 	EnsureLock();
 	SyscallLockGuard Guard;
 
-	// Slots are addressed by index rather than compacted so that a caller can rely on
-	// Destination[i] corresponding to NameHashes[i].
+	
+	
 	DWORD Written = 0;
 
 	for (DWORD i = 0; i < Count; ++i)

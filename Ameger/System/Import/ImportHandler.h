@@ -47,6 +47,9 @@ namespace NATIVE
 	NT_FUNC(NtAllocateVirtualMemory);
 	NT_FUNC(NtFreeVirtualMemory);
 	NT_FUNC(NtProtectVirtualMemory);
+	NT_FUNC(NtCreateSection);
+	NT_FUNC(NtMapViewOfSection);
+	NT_FUNC(NtUnmapViewOfSection);
 
 	NT_FUNC(LdrProtectMrdata);
 

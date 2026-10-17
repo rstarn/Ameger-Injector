@@ -7,9 +7,9 @@
 
 #define INJ_ERR_SUCCESS					0x00000000
 
-// Distinct "no advanced error was recorded" sentinel. It is deliberately NOT INJ_ERR_SUCCESS so an
-// unset AdvErrorCode can be told apart from a recorded success; it is normalised back to
-// INJ_ERR_SUCCESS at the diagnostic boundary (InitErrorStruct) so the reported value is unchanged.
+
+
+
 #define INJ_ERR_ADVANCED_NOT_DEFINED	0xFFFFFFFF
 
 #define INJ_ERR_NO_DATA						0x00000001
@@ -54,9 +54,9 @@
 #define INJ_ERR_WINDOWS_BUILD_UNSUPPORTED	0x0000004E
 #define INJ_ERR_HANDLE_HIJACK_FAILED		0x0000004F
 
-// Returned by GetLastErrorInfo when the diagnostic ring holds no record. Deliberately distinct from
-// INJ_ERR_SUCCESS: "no failure was recorded" is a different claim from "a failure was recorded and
-// has been reported", and conflating them makes the result of the call impossible to interpret.
+
+
+
 #define INJ_ERR_NO_LAST_ERROR				0x00000050
 
 #define INJ_MM_ERR_NO_DATA						0x00400001
@@ -134,8 +134,8 @@ struct ERROR_DATA
 	int			Line = 0;
 };
 
-// Maps the internal "not defined" sentinel onto the success value so the diagnostic payload never
-// exposes the sentinel (in particular it cannot be mistaken for an NTSTATUS by the launcher).
+
+
 inline DWORD NormalizeAdvError(DWORD AdvErrorCode)
 {
 	return AdvErrorCode == INJ_ERR_ADVANCED_NOT_DEFINED ? INJ_ERR_SUCCESS : AdvErrorCode;

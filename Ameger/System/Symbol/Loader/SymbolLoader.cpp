@@ -56,9 +56,9 @@ namespace
 			return E_FAIL;
 		}
 
-		// Trust model for the runtime's only network surface: the symbol host is a compile-time
-		// allowlist. Any URL that does not begin with the exact expected https:// prefix is refused
-		// before a socket is opened, so the authority can never be redirected by a crafted PDB name.
+		
+		
+		
 		const std::wstring allowed_prefix = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
 		if (url.size() < allowed_prefix.size() || url.compare(0, allowed_prefix.size(), allowed_prefix) != 0)
 		{
@@ -101,10 +101,10 @@ namespace
 			return E_FAIL;
 		}
 
-		// Certificate verification: WinINet validates the server chain and hostname by default, but
-		// only when no INTERNET_FLAG_IGNORE_CERT_* bypass is in effect. Assert that the transport is
-		// genuinely secure and that no bypass bit was set, so a downgrade or an ignored cert error is
-		// treated as a hard failure rather than silently trusted.
+		
+		
+		
+		
 		DWORD security_flags = 0;
 		DWORD security_flags_size = sizeof(security_flags);
 		if (!api.InternetQueryOptionW(request, INTERNET_OPTION_SECURITY_FLAGS, &security_flags, &security_flags_size) ||
@@ -193,15 +193,15 @@ SYMBOL_LOADER::~SYMBOL_LOADER()
 
 bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 {
-	// Provenance/trust model for a downloaded or cached PDB. The PDB is accepted only when:
-	//   1. it came from the compile-time allowlisted https://msdl.microsoft.com host, with WinINet's
-	//      default certificate chain + hostname validation confirmed (no INTERNET_FLAG_IGNORE_CERT_*
-	//      bypass) - see DownloadUrlToFile;
-	//   2. its MSF stream 1 GUID matches the CodeView GUID recorded inside the *local* ntdll image;
-	//   3. its MSF stream 3 (DBI) age matches the module's CodeView age.
-	// Points 2 and 3 bind the file to this exact ntdll build, so a substituted or tampered PDB fails
-	// closed even if the transport were compromised. The PDB is never executed, only parsed for
-	// structure offsets.
+	
+	
+	
+	
+	
+	
+	
+	
+	
 	LOG(2, XOR_STR_A("SymbolLoader::VerifyExistingPdb Called\n").get());
 
 	std::ifstream f(m_szPdbPath.c_str(), std::ios::binary | std::ios::ate);
@@ -450,13 +450,13 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 
 	int guid_eq = memcmp(&stream_data->guid, &guid, sizeof(GUID));
 
-	// The module records its build age in the CodeView (RSDS) debug record and the PDB mirrors it
-	// in the DBI stream (stream 3) header. The PDB *info* stream (stream 1) also carries an "age",
-	// but that is a write counter which the toolchain and Microsoft's symbol server advance
-	// independently of the module signature: the symbol-server ntdll PDB for RSDS age 1 reports an
-	// info-stream age of 4, and an incrementally linked local build (RSDS age 3) reports 5, while
-	// their DBI ages stay 1 and 3. Comparing against the info-stream age therefore rejects every
-	// valid symbol-server PDB, so the DBI age is the field that actually has to match.
+	
+	
+	
+	
+	
+	
+	
 	bool dbi_age_available = false;
 	DWORD dbi_age = 0;
 	const auto dbi_stream = streams.find(3);
@@ -478,9 +478,9 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 
 	delete[] pdb_raw;
 
-	// A GUID mismatch is always fatal: the PDB is not the one the module was built with. The age
-	// is only enforced when the PDB exposes a DBI age, so a valid PDB is never rejected outright
-	// just because that field is absent.
+	
+	
+	
 	auto ret = (guid_eq == 0 && age_eq);
 
 	if (guid_eq != 0)
@@ -623,10 +623,10 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 	const DWORD codeview_offset = pDebugDir->AddressOfRawData;
 	const DWORD codeview_size	= pDebugDir->SizeOfData;
 
-	// The record is read below through a PdbInformation (signature, GUID, age, then the file name),
-	// so it has to cover at least the fixed part of that structure before any field is touched.
-	// "SizeOfData != 0" was not enough: a one-byte record still made the signature read below run
-	// past the end of the mapped image. The file name is bounded separately further down.
+	
+	
+	
+	
 	constexpr DWORD kCodeViewFixedSize = static_cast<DWORD>(offsetof(PdbInformation, PdbFileName));
 	const bool codeview_record_ok =
 		codeview_size >= kCodeViewFixedSize &&
@@ -804,11 +804,11 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		if (!m_bStartDownload)
 		{
-			// The host has not granted a download yet. The grant normally arrives within milliseconds
-			// (the launcher calls CoreFetch immediately after CoreStart), but the park used to be
-			// unbounded, so a host that never grants one left the worker parked for the whole session
-			// and the caller's poll loop timed out with a misleading "not done" code. A bounded park
-			// turns that into an immediate, attributable failure.
+			
+			
+			
+			
+			
 			constexpr DWORD kGrantWaitMs = 1500;
 			const ULONGLONG grant_deadline = GetTickCount64() + kGrantWaitMs;
 
@@ -991,10 +991,10 @@ void SYMBOL_LOADER::PurgePdb()
 		return;
 	}
 
-	// Unconditional: the PDB this object serves is about to be deleted, so it must stop reporting
-	// ready and must drop the handle (an open handle would make DeleteFileW fail as well). Whether
-	// a handle happens to be held right now is not part of that contract - gating this on
-	// m_hPdbFile left the object reporting ready after its PDB was gone.
+	
+	
+	
+	
 	Cleanup();
 
 	if (!DeleteFileW(m_szPdbPath.c_str()))

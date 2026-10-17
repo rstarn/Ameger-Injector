@@ -41,8 +41,8 @@ namespace
 		}
 	}
 
-	// The shared scrub helper lives in the syscall layer. The trampoline is at most a couple of pages,
-	// so it is wiped in 8 KiB chunks, matching the stack buffer the previous local copy used.
+	
+	
 	constexpr SIZE_T kScrubChunk = 0x2000;
 
 	constexpr DWORD kMaxHandleProbes = 4;
@@ -463,16 +463,16 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 							}
 							else if (have_state && st == waiting_state && IsSafeWaitReason(wr))
 							{
-								// A Waiting sponsor on a safe wait reason is as usable as any other
-								// thread this file selects: the census path already picks Waiting
-								// threads on exactly this allowlist (FindHijackThread, reason
-								// 4/6/11/13/15). Demanding Running here made the runtime discard a
-								// handle the launcher had already opened with the correct access and
-								// then fall through to the budget-limited donor scan, which on an idle
-								// target exhausts its budget and fails the whole injection with
-								// SR_HT_ERR_OPEN_REFUSED. Wait reasons outside the allowlist (e.g. 37,
-								// observed on notepad) are still refused: those threads are not
-								// reliably scheduled and stall the 2s startup probe.
+								
+								
+								
+								
+								
+								
+								
+								
+								
+								
 								sponsor_usable = true;
 								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d; Accepting Sponsor\n",
 									SponsorTidActual, static_cast<int>(wr));
@@ -727,9 +727,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
 
-	// Every offset used below is derived once, from the exported assembler labels, and validated before
-	// a single byte is written. Deriving them in two places (once to size the buffers, once to place
-	// the fields) is how the two sets drift apart.
+	
+	
+	
 	const ULONG_PTR shellcode_begin = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin);
 	const ULONG_PTR shellcode_end = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd);
 
@@ -745,11 +745,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	const size_t return_target_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadReturnTarget) - shellcode_begin);
 	const size_t state_area_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadState));
 
-	// The return target has to live inside the state area, behind the FP save area, and the state area
-	// has to carry the routine descriptor. Both bounds are checked on both sides: the upper bound is
-	// what the size assert already covers, but a return target that appears *before* RemoteThreadState
-	// would make the state offset below wrap around into the code page and overwrite live shellcode
-	// bytes with the restored RIP. A changed assembler layout has to fail closed here.
+	
+	
+	
+	
+	
 	if (return_target_offset < state_offset ||
 		return_target_offset + sizeof(ULONG_PTR) > shellcode_size ||
 		state_offset + sizeof(SR_REMOTE_DATA) > shellcode_size ||
@@ -779,10 +779,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	std::vector<BYTE> shellcode(shellcode_size);
 	memcpy(shellcode.data(), RemoteThreadHijackBegin, shellcode_size);
 
-	// The pad behind the stub is filled with zeroes rather than breakpoints. An executable page carrying
-	// a long unbroken run of 0xCC is the signature of a breakpoint trampoline, which is precisely the
-	// construct an anti-cheat that emulates INT3 inside its own vectored handler looks for. Zeroed tail
-	// is what a normally allocated and partially written page looks like.
+	
+	
+	
+	
 	std::vector<BYTE> staged(kWxCodePage + data_size, 0x00);
 
 	void * pMem = ScAllocateMemory(hTargetProc, kWxAllocSize, PAGE_READWRITE);
@@ -806,11 +806,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	memcpy(staged.data() + kWxCodePage, shellcode.data() + state_offset, data_size);
 
 	{
-		// Patch sites are located through the exported labels in RemoteThreadHijack.asm
-		// (RemoteThreadLeaStateIn/Out, RemoteThreadJmpReturn, RemoteThreadTeb*). Deriving
-		// the offset from the assembler layout keeps the RIP-relative relocation correct no
-		// matter how the toolset encodes the displacement; the opcode prefix at the named
-		// site is still validated so any encoding drift fails closed at a named location.
+		
+		
+		
+		
+		
 		const int pad32 = static_cast<int>(pad);
 		const BYTE lea_prefix[3] = { 0x48, 0x8D, 0x1D };
 		const BYTE jmp_prefix[2] = { 0xFF, 0x25 };
@@ -1042,15 +1042,15 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	LOG(2, "Entering Wait State\n");
 
-	// The stub restores the victim's registers itself and then jumps back to the original RIP, so a
-	// forced restore only has to cover the window between suspending the thread and that return. The
-	// retry window is deliberately generous, with a short backoff, because a single missed poll used
-	// to leak the trampoline and leave the victim inside the stub.
+	
+	
+	
+	
 	constexpr int kForceRestorePolls = 24;
-	// Widest distance our stub can place RSP below the victim's original RSP while RIP is still inside
-	// the code page: pushfq + 15 GPRs (0x80), then `and rsp,-16` (up to 0xF) and `sub rsp,0x40`.
-	// Comparing RSP for equality instead of against this window only matched the single instruction
-	// before pushfq, so the forced restore never fired and the trampoline was retained every time.
+	
+	
+	
+	
 	constexpr ULONG_PTR kStubFrameWindow = 0x100;
 
 	auto ForceRestoreContext = [&](bool & restored, bool & resumed) -> void
@@ -1065,8 +1065,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			if (poll > 0)
 			{
-				// Short at first so a fast return is noticed immediately, then a steady cadence so a
-				// slow one is not polled in a tight spin.
+				
+				
 				Sleep(poll < 8 ? 2 : 10);
 			}
 
@@ -1109,8 +1109,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			}
 
 			resumed = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
-			// If resume fails, the thread stays suspended but context may have been restored.
-			// The caller must handle this case (e.g., by retaining the trampoline allocation).
+			
+			
 			if (!resumed)
 			{
 				return;
@@ -1123,10 +1123,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		}
 	};
 
-	// Decides whether the trampoline can be reclaimed safely after an unrecoverable restore failure.
-	// That is only true once the victim can no longer be executing inside the stub: either it has
-	// exited, or its instruction pointer has left the code page. Otherwise freeing the region would
-	// take the victim's instruction pointer with it, so it is deliberately retained.
+	
+	
+	
+	
 	auto StubRegionFreeToRelease = [&]() -> bool
 	{
 		if (WaitForSingleObject(hThread, 0) == WAIT_OBJECT_0)
@@ -1146,9 +1146,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return probe.Rip < code_base || probe.Rip >= code_base + kWxCodePage;
 	};
 
-	// Releases the trampoline when the victim is provably out of it, and retains it only when the
-	// victim may still be executing inside. On the failure paths this is the last chance to avoid
-	// leaking the allocation; the returned error code is unaffected.
+	
+	
+	
 	auto ReclaimOrRetainTrampoline = [&](bool context_restored) -> void
 	{
 		if (context_restored)
@@ -1172,10 +1172,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	DWORD poll_wait_ms = 1;
 
-	// The victim thread is only ever nudged when it has visibly failed to be scheduled. A message posted
-	// unconditionally lands in the target's queue and is visible to any queue monitor, and the fixed
-	// pre-poll delay cost the victim a guaranteed multi tens of milliseconds of wall time, which is
-	// exactly the shape a delta based timing check is written to catch.
+	
+	
+	
+	
 	bool nudge_sent = false;
 	DWORD nudge_after_ms = 250;
 
@@ -1212,8 +1212,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					}
 				}
 				LOG(1, "[ThreadHijack] [*] Polling Execution: State = Finished | Iterations = %u | Elapsed = %u ms | Return Value = 0x%08X\n", poll_iterations, exec_ms, data.Ret);
-// Marker follows the value: a 0-byte result means nothing was reported scrubbed, which is an
-				// absent measurement rather than a successful scrub.
+
+				
 				if (data.StackScrubbedBytes)
 				{
 					LOG(1, "[ThreadHijack] [+] Stack Sanitization: Scrubbed = %llu Bytes | Cycles = %llu\n",
