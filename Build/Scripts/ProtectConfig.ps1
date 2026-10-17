@@ -202,7 +202,7 @@ if ($pairs.Count -gt 0) {
         if ($pairs.ContainsKey($k)) {
             $val = $pairs[$k]
             if ($k -eq "ExportMap") {
-                # ExportMap is a comma-separated map; print the header, then one entry per line.
+
                 $entries = $val -split ','
                 Write-Host ("ProtectConfig: {0} =" -f $k.PadRight(12))
                 foreach ($entry in $entries) {
