@@ -3769,7 +3769,7 @@ LUID luid{};
 
     bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
     {
-        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!process)
         {
             process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -8505,11 +8505,13 @@ LUID luid{};
         Context.Verbose = config.verbose_trace && !config.quiet;
         Context.SponsorAccess = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE;
+        // Do not pre-open a full-access process handle in the launcher: a direct handle carrying
+        // VM_WRITE/VM_OPERATION is a durable handle-table footprint. Force donor scan instead.
         HANDLE sponsorRaw = nullptr;
         DWORD sponsor_err = ERROR_SUCCESS;
-        if (config.handle_hijacking)
+        if (false && config.handle_hijacking)
         {
-
+ 
             sponsorRaw = OpenProcess(Context.SponsorAccess, FALSE, target.pid);
             if (!sponsorRaw && GetLastError() == ERROR_ACCESS_DENIED)
             {
