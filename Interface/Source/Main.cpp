@@ -1470,6 +1470,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         bool quiet = false;
 
         bool detach_console = false;
+        bool test_mode = false;
         bool hook_restore = true;
         bool run_dllmain = true;
         bool page_protections = true;
@@ -3116,6 +3117,10 @@ LUID luid{};
             else if (general && EqualsNoCase(key, XOR_STR_W(L"Quiet").get()))
             {
                 config.quiet = ParseConfigBool(value, config.quiet);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"TestMode").get()))
+            {
+                config.test_mode = ParseConfigBool(value, config.test_mode);
             }
             else if (general && EqualsNoCase(key, XOR_STR_W(L"DetachConsole").get()))
             {
@@ -8417,8 +8422,24 @@ LUID luid{};
         Trace::Note(L"Import State = 0x%08lX", static_cast<unsigned long>(import_state));
         Trace::End();
 
+        if (config.test_mode)
+        {
+            config.target_name = L"notepad.exe";
+            config.quiet = true;
+            config.detach_console = true;
+            config.verbose_trace = false;
+            SetEnvironmentVariableW(L"INJ_ALLOW_DIRECT_FALLBACK", L"1");
+        }
         Trace::Begin(L"Operator Confirmation");
-        const ConfirmationResult confirmation = ConfirmBeforeDetection();
+        ConfirmationResult confirmation = ConfirmationResult::Proceed;
+        if (config.test_mode)
+        {
+            Sleep(3000);
+        }
+        else
+        {
+            confirmation = ConfirmBeforeDetection();
+        }
         if (confirmation == ConfirmationResult::Cancelled)
         {
             Trace::End();
