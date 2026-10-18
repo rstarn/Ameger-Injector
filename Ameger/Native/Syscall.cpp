@@ -159,7 +159,7 @@ namespace
 	};
 	RESOLUTION_INFO g_Resolution[kSyscallTableCount]{};
 
-	constexpr BYTE kInvalidService = 0xFF;
+	constexpr DWORD kInvalidService = 0xFFFF0000;
 
 	constexpr BYTE kPrologueHealthy[4] = { 0x4C, 0x8B, 0xD1, 0xB8 };
 
@@ -313,14 +313,15 @@ namespace
 		}
 
 		const auto * Export = ReCa<const IMAGE_EXPORT_DIRECTORY *>(Ntdll + Dir.VirtualAddress);
-		if (!Export->NumberOfNames || Export->NumberOfNames > 0x8000)
+		if (!Export->NumberOfNames || Export->NumberOfNames > 0x8000 ||
+			!Export->NumberOfFunctions || Export->NumberOfFunctions > 0x8000)
 		{
 			return nullptr;
 		}
 
 		if (!BoundedRead(Ntdll, Export->AddressOfNames, sizeof(DWORD) * Export->NumberOfNames, ImageSizeOut) ||
 			!BoundedRead(Ntdll, Export->AddressOfNameOrdinals, sizeof(WORD) * Export->NumberOfNames, ImageSizeOut) ||
-			!BoundedRead(Ntdll, Export->AddressOfFunctions, sizeof(DWORD) * Export->NumberOfNames, ImageSizeOut))
+			!BoundedRead(Ntdll, Export->AddressOfFunctions, sizeof(DWORD) * Export->NumberOfFunctions, ImageSizeOut))
 		{
 			return nullptr;
 		}
@@ -506,7 +507,8 @@ DWORD SyscallResolveAll()
 			Hash = h;
 		}
 		SYSCALL_ENTRY * Entry = FindEntry(Hash);
-		const DWORD Rva = Functions[Ordinals[i]];
+		const WORD Ordinal = Ordinals[i];
+		const DWORD Rva = Ordinal < Export->NumberOfFunctions ? Functions[Ordinal] : 0;
 
 		if (!Rva || !BoundedRead(Ntdll, Rva, kStubProbeSize, ImageSize))
 		{
@@ -627,7 +629,13 @@ DWORD SyscallResolveAll()
 				continue;
 			}
 
-			const DWORD Rva = Functions[Ordinals[j]];
+			const WORD Ordinal = Ordinals[j];
+			if (Ordinal >= Export->NumberOfFunctions)
+			{
+				break;
+			}
+
+			const DWORD Rva = Functions[Ordinal];
 			if (!Rva)
 			{
 				break;

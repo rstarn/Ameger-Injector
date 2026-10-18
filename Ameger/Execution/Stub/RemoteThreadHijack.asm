@@ -180,15 +180,16 @@ StubStackScrubDone:
     pop rdi
     pop rsi
     pop rbp
+;; Publish the exit sentinel while RBX still addresses the state page; the trailing pops
+;; would otherwise restore the victim RBX first. The return jump still reads the target
+;; from the state page and the host reclaims the trampoline only once RIP has left the
+;; RX code page, so the store must happen before RBX is consumed by the pops.
+    mov qword ptr [rbx+SR_STATE], SR_STATE_EXITED
     pop rbx
     pop rdx
     pop rcx
     pop rax
     popfq
-;; Publish the exit sentinel as the final act of the stub. After this store the thread
-;; never returns into the RX code page and never reads the RW state page again, so the
-;; host is then free to reclaim the entire remote trampoline.
-    mov qword ptr [rbx+SR_STATE], SR_STATE_EXITED
 RemoteThreadJmpReturn:
     jmp qword ptr [RemoteThreadReturnTarget]
 

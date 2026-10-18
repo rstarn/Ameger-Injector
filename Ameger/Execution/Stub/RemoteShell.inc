@@ -19,9 +19,10 @@ SR_SAVED_RSP EQU 96
 SR_STATE_PENDING  EQU 0
 SR_STATE_RUNNING  EQU 1
 SR_STATE_FINISHED EQU 2
-;; Published as the very last act of the stub, immediately before the return jump. This is
-;; the only moment at which the RX code page and the RW state page are provably no longer
-;; reachable, so it is what gates reclamation of the remote trampoline.
+;; Published after the routine result is stored and while the state page is still addressed:
+;; the trailing pops would otherwise restore the victim RBX, so the store must precede them.
+;; Reclamation stays gated on the thread's RIP being observed outside the RX code page,
+;; because the return jump itself still reads the target out of the state page.
 SR_STATE_EXITED   EQU 3
 
 ;; XSAVE/XRSTOR take a 64-bit feature mask in EDX:EAX. Every component this stub can

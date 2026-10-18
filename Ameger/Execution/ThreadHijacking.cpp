@@ -365,11 +365,11 @@ namespace
 		{
 			DupError = ERROR_INVALID_HANDLE;
 		}
-		else if (!DuplicateHandle(GetCurrentProcess(), Process, GetCurrentProcess(), &DupProcess, 0, FALSE, 0))
+		else if (!DuplicateHandle(GetCurrentProcess(), Process, GetCurrentProcess(), &DupProcess, 0, FALSE, DUPLICATE_SAME_ACCESS))
 		{
 			DupError = GetLastError();
 		}
-		else if (!DuplicateHandle(GetCurrentProcess(), Thread, GetCurrentProcess(), &DupThread, 0, FALSE, 0))
+		else if (!DuplicateHandle(GetCurrentProcess(), Thread, GetCurrentProcess(), &DupThread, 0, FALSE, DUPLICATE_SAME_ACCESS))
 		{
 			DupError = GetLastError();
 		}

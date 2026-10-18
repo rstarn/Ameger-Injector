@@ -274,9 +274,12 @@ namespace ameger_ui_log
 
 int UiWprintf(const wchar_t * format, ...);
 int UiFwprintf(FILE * stream, const wchar_t * format, ...);
+int UiLog(int indent, const wchar_t * format, ...);
 
 #define wprintf UiWprintf
 #define fwprintf UiFwprintf
+#undef LOG
+#define LOG UiLog
 
 int UiWprintf(const wchar_t * format, ...)
 {
@@ -352,6 +355,43 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     
     
     
+int UiLog(int indent, const wchar_t * format, ...)
+{
+    if (!format)
+    {
+        return -1;
+    }
+    if (indent < 0)
+    {
+        indent = 0;
+    }
+    va_list args;
+    va_start(args, format);
+    int needed = _vscwprintf(format, args);
+    va_end(args);
+    if (needed <= 0)
+    {
+        return needed;
+    }
+    const size_t pad = static_cast<size_t>(indent) * 2;
+    std::vector<wchar_t> buffer(pad + static_cast<size_t>(needed) + 1, L' ');
+    va_start(args, format);
+    const int written = vswprintf_s(buffer.data() + pad, buffer.size() - pad, format, args);
+    va_end(args);
+    if (written > 0)
+    {
+        ameger_ui_log::AppendStripped(buffer.data());
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+        {
+            fputws(buffer.data(), stdout);
+            fflush(stdout);
+        }
+    }
+    return written;
+}
+
     constexpr int kMaxLaunchAttempts = 3;
     
     
@@ -1552,7 +1592,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
-            fwprintf(stderr, L"%ls%ls%ls\n", kRed, message, kReset);
+            LOG(0,  L"%ls%ls%ls\n", kRed, message, kReset);
         }
         else
         {
@@ -1573,7 +1613,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
-            wprintf(L"%ls[!]%ls %ls\n", kYellow, message, kReset);
+            LOG(0, L"%ls[!]%ls %ls\n", kYellow, message, kReset);
         }
         else
         {
@@ -1768,7 +1808,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             
             if (!g_census.start.empty())
             {
-                wprintf(L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
+                LOG(0, L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
             }
 
             
@@ -1777,7 +1817,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             {
                 if (row.find(L"Wait Reason") != std::wstring::npos)
                 {
-                    wprintf(L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
+                    LOG(0, L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
                     break;
                 }
             }
@@ -1786,7 +1826,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             {
                 for (const std::wstring & row : g_census.rows)
                 {
-                    wprintf(L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
+                    LOG(0, L"       %ls%ls%ls\n", kDim, row.c_str(), kReset);
                 }
             }
             else
@@ -1795,21 +1835,21 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
                 
                 for (const std::wstring * row : selected)
                 {
-                    wprintf(L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
+                    LOG(0, L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
                 }
                 for (const std::wstring * row : excluded)
                 {
-                    wprintf(L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
+                    LOG(0, L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
                 }
             }
 
-            wprintf(L"       %ls[%zu Considered: %zu Selected, %zu Excluded, %zu Skipped]%ls\n",
+            LOG(0, L"       %ls[%zu Considered: %zu Selected, %zu Excluded, %zu Skipped]%ls\n",
                 kDim, selected.size() + excluded.size() + skipped.size(), selected.size(),
                 excluded.size(), skipped.size(), kReset);
 
             if (!FullThreadCensusEnabled() && !skipped.empty())
             {
-                wprintf(L"       %ls(Set AMEGER_FULL_CENSUS=1 For The Full Listing)%ls\n", kDim, kReset);
+                LOG(0, L"       %ls(Set AMEGER_FULL_CENSUS=1 For The Full Listing)%ls\n", kDim, kReset);
             }
 
             g_census.rows.clear();
@@ -1911,7 +1951,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         if (title && title != g_RuntimeCategory.load(std::memory_order_acquire))
         {
             g_RuntimeCategory.store(title, std::memory_order_release);
-            wprintf(L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
+            LOG(0, L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
         }
 
         
@@ -1926,7 +1966,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             }
             if (end > start)
             {
-                wprintf(L"       %ls%.*ls%ls\n", kDim, static_cast<int>(end - start), line.c_str() + start, kReset);
+                LOG(0, L"       %ls%.*ls%ls\n", kDim, static_cast<int>(end - start), line.c_str() + start, kReset);
             }
             start = end + 1;
         }
@@ -1986,7 +2026,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
     bool ReadLine(const wchar_t * prompt, std::wstring & value)
     {
         fflush(stdout);
-        wprintf(L"%ls", prompt);
+        LOG(0, L"%ls", prompt);
         if (!std::getline(std::wcin, value))
         {
             return false;
@@ -2055,7 +2095,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
         }
         for (;;)
         {
-            wprintf(L"%ls [%ls]: ", prompt, default_value ? L"Y" : L"N");
+            LOG(0, L"%ls [%ls]: ", prompt, default_value ? L"Y" : L"N");
             std::wstring text;
             if (!ReadLine(L"", text))
             {
@@ -2113,7 +2153,7 @@ int UiFwprintf(FILE * stream, const wchar_t * format, ...)
             return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
         }
 
-        wprintf(L"%ls[+]%ls Press Enter To Begin, Or Q To Quit: \n", kGreen, kReset);
+        LOG(0, L"%ls[+]%ls Press Enter To Begin, Or Q To Quit: \n", kGreen, kReset);
         fflush(stdout);
 
         std::wstring entered;
@@ -2264,11 +2304,11 @@ wchar_t name[48]{};
             PhaseCount() = 0;
             SYSTEMTIME st{};
             GetLocalTime(&st);
-            wprintf(L"\n====================================================================================================\n");
-            wprintf(L" [Ameger Injector] -- Full Procedure Trace (Start %02u:%02u:%02u.%03u | PID %lu)\n",
+            LOG(0, L"\n====================================================================================================\n");
+            LOG(0, L" [Ameger Injector] -- Full Procedure Trace (Start %02u:%02u:%02u.%03u | PID %lu)\n",
                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
                 static_cast<unsigned long>(GetCurrentProcessId()));
-            wprintf(L"====================================================================================================\n");
+            LOG(0, L"====================================================================================================\n");
         }
 
         
@@ -2289,7 +2329,7 @@ wchar_t name[48]{};
             
             
             ResetRuntimeCategory();
-            wprintf(L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
+            LOG(0, L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
             return rec;
         }
 
@@ -2312,7 +2352,7 @@ wchar_t name[48]{};
             rec.elapsed_ms = NowMs() - T0() - rec.start_ms;
             rec.open = false;
             rec.ok = ok;
-            wprintf(L"     %ls[%ls]%ls %-44ls %ls%6llu ms%s  (+%llu ms)\n",
+            LOG(0, L"     %ls[%ls]%ls %-44ls %ls%6llu ms%s  (+%llu ms)\n",
                 ok ? kGreen : kRed, ok ? L"+" : L"x", kReset,
                 rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
         }
@@ -2332,7 +2372,7 @@ wchar_t name[48]{};
             va_start(args, fmt);
             vswprintf_s(buffer.data(), buffer.size(), fmt, args);
             va_end(args);
-            wprintf(L"       %ls%s%ls\n", kDim, buffer.data(), kReset);
+            LOG(0, L"       %ls%s%ls\n", kDim, buffer.data(), kReset);
         }
 
         
@@ -2342,22 +2382,22 @@ wchar_t name[48]{};
             const size_t count = PhaseCount();
             const ULONGLONG total = NowMs() - T0();
 
-            wprintf(L"\n====================================================================================================\n");
-            wprintf(L" [Phase Summary] %ls\n", outcome ? outcome : L"Completed");
-            wprintf(L"====================================================================================================\n");
-            wprintf(L"  %-3s %-46s %10s %8s %12s\n", L"#", L"Phase", L"Elapsed", L"Share", L"Start");
+            LOG(0, L"\n====================================================================================================\n");
+            LOG(0, L" [Phase Summary] %ls\n", outcome ? outcome : L"Completed");
+            LOG(0, L"====================================================================================================\n");
+            LOG(0, L"  %-3s %-46s %10s %8s %12s\n", L"#", L"Phase", L"Elapsed", L"Share", L"Start");
 
             for (size_t i = 0; i < count; ++i)
             {
                 const double share = total ? (static_cast<double>(phases[i].elapsed_ms) * 100.0 / static_cast<double>(total)) : 0.0;
                 const wchar_t * tint = phases[i].open ? kYellow : kGreen;
-                wprintf(L"  %ls%02zu%ls %-46s %ls%8llu ms%s %7.1f%% %10llu ms\n",
+                LOG(0, L"  %ls%02zu%ls %-46s %ls%8llu ms%s %7.1f%% %10llu ms\n",
                     kDim, i + 1, kReset, phases[i].name, tint, phases[i].elapsed_ms, kReset,
                     share, phases[i].start_ms);
             }
 
-            wprintf(L"  %-50s %ls%8llu ms%s\n", L"Total Wall Time", kGreen, total, kReset);
-            wprintf(L"====================================================================================================\n");
+            LOG(0, L"  %-50s %ls%8llu ms%s\n", L"Total Wall Time", kGreen, total, kReset);
+            LOG(0, L"====================================================================================================\n");
         }
     }
     // SeDebugPrivilege is raised and dropped inside the runtime DLL (HandleHijack.cpp),
@@ -3273,12 +3313,12 @@ wchar_t name[48]{};
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(file, &size))
         {
-            fwprintf(stderr, L"%lsFailed To Query Runtime Size = 0x%08X%ls\n", kRed, GetLastError(), kReset);
+            LOG(0,  L"%lsFailed To Query Runtime Size = 0x%08X%ls\n", kRed, GetLastError(), kReset);
             return false;
         }
         if (size.QuadPart <= 0 || static_cast<unsigned long long>(size.QuadPart) > PE_IMAGE::MAX_IMAGE_SIZE)
         {
-            fwprintf(stderr, L"%lsInvalid Runtime Size = %lld Bytes%ls\n", kRed, size.QuadPart, kReset);
+            LOG(0,  L"%lsInvalid Runtime Size = %lld Bytes%ls\n", kRed, size.QuadPart, kReset);
             return false;
         }
 
@@ -3293,7 +3333,7 @@ wchar_t name[48]{};
             const DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
             if (!read_ok || read == 0)
             {
-                fwprintf(stderr, L"%lsFailed To Read Runtime = 0x%08X (%zu Of %zu Bytes)%ls\n", kRed, read_error, total, bytes.size(), kReset);
+                LOG(0,  L"%lsFailed To Read Runtime = 0x%08X (%zu Of %zu Bytes)%ls\n", kRed, read_error, total, bytes.size(), kReset);
                 bytes.clear();
                 return false;
             }
@@ -3312,7 +3352,7 @@ wchar_t name[48]{};
         const DWORD validation_result = PE_IMAGE::Validate(bytes.data(), bytes.size(), IMAGE_FILE_MACHINE_AMD64, options, view);
         if (validation_result != FILE_ERR_SUCCESS)
         {
-            fwprintf(stderr, L"%lsRuntime DLL PE Validation Failed = 0x%08X%ls\n", kRed, validation_result, kReset);
+            LOG(0,  L"%lsRuntime DLL PE Validation Failed = 0x%08X%ls\n", kRed, validation_result, kReset);
             return false;
         }
 
@@ -3352,7 +3392,7 @@ wchar_t name[48]{};
         const std::wstring actual_hash = Sha256Hex(bytes);
         if (actual_hash.empty() || _wcsicmp(actual_hash.c_str(), expected_hash.c_str()) != 0)
         {
-            fwprintf(stderr, L"%lsRuntime DLL SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_hash.c_str(), actual_hash.c_str(), kReset);
+            LOG(0,  L"%lsRuntime DLL SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_hash.c_str(), actual_hash.c_str(), kReset);
             return false;
         }
 
@@ -3371,7 +3411,7 @@ wchar_t name[48]{};
         HANDLE runtime_file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (runtime_file == INVALID_HANDLE_VALUE)
         {
-            fwprintf(stderr, L"%lsFailed To Open Runtime For Verification = 0x%08X%ls\n", kRed, GetLastError(), kReset);
+            LOG(0,  L"%lsFailed To Open Runtime For Verification = 0x%08X%ls\n", kRed, GetLastError(), kReset);
             return false;
         }
 
@@ -3454,7 +3494,7 @@ wchar_t name[48]{};
 
         if (!runtime.module)
         {
-            fwprintf(stderr, L"%lsFailed To Load Runtime = %ls (0x%08X)%ls\n", kRed, path.c_str(), load_error, kReset);
+            LOG(0,  L"%lsFailed To Load Runtime = %ls (0x%08X)%ls\n", kRed, path.c_str(), load_error, kReset);
             return false;
         }
 
@@ -3476,12 +3516,12 @@ wchar_t name[48]{};
 
         if (runtime.get_last_hijack_stats)
         {
-            if (VerboseOutputEnabled()) { wprintf(L"%ls[+]%ls Telemetry Export Found.\n\n", kGreen, kReset); }
+            if (VerboseOutputEnabled()) { LOG(0, L"%ls[+]%ls Telemetry Export Found.\n\n", kGreen, kReset); }
 
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Telemetry Export Missing; The Acquire Process Handle Step Will Show No Telemetry.\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls Telemetry Export Missing; The Acquire Process Handle Step Will Show No Telemetry.\n", kYellow, kReset);
         }
 
         return true;
@@ -3875,7 +3915,7 @@ wchar_t name[48]{};
             GetConsoleMode(probeInput, &probeMode) != FALSE;
         if (hasConsoleForWait)
         {
-            wprintf(L"%ls[+]%ls Waiting For %ls... (Press Q To Quit)\n", kGreen, kReset, target.requested_name.c_str());
+            LOG(0, L"%ls[+]%ls Waiting For %ls... (Press Q To Quit)\n", kGreen, kReset, target.requested_name.c_str());
         }
         const ULONGLONG wait_timeout = timeout_ms > 0 ? static_cast<ULONGLONG>(timeout_ms) : 60000ULL;
         const ULONGLONG deadline = GetTickCount64() + wait_timeout;
@@ -3887,7 +3927,7 @@ wchar_t name[48]{};
                 target.pid = found;
                 if (hasConsoleForWait)
                 {
-                    wprintf(L"%ls[+]%ls %ls Detected | PID = %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                    LOG(0, L"%ls[+]%ls %ls Detected | PID = %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
                 }
                 return true;
             }
@@ -3994,7 +4034,7 @@ wchar_t name[48]{};
         {
             if (validation_code != FILE_ERR_SUCCESS)
             {
-                fwprintf(stderr, L"%lsNot A Usable DLL (PE Validation 0x%08X). Need x64 DLL With Relocations, No .NET.%ls\n",
+                LOG(0,  L"%lsNot A Usable DLL (PE Validation 0x%08X). Need x64 DLL With Relocations, No .NET.%ls\n",
                     kYellow, validation_code, kReset);
             }
             else
@@ -4011,7 +4051,7 @@ wchar_t name[48]{};
         }
         if (_wcsicmp(expected_sha256.c_str(), sha256.c_str()) != 0)
         {
-            fwprintf(stderr, L"%lsPayload SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_sha256.c_str(), sha256.c_str(), kReset);
+            LOG(0,  L"%lsPayload SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_sha256.c_str(), sha256.c_str(), kReset);
             return false;
         }
 
@@ -4026,7 +4066,7 @@ wchar_t name[48]{};
             return false;
         }
 
-        if (VerboseOutputEnabled()) { wprintf(L"Verified SHA-256 = %ls%ls%ls\n", kGreen, sha256.c_str(), kReset); }
+        if (VerboseOutputEnabled()) { LOG(0, L"Verified SHA-256 = %ls%ls%ls\n", kGreen, sha256.c_str(), kReset); }
         return true;
     }
 
@@ -4095,9 +4135,9 @@ wchar_t name[48]{};
 
         if (has_exports && (flags & INJ_MM_CLEAN_DATA_DIR) != 0)
         {
-            wprintf(L"  %ls[*]%ls CleanDataDirectories Is On; The Payload's Export Directory Is Erased During The Load.\n",
+            LOG(0, L"  %ls[*]%ls CleanDataDirectories Is On; The Payload's Export Directory Is Erased During The Load.\n",
                 kDim, kReset);
-            wprintf(L"      Anything That Resolves This Payload By Export Name Afterwards Will Fail.\n");
+            LOG(0, L"      Anything That Resolves This Payload By Export Name Afterwards Will Fail.\n");
         }
     }
 
@@ -4123,11 +4163,11 @@ wchar_t name[48]{};
             { INJ_MM_RUN_UNDER_LDR_LOCK,       L"INJ_MM_RUN_UNDER_LDR_LOCK" },
         };
 
-        wprintf(L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
+        LOG(0, L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
         for (const FlagBit & fb : kBits)
         {
             const bool set = (flags & fb.bit) != 0;
-            wprintf(L"      %ls%s%ls 0x%08X  %ls\n",
+            LOG(0, L"      %ls%s%ls 0x%08X  %ls\n",
                 set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
                 fb.bit, fb.name);
         }
@@ -4141,7 +4181,7 @@ wchar_t name[48]{};
         const DWORD unexplained = flags & ~accounted;
         if (unexplained)
         {
-            wprintf(L"      %ls[!]%ls 0x%08lX  Undecoded Bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
+            LOG(0, L"      %ls[!]%ls 0x%08lX  Undecoded Bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
         }
         (void)INJ_MM_MAP_FROM_MEMORY;
     }
@@ -4245,7 +4285,7 @@ DWORD BuildFlags(const WizardConfig & config)
     {
         if (!Stats || !Stats->Attempted)
         {
-            wprintf(L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
+            LOG(0, L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
             return;
         }
 
@@ -4253,11 +4293,11 @@ DWORD BuildFlags(const WizardConfig & config)
 
         wchar_t Text[256]{ 0 };
 
-        wprintf(L"  %ls Acquisition Trace:\n\n", Kind);
+        LOG(0, L"  %ls Acquisition Trace:\n\n", Kind);
 
         int Stage = 0;
         const bool target_known = Context && !Context->TargetName.empty();
-        wprintf(L"    %ls %ls %ls%ls%ls | PID = %ls%lu%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Target").c_str(),
+        LOG(0, L"    %ls %ls %ls%ls%ls | PID = %ls%lu%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Target").c_str(),
             target_known ? kGreen : kYellow,
             target_known ? Context->TargetName.c_str() : L"unknown", kReset,
             kGreen, Context ? Context->TargetPid : 0, kReset);
@@ -4265,7 +4305,7 @@ DWORD BuildFlags(const WizardConfig & config)
         const DWORD hijack_flag = INJ_HANDLE_HIJACKING;
         const bool hijack_on = (Flags & hijack_flag) != 0;
         const wchar_t * FlagTint = hijack_on ? kGreen : kYellow;
-        wprintf(L"    %ls %ls %ls%s%ls (%ls0x%04X%s In Flags %ls0x%08X%s)\n", StageTag(++Stage).c_str(),
+        LOG(0, L"    %ls %ls %ls%s%ls (%ls0x%04X%s In Flags %ls0x%08X%s)\n", StageTag(++Stage).c_str(),
             StageLabel(L"Config Flag").c_str(),
             FlagTint, hijack_on ? L"Y" : L"N", kReset,
             FlagTint, hijack_flag, kReset,
@@ -4275,57 +4315,57 @@ DWORD BuildFlags(const WizardConfig & config)
         // for this path, so the privilege row is informational only.
         if (!IsThread)
         {
-            wprintf(XOR_STR_W(L"    %ls %ls SeDebugPrivilege %ls%s%ls\n").get(), StageTag(++Stage).c_str(), StageLabel(L"Privilege").c_str(),
+            LOG(0, XOR_STR_W(L"    %ls %ls SeDebugPrivilege %ls%s%ls\n").get(), StageTag(++Stage).c_str(), StageLabel(L"Privilege").c_str(),
                 kDim, L"Not Required (Runtime-Side Acquisition)", kReset);
         }
 
         if (IsThread && Context && Context->SponsorThreadOpened)
         {
-            wprintf(L"    %ls %ls %ls0x%08X%ls Pre-Opened, TID %ls0x%04X%ls\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %ls0x%08X%ls Pre-Opened, TID %ls0x%04X%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kGreen, static_cast<DWORD>(Context->SponsorThreadValue), kReset,
                 kGreen, Context->SponsorTid, kReset);
         }
         else if (IsThread && Context && Context->SponsorThreadAttempted)
         {
 
-            wprintf(L"    %ls %ls %lsFailed%ls (No Valid TID)\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsFailed%ls (No Valid TID)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kRed, kReset);
         }
         else if (IsThread)
         {
-            wprintf(L"    %ls %ls %lsNot Attempted%ls\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsNot Attempted%ls\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kYellow, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls %lsNone%ls (Donor Scan Only)\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsNone%ls (Donor Scan Only)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Sponsor").c_str(), kYellow, kReset);
         }
 
         if (SponsorUsed)
         {
 
-            wprintf(L"    %ls %ls %lsNot Required%ls (Sponsor Satisfied Acquisition)\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsNot Required%ls (Sponsor Satisfied Acquisition)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Scan").c_str(), kYellow, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls Status %ls0x%08X%ls, %ls%lu%ls Handles\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls Status %ls0x%08X%ls, %ls%lu%ls Handles\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Enumeration").c_str(),
                 Stats->SnapStatus == 0 ? kGreen : kYellow, Stats->SnapStatus, kReset,
                 kGreen, Stats->TotalHandles, kReset);
 
-            wprintf(L"    %ls %ls %ls%s%ls (%ls)\n", StageTag(++Stage).c_str(), StageLabel(L"Calibration").c_str(),
+            LOG(0, L"    %ls %ls %ls%s%ls (%ls)\n", StageTag(++Stage).c_str(), StageLabel(L"Calibration").c_str(),
                 Stats->Calibrated ? kGreen : kYellow,
                 Stats->Calibrated ? L"Self-Calibrated" : L"Uncalibrated", kReset,
                 Stats->Calibrated ? L"Filtered Scan" : L"Unfiltered Scan");
 
-            wprintf(L"    %ls %ls Examined %ls%lu%ls Of %ls%lu%ls, Owners %ls%lu%ls, Dup-Denied %ls%lu%ls, Verify-Rejected %ls%lu%ls, Budget-Skipped %ls%lu%ls\n",
+            LOG(0, L"    %ls %ls Examined %ls%lu%ls Of %ls%lu%ls, Owners %ls%lu%ls, Dup-Denied %ls%lu%ls, Verify-Rejected %ls%lu%ls, Budget-Skipped %ls%lu%ls\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Scan").c_str(),
                 kGreen, Stats->Examined, kReset, kGreen, Stats->TotalHandles, kReset,
                 kGreen, Stats->OwnersOpened, kReset, kGreen, Stats->DupDenied, kReset,
                 kGreen, Stats->VerifyRejected, kReset, kGreen, Stats->BudgetSkipped, kReset);
-            wprintf(L"    %ls %ls Snapshot %ls%u%ls Bytes | Probe Method %ls%u%ls (0 = None, 1 = Reserve, 2 = Protect, 3 = Roundtrip)\n",
+            LOG(0, L"    %ls %ls Snapshot %ls%u%ls Bytes | Probe Method %ls%u%ls (0 = None, 1 = Reserve, 2 = Protect, 3 = Roundtrip)\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Snapshot").c_str(),
                 kGreen, Stats->SnapshotBytes, kReset, kGreen, Stats->ProbeMethod, kReset);
         }
@@ -4337,14 +4377,14 @@ DWORD BuildFlags(const WizardConfig & config)
             DescribeDonor(Stats->DonorPid, Donor);
             if (Donor[0])
             {
-                wprintf(L"    %ls %ls %ls%s%ls (PID %ls%lu%ls), Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
+                LOG(0, L"    %ls %ls %ls%s%ls (PID %ls%lu%ls), Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
                     StageLabel(L"Donor Owner").c_str(), kGreen, Donor, kReset,
                     kGreen, Stats->DonorPid, kReset,
                     kGreen, Stats->DonorHandle, kReset, kGreen, Stats->NewHandle, kReset);
             }
             else
             {
-                wprintf(L"    %ls %ls PID %ls%lu%ls, Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
+                LOG(0, L"    %ls %ls PID %ls%lu%ls, Handle %ls0x%08X%ls, Dup %ls0x%08X%ls\n", StageTag(++Stage).c_str(),
                     StageLabel(L"Donor Owner").c_str(),
                     kGreen, Stats->DonorPid, kReset,
                     kGreen, Stats->DonorHandle, kReset, kGreen, Stats->NewHandle, kReset);
@@ -4352,7 +4392,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            wprintf(L"    %ls %ls %lsNone%ls Qualifying\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsNone%ls Qualifying\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Donor owner").c_str(), kYellow, kReset);
         }
 
@@ -4366,17 +4406,17 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 swprintf_s(Text, L"Donor Scan");
             }
-            wprintf(L"    %ls %ls %ls%s%ls, Granted %ls0x%08X%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Result").c_str(),
+            LOG(0, L"    %ls %ls %ls%s%ls, Granted %ls0x%08X%ls\n", StageTag(++Stage).c_str(), StageLabel(L"Result").c_str(),
                 kGreen, Text, kReset, kGreen, Stats->GrantedAccess, kReset);
         }
         else if (Stats->Source == static_cast<DWORD>(HijackSource::Direct))
         {
-            wprintf(L"    %ls %ls %lsDirect Open%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsDirect Open%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Result").c_str(), kYellow, kReset, kYellow, Stats->FailCode, kReset);
         }
         else
         {
-            wprintf(L"    %ls %ls %lsFailed%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
+            LOG(0, L"    %ls %ls %lsFailed%ls (Code %ls0x%08X%ls)\n", StageTag(++Stage).c_str(),
                 StageLabel(L"Result").c_str(), kRed, kReset, kRed, Stats->FailCode, kReset);
         }
 
@@ -4384,7 +4424,7 @@ DWORD BuildFlags(const WizardConfig & config)
             && Context->UsedTid != Context->SponsorTid && Stats->Success
             && Stats->Source != static_cast<DWORD>(HijackSource::Sponsor))
         {
-            wprintf(L"    %ls %ls Sponsor TID %ls0x%04lX%ls %lsNot Usable%ls; Hijacked TID %ls0x%04lX%ls\n",
+            LOG(0, L"    %ls %ls Sponsor TID %ls0x%04lX%ls %lsNot Usable%ls; Hijacked TID %ls0x%04lX%ls\n",
                 StageTag(++Stage).c_str(), StageLabel(L"Fallback").c_str(),
                 kGreen, static_cast<unsigned long>(Context->SponsorTid), kReset,
                 kYellow, kReset,
@@ -4396,7 +4436,7 @@ DWORD BuildFlags(const WizardConfig & config)
     {
         if (!Stats || !Stats->Attempted)
         {
-            wprintf(L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
+            LOG(0, L"  %ls[!]%ls %ls Handle: No Telemetry (Older Runtime?).\n", kYellow, kReset, Kind);
             return;
         }
 
@@ -4404,17 +4444,17 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             const wchar_t * SourceText = Stats->Source == static_cast<DWORD>(HijackSource::Sponsor) ? L"Sponsor"
                 : Stats->Source == static_cast<DWORD>(HijackSource::Scan) ? L"Scan" : L"Direct";
-            wprintf(L"  %ls[+]%ls %ls Handle Acquired Via %ls%s%ls (%ls0x%08X%ls)\n", kGreen, kReset, Kind,
+            LOG(0, L"  %ls[+]%ls %ls Handle Acquired Via %ls%s%ls (%ls0x%08X%ls)\n", kGreen, kReset, Kind,
                 kGreen, SourceText, kReset, kGreen, Stats->NewHandle, kReset);
         }
         else if (Stats->Source == static_cast<DWORD>(HijackSource::Direct))
         {
-            wprintf(L"  %ls[+]%ls %ls Handle Acquired Via %lsDirect%s (Code %ls0x%08X%ls)\n", kGreen, kReset, Kind,
+            LOG(0, L"  %ls[+]%ls %ls Handle Acquired Via %lsDirect%s (Code %ls0x%08X%ls)\n", kGreen, kReset, Kind,
                 kYellow, kReset, kYellow, Stats->FailCode, kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls %ls Handle Failed (Code %ls0x%08X%ls)\n", kYellow, kReset, Kind,
+            LOG(0, L"  %ls[!]%ls %ls Handle Failed (Code %ls0x%08X%ls)\n", kYellow, kReset, Kind,
                 kYellow, Stats->FailCode, kReset);
         }
     }
@@ -4533,7 +4573,7 @@ DWORD BuildFlags(const WizardConfig & config)
         bool * wx_violated, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X Execution (Advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify W^X Execution (Advisory)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         auto local_sections = [&](WORD & count) -> const IMAGE_SECTION_HEADER *
         {
@@ -4709,7 +4749,7 @@ DWORD BuildFlags(const WizardConfig & config)
                     RxTint, static_cast<unsigned long>(wx_rx), kReset);
             }
 
-            wprintf(L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (Required %ls0%ls) | %s | RW %ls%d%s\n",
+            LOG(0, L"  %ls%ls%ls W^X %ls: RWX %ls%d%ls (Required %ls0%ls) | %s | RW %ls%d%s\n",
                 wx_ok ? kGreen : kYellow, wx_ok ? L"[+]" : L"[!]", kReset,
                 wx_ok ? L"Verified" : L"Violated",
                 wx_ok ? kGreen : kYellow, wx_rwx, kReset,
@@ -4717,7 +4757,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 RxField,
                 kGreen, wx_rw, kReset);
 
-            wprintf(L"      %lsCoverage%s: %ls%d%s Region(s), %ls%lu%s KB Of %ls%lu%s KB Image, %s%s%s\n",
+            LOG(0, L"      %lsCoverage%s: %ls%d%s Region(s), %ls%lu%s KB Of %ls%lu%s KB Image, %s%s%s\n",
                 kDim, kReset, kGreen, wx_regions, kReset,
                 kGreen, static_cast<unsigned long>(wx_bytes / 1024), kReset,
                 kGreen, static_cast<unsigned long>(wx_image / 1024), kReset,
@@ -4727,7 +4767,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
             {
                 const bool single = wx_alloc_bases.size() == 1;
-                wprintf(L"      %lsAllocations%s: %ls%zu%s %s(%s %s%s)%s | %lsPrivate%s: %ls%zu%s KB\n",
+                LOG(0, L"      %lsAllocations%s: %ls%zu%s %s(%s %s%s)%s | %lsPrivate%s: %ls%zu%s KB\n",
                     kDim, kReset,
                     kGreen, wx_alloc_bases.size(), kReset,
                     single ? kGreen : kYellow,
@@ -4741,13 +4781,13 @@ DWORD BuildFlags(const WizardConfig & config)
 
             for (int i = 0; i < wx_rwx_listed; ++i)
             {
-                wprintf(L"      %lsRWX Region At 0x%016llX, %llu Bytes%s\n", kYellow,
+                LOG(0, L"      %lsRWX Region At 0x%016llX, %llu Bytes%s\n", kYellow,
                     static_cast<unsigned long long>(wx_rwx_list[i].base),
                     static_cast<unsigned long long>(wx_rwx_list[i].size), kReset);
             }
             if (wx_rwx > wx_rwx_listed)
             {
-                wprintf(L"      %ls... And %d More RWX Region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
+                LOG(0, L"      %ls... And %d More RWX Region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
             }
 
             
@@ -4798,7 +4838,7 @@ DWORD BuildFlags(const WizardConfig & config)
                     }
                     census_cur = census_next;
                 }
-                wprintf(L"      %lsVAD RX Census%s: Image-RX %ls%lu%s | Private-RX %ls%lu%s (%ls%llu%s KB) | Mapped-RX %ls%lu%s%s\n",
+                LOG(0, L"      %lsVAD RX Census%s: Image-RX %ls%lu%s | Private-RX %ls%lu%s (%ls%llu%s KB) | Mapped-RX %ls%lu%s%s\n",
                     kDim, kReset,
                     kGreen, rx_image, kReset,
                     rx_private ? kYellow : kGreen, rx_private, kReset,
@@ -4807,10 +4847,10 @@ DWORD BuildFlags(const WizardConfig & config)
                     census_done ? L"" : L" [Truncated At 100k Regions]");
                 if (rx_private)
                 {
-                    wprintf(L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
+                    LOG(0, L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
                             L"Each Is VAD-Visible With No Loader Entry\n", kYellow, kReset, kYellow, rx_private, kReset);
                 }
-                wprintf(L"      %ls[+]%ls VAD Anomaly Check: Unbacked RWX = 0 | Staging Regions Scrubbed/Released | "
+                LOG(0, L"      %ls[+]%ls VAD Anomaly Check: Unbacked RWX = 0 | Staging Regions Scrubbed/Released | "
                         L"Remaining Private-RX = %ls%lu%s (Mapped Image Only - Inherent To Manual Map)\n",
                         kGreen, kReset, rx_private ? kYellow : kGreen, rx_private, kReset);
             }
@@ -4822,7 +4862,7 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 *wx_violated = true;
             }
-            wprintf(L"  %ls[!]%ls Image Not Queryable; W^X State Unknown.\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls Image Not Queryable; W^X State Unknown.\n", kYellow, kReset);
         }
         else
         {
@@ -4831,7 +4871,7 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 *wx_violated = true;
             }
-            wprintf(L"  %ls[!]%ls Image Size Unknown; W^X Scan Not Bounded, Result Withheld.\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls Image Size Unknown; W^X Scan Not Bounded, Result Withheld.\n", kYellow, kReset);
         }
     }
 
@@ -4839,7 +4879,7 @@ DWORD BuildFlags(const WizardConfig & config)
         bool & string_gate_ok, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify String Encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify String Encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         auto m0 = XOR_STR_A("msdl.microsoft.com/download/symbols");
         auto m1 = XOR_STR_A("NtUserMsgWaitForMultipleObjectsEx");
@@ -4907,33 +4947,33 @@ DWORD BuildFlags(const WizardConfig & config)
                     {
                         wide_marker[marker_len] = static_cast<wchar_t>(*c);
                     }
-                    wprintf(L"  %ls[x]%ls Marker '%ls' Found In Runtime DLL (Narrow %d, Wide %d).\n",
+                    LOG(0, L"  %ls[x]%ls Marker '%ls' Found In Runtime DLL (Narrow %d, Wide %d).\n",
                         kRed, kReset, wide_marker, hit_narrow ? 1 : 0, hit_wide ? 1 : 0);
                 }
             }
         }
         if (!buffers.runtime_path_known)
         {
-            wprintf(L"  %ls[x]%ls Runtime Path Unknown; Disk-Marker Check Could Not Run.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Runtime Path Unknown; Disk-Marker Check Could Not Run.\n", kRed, kReset);
             string_gate_ok = false;
         }
         else if (!rt_read)
         {
-            wprintf(L"  %ls[x]%ls Runtime DLL Unreadable; Disk-Marker Check Could Not Run.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Runtime DLL Unreadable; Disk-Marker Check Could Not Run.\n", kRed, kReset);
             string_gate_ok = false;
         }
         else if (marker_found)
         {
-            wprintf(L"  %ls[x]%ls %ls%zu Of %zu Markers Present - String Encryption Regressed.%ls\n",
+            LOG(0, L"  %ls[x]%ls %ls%zu Of %zu Markers Present - String Encryption Regressed.%ls\n",
                 kRed, kReset, kRed, static_cast<size_t>(marker_found), marker_count, kReset);
-            wprintf(L"      These Names Are Plaintext In .rdata And Are Directly Scannable In The Target.\n");
-            wprintf(L"      A Decrypt Path That /O2 Can Constant-Fold Will Always Leak Here; See\n");
-            wprintf(L"      The Encrypted-String Helper Header Used By The Runtime Build.\n");
+            LOG(0, L"      These Names Are Plaintext In .rdata And Are Directly Scannable In The Target.\n");
+            LOG(0, L"      A Decrypt Path That /O2 Can Constant-Fold Will Always Leak Here; See\n");
+            LOG(0, L"      The Encrypted-String Helper Header Used By The Runtime Build.\n");
             string_gate_ok = false;
         }
         else
         {
-            wprintf(L"  %ls[+]%ls %ls%zu%ls Markers Absent From Runtime DLL (Ciphertext Only)\n",
+            LOG(0, L"  %ls[+]%ls %ls%zu%ls Markers Absent From Runtime DLL (Ciphertext Only)\n",
                 kGreen, kReset, kGreen, marker_count, kReset);
         }
 
@@ -4945,13 +4985,13 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (!get_string_stats || !StringStats.Reported)
         {
-            wprintf(L"  %ls[!]%ls String-Tier Counters Unavailable From Runtime; "
+            LOG(0, L"  %ls[!]%ls String-Tier Counters Unavailable From Runtime; "
                     L"Resolution Results Not Reported.\n", kYellow, kReset);
         }
         else
         {
             const bool all_symbols = StringStats.SymbolsResolved == StringStats.SymbolsDeclared;
-            wprintf(L"  %ls[+]%ls NT Symbols Resolved Via Encrypted Names: %ls%lu%ls Of %ls%lu%ls (Import %ls%s%ls)\n",
+            LOG(0, L"  %ls[+]%ls NT Symbols Resolved Via Encrypted Names: %ls%lu%ls Of %ls%lu%ls (Import %ls%s%ls)\n",
                 kGreen, kReset,
                 all_symbols ? kGreen : kYellow,
                 static_cast<unsigned long>(StringStats.SymbolsResolved), kReset,
@@ -4961,13 +5001,13 @@ DWORD BuildFlags(const WizardConfig & config)
                 all_symbols ? L"Success" : L"Partial",
                 kReset);
 
-            wprintf(L"  %ls[+]%ls Encrypted Names Built From Ciphertext, No Static Table: %ls%lu%ls\n",
+            LOG(0, L"  %ls[+]%ls Encrypted Names Built From Ciphertext, No Static Table: %ls%lu%ls\n",
                 kGreen, kReset, kGreen,
                 static_cast<unsigned long>(StringStats.HookNamesBuilt), kReset);
 
             const bool tiers_ok = StringStats.TiersTotal != 0
                 && StringStats.TiersPassed == StringStats.TiersTotal;
-            wprintf(L"  %ls[+]%ls Self-Test Tiers Passed At Import-Resolve: %ls%lu%ls Of %ls%lu%ls\n",
+            LOG(0, L"  %ls[+]%ls Self-Test Tiers Passed At Import-Resolve: %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 tiers_ok ? kGreen : kRed,
                 static_cast<unsigned long>(StringStats.TiersPassed), kReset,
@@ -5040,11 +5080,11 @@ DWORD BuildFlags(const WizardConfig & config)
         const HijackContext * Context, DWORD flags, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Acquire process handle...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Acquire process handle...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if (!Context || Context->Verbose)
         {
             PrintHijackTrace(L"Process", ProcessHijack, Context, flags, false);
-            wprintf(L"\n");
+            LOG(0, L"\n");
             PrintHijackTrace(L"Thread", ThreadHijack, Context, flags, true);
         }
         else
@@ -5060,7 +5100,7 @@ DWORD BuildFlags(const WizardConfig & config)
         StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Resolve imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         struct ImportEntry { char name[MAX_PATH + 1]; ULONG thunk_count; bool named; };
         ImportEntry imports[64]{};
@@ -5159,13 +5199,13 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (import_count > 0)
         {
-            wprintf(L" %ls[+]%ls %ls%d%ls Import Descriptor(s), %ls%lu%ls Function(s) Total.\n",
+            LOG(0, L" %ls[+]%ls %ls%d%ls Import Descriptor(s), %ls%lu%ls Function(s) Total.\n",
                 kGreen, kReset, kGreen, import_count, kReset, kGreen,
                 static_cast<unsigned long>(import_total_thunks), kReset);
 
             if (VerboseOutputEnabled())
             {
-                wprintf(L"\n");
+                LOG(0, L"\n");
                 for (int i = 0; i < import_count; ++i)
                 {
                     const char * raw = imports[i].name;
@@ -5178,7 +5218,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
                     wchar_t ordinal[8]{ 0 };
                     swprintf_s(ordinal, L"%d.", i + 1);
-                    wprintf(L"      %ls%ls%ls%lu%ls Thunk(s)\n",
+                    LOG(0, L"      %ls%ls%ls%lu%ls Thunk(s)\n",
                         StageField(ordinal, 6).c_str(),
                         StageField(wide, 26).c_str(),
                         kGreen, static_cast<unsigned long>(imports[i].thunk_count), kReset);
@@ -5187,7 +5227,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            wprintf(L"  %ls[+]%ls No Statically Linked Import Descriptors In The Payload.\n", kGreen, kReset);
+            LOG(0, L"  %ls[+]%ls No Statically Linked Import Descriptors In The Payload.\n", kGreen, kReset);
         }
 
         if (import_problem)
@@ -5197,7 +5237,7 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 wcscpy_s(problem_w, L"<unprintable>");
             }
-            wprintf(L"  %ls[!]%ls Import Survey Incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
+            LOG(0, L"  %ls[!]%ls Import Survey Incomplete: %ls%s%ls\n", kYellow, kReset, kYellow, problem_w, kReset);
         }
     }
 
@@ -5205,20 +5245,20 @@ DWORD BuildFlags(const WizardConfig & config)
     void StealthResolveDelayImports(bool have_local_nt, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Resolve Delay Imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Resolve Delay Imports...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if (have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
             auto & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
             if (dir.Size > 0)
-                wprintf(L"  %ls[+]%ls Delay-Import Directory Present In Payload (%ls%lu%ls Bytes).\n",
+                LOG(0, L"  %ls[+]%ls Delay-Import Directory Present In Payload (%ls%lu%ls Bytes).\n",
                     kGreen, kReset, kGreen, dir.Size, kReset);
             else
-                wprintf(L"  %ls[*]%ls No Delay-Import Directory In Module (Nothing To Resolve).\n", kDim, kReset);
+                LOG(0, L"  %ls[*]%ls No Delay-Import Directory In Module (Nothing To Resolve).\n", kDim, kReset);
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Delay-Import Survey Skipped: No Local Image To Read.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Delay-Import Survey Skipped: No Local Image To Read.\n", kRed, kReset);
         }
     }
 
@@ -5227,7 +5267,7 @@ DWORD BuildFlags(const WizardConfig & config)
         StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Initialize Security Cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Initialize Security Cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         
         
@@ -5259,9 +5299,9 @@ DWORD BuildFlags(const WizardConfig & config)
                         const unsigned long long image_base_ull =
                             static_cast<unsigned long long>(ReCa<ULONG_PTR>(hRemoteBase));
                         const bool cookie_is_image_base = cookie_value == image_base_ull;
-                        wprintf(L"  %ls[=]%ls Security Cookie Read-Back.. %ls0x%016llX%ls At VA %ls0x%016llX%ls\n",
+                        LOG(0, L"  %ls[=]%ls Security Cookie Read-Back.. %ls0x%016llX%ls At VA %ls0x%016llX%ls\n",
                             kCyan, kReset, kGreen, cookie_value, kReset, kGreen, cookie_va, kReset);
-                        wprintf(L"  %ls[*]%ls   Observed %ls%s%ls The Relocated Image Base - Consistent With A "
+                        LOG(0, L"  %ls[*]%ls   Observed %ls%s%ls The Relocated Image Base - Consistent With A "
                                 L"Base-Derived /GS Cookie, But This Is An Observation, Not A Validation "
                                 L"(No Expected Value Exists To Compare Against)\n",
                             kDim, kReset, kCyan, cookie_is_image_base ? L"Equals" : L"Differs From", kReset);
@@ -5286,18 +5326,18 @@ DWORD BuildFlags(const WizardConfig & config)
                     remote_tls, sizeof(IMAGE_TLS_DIRECTORY64), &ts) && ts == sizeof(IMAGE_TLS_DIRECTORY64))
                 {
                     auto tls = ReCa<IMAGE_TLS_DIRECTORY64 *>(remote_tls);
-                    wprintf(L"  %ls[*]%ls Security Cookie: No Load-Config Cookie Field In The Image; "
+                    LOG(0, L"  %ls[*]%ls Security Cookie: No Load-Config Cookie Field In The Image; "
                             L"Falling Back To TLS Directory Cross-Check\n", kDim, kReset);
                     if (tls->AddressOfCallBacks)
                     {
-                        wprintf(L"  %ls[=]%ls   TLS Callback Array VA (Remote).. %ls0x%016llX%ls\n",
+                        LOG(0, L"  %ls[=]%ls   TLS Callback Array VA (Remote).. %ls0x%016llX%ls\n",
                             kCyan, kReset, kGreen, static_cast<unsigned long long>(tls->AddressOfCallBacks), kReset);
-                        wprintf(L"  %ls[+]%ls   TLS Callbacks Present And Mapped In A Section (Survives The Header Erase "
+                        LOG(0, L"  %ls[+]%ls   TLS Callbacks Present And Mapped In A Section (Survives The Header Erase "
                                 L"- Confirms Per-Image Fixups Ran)\n", kGreen, kReset);
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls   TLS Directory Readable But AddressOfCallBacks Is Zero - "
+                        LOG(0, L"  %ls[!]%ls   TLS Directory Readable But AddressOfCallBacks Is Zero - "
                                 L"No Fixed-Up Evidence In This Image\n", kYellow, kReset);
                     }
                     cookie_reported = true;
@@ -5307,7 +5347,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (!cookie_reported)
         {
-            wprintf(L"  %ls[!]%ls Security Cookie: Not Verified - No Load-Config Cookie Field, No TLS Directory "
+            LOG(0, L"  %ls[!]%ls Security Cookie: Not Verified - No Load-Config Cookie Field, No TLS Directory "
                     L"Cross-Check, And No Readable Remote Header. Nothing Was Confirmed This Step.\n",
                 kYellow, kReset);
         }
@@ -5358,7 +5398,7 @@ DWORD BuildFlags(const WizardConfig & config)
     {
         const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Enable Exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Enable Exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         
         
         
@@ -5366,31 +5406,31 @@ DWORD BuildFlags(const WizardConfig & config)
             VehFirstChanceSurvey veh{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls VEH First-Chance Survey... %lsSkipped%ls (No Target Handle; Nothing Read)\n",
+                LOG(0, L"  %ls[*]%ls VEH First-Chance Survey... %lsSkipped%ls (No Target Handle; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
             {
-                wprintf(L"  %ls[+]%ls VEH First-Chance Survey... PEB = %p | CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | UsingVCH = %ls%s%ls\n",
+                LOG(0, L"  %ls[+]%ls VEH First-Chance Survey... PEB = %p | CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | UsingVCH = %ls%s%ls\n",
                     kGreen, kReset, veh.pebAddress,
                     kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
                     kGreen, veh.usingVeh ? L"Yes" : L"No", kReset,
                     kGreen, veh.usingVch ? L"Yes" : L"No", kReset);
-                wprintf(L"  %ls[+]%ls PEB Debug Correlates...... BeingDebugged = %ls%u%ls | NtGlobalFlag = %ls0x%08X%ls (Read Back, Not Inferred)\n",
+                LOG(0, L"  %ls[+]%ls PEB Debug Correlates...... BeingDebugged = %ls%u%ls | NtGlobalFlag = %ls0x%08X%ls (Read Back, Not Inferred)\n",
                     kGreen, kReset,
                     kGreen, static_cast<unsigned>(veh.beingDebugged), kReset,
                     kGreen, static_cast<unsigned>(veh.ntGlobalFlag), kReset);
-                wprintf(L"  %ls[*]%ls VEH Chain Entries Added By Launcher: %ls0%ls (By Design; Survey Is Read-Only, Installs Nothing)\n",
+                LOG(0, L"  %ls[*]%ls VEH Chain Entries Added By Launcher: %ls0%ls (By Design; Survey Is Read-Only, Installs Nothing)\n",
                     kDim, kReset, kCyan, kReset);
                 if (veh.usingVeh)
                 {
-                    wprintf(L"  %ls[!]%ls Target Uses VEH First-Chance: Payload Exceptions Go To Target VEH First; "
+                    LOG(0, L"  %ls[!]%ls Target Uses VEH First-Chance: Payload Exceptions Go To Target VEH First; "
                             L"SEH-Only Payload Has No VEH Handler (See Verify Step)\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls VEH First-Chance Survey... %lsRead Failed%ls (Err 0x%08X; Nothing Proven)\n",
+                LOG(0, L"  %ls[!]%ls VEH First-Chance Survey... %lsRead Failed%ls (Err 0x%08X; Nothing Proven)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
@@ -5398,11 +5438,11 @@ DWORD BuildFlags(const WizardConfig & config)
         
         {
             const bool local_veh_ok = ProbeLocalVehPathRoundTrip();
-            wprintf(L"  %ls[%ls]%ls Local VEH Path Self-Test.... %ls%s%ls (Add+Remove Round-Trip, Net Entries 0)\n",
+            LOG(0, L"  %ls[%ls]%ls Local VEH Path Self-Test.... %ls%s%ls (Add+Remove Round-Trip, Net Entries 0)\n",
                 local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"+" : L"!", kReset,
                 local_veh_ok ? kGreen : kYellow, local_veh_ok ? L"OK" : L"Failed", kReset);
         }
-        wprintf(L"\n");
+        LOG(0, L"\n");
 
         if (have_local_nt)
         {
@@ -5411,7 +5451,7 @@ DWORD BuildFlags(const WizardConfig & config)
             if (exception_dir.Size)
             {
                 const DWORD entry_count = exception_dir.Size / static_cast<DWORD>(sizeof(RUNTIME_FUNCTION));
-                wprintf(L"  %ls[+]%ls Exception Directory    = RVA %ls0x%08X%ls  Size %ls0x%08X%ls  %ls%lu%s Entry(ies)\n",
+                LOG(0, L"  %ls[+]%ls Exception Directory    = RVA %ls0x%08X%ls  Size %ls0x%08X%ls  %ls%lu%s Entry(ies)\n",
                     kGreen, kReset,
                     kGreen, exception_dir.VirtualAddress, kReset,
                     kGreen, exception_dir.Size, kReset,
@@ -5422,13 +5462,13 @@ DWORD BuildFlags(const WizardConfig & config)
                 SIZE_T got = 0;
                 if (process && ReadProcessMemory(process, ReCa<void *>(remote_table), &probe, sizeof(probe), &got) && got == sizeof(probe))
                 {
-                    wprintf(L"  %ls[+]%ls .pdata Table     = %ls0x%016llX%ls  First %ls0x%08X%s - %s0x%08X%s\n",
+                    LOG(0, L"  %ls[+]%ls .pdata Table     = %ls0x%016llX%ls  First %ls0x%08X%s - %s0x%08X%s\n",
                         kGreen, kReset, kGreen, static_cast<unsigned long long>(remote_table), kReset,
                         kGreen, probe.BeginAddress, kReset, kGreen, probe.EndAddress, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls .pdata Table Not Readable At 0x%016llX\n", kYellow, kReset,
+                    LOG(0, L"  %ls[!]%ls .pdata Table Not Readable At 0x%016llX\n", kYellow, kReset,
                         static_cast<unsigned long long>(remote_table));
                 }
             }
@@ -5436,22 +5476,22 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 
                 
-                wprintf(L"  %ls[*]%ls No Exception Directory Present In The Payload (Nothing To Verify).\n", kDim, kReset);
+                LOG(0, L"  %ls[*]%ls No Exception Directory Present In The Payload (Nothing To Verify).\n", kDim, kReset);
             }
         }
 
-        wprintf(L"\n");
+        LOG(0, L"\n");
         
         
         if (exceptions_active(INJ_MM_ENABLE_EXCEPTIONS))
         {
-            wprintf(L"  %ls[*]%ls Inverted Function Table: %lsRequested%ls Via %ls%s%ls "
+            LOG(0, L"  %ls[*]%ls Inverted Function Table: %lsRequested%ls Via %ls%s%ls "
                     L"(In-Shell Call Returned Success; Table Contents Are Process-Internal And Not Verifiable From Outside)\n",
                 kDim, kReset, kCyan, kReset, kCyan, XOR_STR_W(L"RtlAddFunctionTable").get(), kReset);
         }
         else
         {
-            wprintf(L"  %ls[*]%ls Inverted Function Table: %lsNot Requested%ls "
+            LOG(0, L"  %ls[*]%ls Inverted Function Table: %lsNot Requested%ls "
                     L"(INJ_MM_ENABLE_EXCEPTIONS Clear - %ls Was Never Called)\n",
                 kDim, kReset, kYellow, kReset, XOR_STR_W(L"RtlAddFunctionTable").get());
         }
@@ -5463,7 +5503,7 @@ DWORD BuildFlags(const WizardConfig & config)
         f_GetLastStringStats get_string_stats, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify Exception Handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify Exception Handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
         
@@ -5475,35 +5515,35 @@ DWORD BuildFlags(const WizardConfig & config)
             VehFirstChanceSurvey veh{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsSkipped%ls (No Target Handle)\n",
+                LOG(0, L"  %ls[*]%ls Launcher VEH Shell............ %lsSkipped%ls (No Target Handle)\n",
                     kDim, kReset, kYellow, kReset);
-                wprintf(L"  %ls[*]%ls Target VEH First-Chance........ %lsSkipped%ls (No Target Handle; Nothing Read)\n",
+                LOG(0, L"  %ls[*]%ls Target VEH First-Chance........ %lsSkipped%ls (No Target Handle; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteVehFirstChance(process, veh) && veh.readOk)
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design; Survey Installs Nothing)\n",
+                LOG(0, L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design; Survey Installs Nothing)\n",
                     kDim, kReset, kCyan, kReset);
-                wprintf(L"  %ls[+]%ls Target VEH First-Chance........ CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | PEB = %p (Read Back)\n",
+                LOG(0, L"  %ls[+]%ls Target VEH First-Chance........ CrossFlags = %ls0x%08X%ls | UsingVEH = %ls%s%ls | PEB = %p (Read Back)\n",
                     kGreen, kReset,
                     kGreen, static_cast<unsigned>(veh.crossFlags), kReset,
                     kGreen, veh.usingVeh ? L"Yes" : L"No", kReset, veh.pebAddress);
                 if (veh.usingVeh)
                 {
-                    wprintf(L"  %ls[!]%ls First-Chance Gap............... Target VEH Active; INT3/AV Goes To Target VEH First; "
+                    LOG(0, L"  %ls[!]%ls First-Chance Gap............... Target VEH Active; INT3/AV Goes To Target VEH First; "
                             L"Payload Installs No VEH (Stealth: Avoids Chain Entry)\n", kYellow, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[+]%ls First-Chance Posture........... Target VEH Flag Clear; SEH-Table Path Sufficient For Payload\n",
+                    LOG(0, L"  %ls[+]%ls First-Chance Posture........... Target VEH Flag Clear; SEH-Table Path Sufficient For Payload\n",
                         kGreen, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design)\n",
+                LOG(0, L"  %ls[*]%ls Launcher VEH Shell............ %lsNone Installed%ls (By Design)\n",
                     kDim, kReset, kCyan, kReset);
-                wprintf(L"  %ls[!]%ls Target VEH First-Chance........ %lsRead Failed%ls (Err 0x%08X)\n",
+                LOG(0, L"  %ls[!]%ls Target VEH First-Chance........ %lsRead Failed%ls (Err 0x%08X)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
@@ -5515,7 +5555,7 @@ DWORD BuildFlags(const WizardConfig & config)
             DebugPortSurvey dbg{};
             if (!process)
             {
-                wprintf(L"  %ls[*]%ls Target Debug Port............ %lsSkipped%ls (No Target Handle)\n",
+                LOG(0, L"  %ls[*]%ls Target Debug Port............ %lsSkipped%ls (No Target Handle)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else if (QueryRemoteDebugPort(process, dbg) && (dbg.portReadOk || dbg.flagsReadOk))
@@ -5523,25 +5563,25 @@ DWORD BuildFlags(const WizardConfig & config)
                 if (dbg.portReadOk)
                 {
                     const bool clean = (dbg.debugPort == nullptr);
-                    wprintf(L"  %ls[%ls]%ls Target Debug Port............ %ls%p%ls (%ls)\n",
+                    LOG(0, L"  %ls[%ls]%ls Target Debug Port............ %ls%p%ls (%ls)\n",
                         clean ? kGreen : kYellow, clean ? L"+" : L"!", kReset,
                         clean ? kGreen : kYellow, dbg.debugPort, kReset,
                         clean ? L"None Attached" : L"Debugger Port Set");
                 }
                 if (dbg.flagsReadOk)
                 {
-                    wprintf(L"  %ls[+]%ls Target Debug Flags........... %ls0x%08X%ls (Read Back)\n",
+                    LOG(0, L"  %ls[+]%ls Target Debug Flags........... %ls0x%08X%ls (Read Back)\n",
                         kGreen, kReset, kGreen, static_cast<unsigned>(dbg.debugFlags), kReset);
                 }
                 if (!dbg.portReadOk)
                 {
-                    wprintf(L"  %ls[!]%ls Target Debug Port............ %lsUnreadable%ls (Status 0x%08X; Needs QUERY_INFORMATION)\n",
+                    LOG(0, L"  %ls[!]%ls Target Debug Port............ %lsUnreadable%ls (Status 0x%08X; Needs QUERY_INFORMATION)\n",
                         kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus));
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Target Debug Port............ %lsUnknown%ls (Query Failed; Not Treated As Clean; Port Status 0x%08X, Flags Status 0x%08X)\n",
+                LOG(0, L"  %ls[!]%ls Target Debug Port............ %lsUnknown%ls (Query Failed; Not Treated As Clean; Port Status 0x%08X, Flags Status 0x%08X)\n",
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
@@ -5553,20 +5593,20 @@ DWORD BuildFlags(const WizardConfig & config)
             const BOOL local_present = IsDebuggerPresent();
             BOOL self_remote = FALSE;
             const BOOL self_ok = CheckRemoteDebuggerPresent(GetCurrentProcess(), &self_remote);
-            wprintf(L"  %ls[%ls]%ls Local Debugger Self-Check... IsDebuggerPresent = %ls%s%ls | CheckRemote = %ls%s%s (%ls)\n",
+            LOG(0, L"  %ls[%ls]%ls Local Debugger Self-Check... IsDebuggerPresent = %ls%s%ls | CheckRemote = %ls%s%s (%ls)\n",
                 local_present ? kYellow : kGreen, local_present ? L"!" : L"+", kReset,
                 local_present ? kYellow : kGreen, local_present ? L"True" : L"False", kReset,
                 kGreen, self_ok ? (self_remote ? L"True" : L"False") : L"Query Failed", kReset,
                 self_ok ? L"Shape Verified" : L"Unverified Here");
             if (local_present)
             {
-                wprintf(L"  %ls[!]%ls Launcher Itself Is Debugged: Target PEB/TLS Guards Would Fire On The Game, Not Here — Detach Before A Real Run\n",
+                LOG(0, L"  %ls[!]%ls Launcher Itself Is Debugged: Target PEB/TLS Guards Would Fire On The Game, Not Here — Detach Before A Real Run\n",
                     kYellow, kReset);
             }
         }
 
         const bool exceptions_on = isActive(INJ_MM_ENABLE_EXCEPTIONS);
-        wprintf(L"  %ls%s%ls SEH Coverage................... %ls%s%ls\n",
+        LOG(0, L"  %ls%s%ls SEH Coverage................... %ls%s%ls\n",
             exceptions_on ? L"[+]" : L"[*]",
             exceptions_on ? kGreen : kDim, kReset,
             exceptions_on ? kGreen : kYellow,
@@ -5585,13 +5625,13 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             const bool all_imports =
                 stealth_fix_stats.SymbolsResolved == stealth_fix_stats.SymbolsDeclared;
-            wprintf(L"  %ls[+]%ls Encrypted NT Imports............ %ls%lu%ls Of %ls%lu%ls\n",
+            LOG(0, L"  %ls[+]%ls Encrypted NT Imports............ %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 all_imports ? kGreen : kYellow,
                 static_cast<unsigned long>(stealth_fix_stats.SymbolsResolved), kReset,
                 all_imports ? kGreen : kYellow,
                 static_cast<unsigned long>(stealth_fix_stats.SymbolsDeclared), kReset);
-            wprintf(L"  %ls[+]%ls Self-Test Tiers................. %ls%lu%ls Of %ls%lu%ls\n",
+            LOG(0, L"  %ls[+]%ls Self-Test Tiers................. %ls%lu%ls Of %ls%lu%ls\n",
                 kGreen, kReset,
                 stealth_fix_stats.TiersPassed == stealth_fix_stats.TiersTotal ? kGreen : kRed,
                 static_cast<unsigned long>(stealth_fix_stats.TiersPassed), kReset,
@@ -5600,7 +5640,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Encrypted NT Import Counters.... %lsUnavailable%ls (Cannot Verify VEH Import Removal From Runtime)\n",
+            LOG(0, L"  %ls[!]%ls Encrypted NT Import Counters.... %lsUnavailable%ls (Cannot Verify VEH Import Removal From Runtime)\n",
                 kYellow, kReset, kYellow, kReset);
         }
 
@@ -5610,14 +5650,14 @@ DWORD BuildFlags(const WizardConfig & config)
             const auto & exception_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
             if (exception_dir.Size)
             {
-                wprintf(L"  %ls[+]%ls Payload Exception Data.......... RVA %ls0x%08X%ls, %ls%lu%ls Entries\n",
+                LOG(0, L"  %ls[+]%ls Payload Exception Data.......... RVA %ls0x%08X%ls, %ls%lu%ls Entries\n",
                     kGreen, kReset,
                     kGreen, exception_dir.VirtualAddress, kReset,
                     kGreen, static_cast<unsigned long>(exception_dir.Size / sizeof(RUNTIME_FUNCTION)), kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Payload Exception Data.......... None; SEH-Only Cannot Unwind Payload Exceptions\n",
+                LOG(0, L"  %ls[!]%ls Payload Exception Data.......... None; SEH-Only Cannot Unwind Payload Exceptions\n",
                     kYellow, kReset);
             }
         }
@@ -5626,7 +5666,7 @@ DWORD BuildFlags(const WizardConfig & config)
             const bool any_table = exec->DynamicTableInstalled || exec->InvertedTableInstalled;
             if (any_table)
             {
-                wprintf(L"  %ls[+]%ls Structured Exceptions: Dynamic = %ls%s%ls | Inverted = %ls%s%ls | Entry = %p (Verified In-Shell)\n",
+                LOG(0, L"  %ls[+]%ls Structured Exceptions: Dynamic = %ls%s%ls | Inverted = %ls%s%ls | Entry = %p (Verified In-Shell)\n",
                     kGreen, kReset, kGreen, exec->DynamicTableInstalled ? L"Yes" : L"No", kReset,
                     kGreen, exec->InvertedTableInstalled ? L"Yes" : L"No", kReset, exec->InvertedTableEntryBase);
             }
@@ -5634,13 +5674,13 @@ DWORD BuildFlags(const WizardConfig & config)
             {
                 
                 
-                wprintf(L"  %ls[*]%ls Structured Exceptions: None Installed (Dynamic = No | Inverted = No) - Payload Exceptions Are Not Covered\n",
+                LOG(0, L"  %ls[*]%ls Structured Exceptions: None Installed (Dynamic = No | Inverted = No) - Payload Exceptions Are Not Covered\n",
                     kDim, kReset);
             }
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Exception Telemetry Unavailable (Host Read-Back Failed).\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Exception Telemetry Unavailable (Host Read-Back Failed).\n", kRed, kReset);
         }
     }
 
@@ -5650,7 +5690,7 @@ DWORD BuildFlags(const WizardConfig & config)
         const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute TLS...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Execute TLS...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         int tls_callbacks = 0;
         if (have_local_nt)
         {
@@ -5694,26 +5734,26 @@ DWORD BuildFlags(const WizardConfig & config)
             
             const bool tls_ok = exec->TlsCallbacksConfigured == exec->TlsCallbacksExecuted &&
                 exec->TlsCallbacksFailed == 0;
-            wprintf(L"  %ls%s%ls TLS Initialized: %u Configured -> %u Executed, %u Failed (In-Shell Read-Back)\n",
+            LOG(0, L"  %ls%s%ls TLS Initialized: %u Configured -> %u Executed, %u Failed (In-Shell Read-Back)\n",
                 tls_ok ? L"[+]" : L"[!]",
                 tls_ok ? kGreen : kYellow, kReset,
                 exec->TlsCallbacksConfigured, exec->TlsCallbacksExecuted, exec->TlsCallbacksFailed);
             if (exec->TlsLastExecutedAddress)
             {
-                wprintf(L"  %ls[*]%ls Last Executed TLS Callback: %p (Address Only - Not Re-Read To Confirm It Ran)\n",
+                LOG(0, L"  %ls[*]%ls Last Executed TLS Callback: %p (Address Only - Not Re-Read To Confirm It Ran)\n",
                     kDim, kReset, exec->TlsLastExecutedAddress);
             }
             if (exec->TlsCallbacksFailed)
             {
-                wprintf(L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
+                LOG(0, L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
         }
         else if (tls_callbacks > 0)
-            wprintf(L"  %ls[!]%ls %ls%d%ls TLS Callback(s) Declared; In-Shell Telemetry Unavailable (Advisory Only).\n",
+            LOG(0, L"  %ls[!]%ls %ls%d%ls TLS Callback(s) Declared; In-Shell Telemetry Unavailable (Advisory Only).\n",
                 kYellow, kReset, kYellow, tls_callbacks, kReset);
         else
 
-            wprintf(L"  %ls[*]%ls No TLS Callbacks Present (Callback Array Empty Or Absent) - Nothing Executed.\n",
+            LOG(0, L"  %ls[*]%ls No TLS Callbacks Present (Callback Array Empty Or Absent) - Nothing Executed.\n",
                 kDim, kReset);
     }
 
@@ -5721,15 +5761,15 @@ DWORD BuildFlags(const WizardConfig & config)
     void StealthExecuteDllMain(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_DLL_MAIN) == 0)
         {
-            wprintf(L"  %ls[*]%ls DllMain Skipped: INJ_MM_RUN_DLL_MAIN Not Set (No Payload Entry Invoked).\n", kDim, kReset);
+            LOG(0, L"  %ls[*]%ls DllMain Skipped: INJ_MM_RUN_DLL_MAIN Not Set (No Payload Entry Invoked).\n", kDim, kReset);
             return;
         }
         if (!exec)
         {
-            wprintf(L"  %ls[x]%ls DllMain Unverified: No Execution Telemetry (Host Read-Back Failed).\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls DllMain Unverified: No Execution Telemetry (Host Read-Back Failed).\n", kRed, kReset);
             return;
         }
         const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
@@ -5741,17 +5781,17 @@ DWORD BuildFlags(const WizardConfig & config)
         
         if (exec->DllMainCyclesDelta == 0)
         {
-            wprintf(L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
+            LOG(0, L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
                     L"Entry Point (No Entry Point In The Image, Or An Earlier Stage Aborted). "
                     L"No Pass/Fail Is Claimed.\n", kDim, kReset);
             return;
         }
-        wprintf(L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu (~%.2f ms)\n",
+        LOG(0, L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu (~%.2f ms)\n",
             kGreen, kReset, kGreen, exec->DllMainResult ? L"True" : L"False", kReset,
             exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms);
         if (!exec->DllMainResult)
         {
-            wprintf(L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
         }
     }
 
@@ -5759,15 +5799,15 @@ DWORD BuildFlags(const WizardConfig & config)
     void StealthRunUnderLoaderLock(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Run Under Loader Lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Run Under Loader Lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_UNDER_LDR_LOCK) == 0)
         {
-            wprintf(L"  %ls[*]%ls Loader Lock Not Requested (INJ_MM_RUN_UNDER_LDR_LOCK Clear).\n", kDim, kReset);
+            LOG(0, L"  %ls[*]%ls Loader Lock Not Requested (INJ_MM_RUN_UNDER_LDR_LOCK Clear).\n", kDim, kReset);
             return;
         }
         if (!exec)
         {
-            wprintf(L"  %ls[x]%ls Loader-Lock Unverified: No Execution Telemetry.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Loader-Lock Unverified: No Execution Telemetry.\n", kRed, kReset);
             return;
         }
         
@@ -5775,19 +5815,19 @@ DWORD BuildFlags(const WizardConfig & config)
         
         if (exec->DllMainCyclesDelta == 0)
         {
-            wprintf(L"  %ls[*]%ls Loader Lock Not Attempted: It Is Taken Inside The DllMain Step And DllMain "
+            LOG(0, L"  %ls[*]%ls Loader Lock Not Attempted: It Is Taken Inside The DllMain Step And DllMain "
                     L"Was Never Entered (Status Fields Still Hold The 0x%08X Sentinel). No Pass/Fail Is Claimed.\n",
                 kDim, kReset, (unsigned)exec->LdrLockStatus);
             return;
         }
-        wprintf(L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus = 0x%08X | Cookie = 0x%llX | State = %u\n",
+        LOG(0, L"  %ls[+]%ls Loader Lock Telemetry: LdrLockStatus = 0x%08X | Cookie = 0x%llX | State = %u\n",
             kGreen, kReset, (unsigned)exec->LdrLockStatus,
             (unsigned long long)exec->LoaderLockCookie, exec->LoaderLockState);
-        wprintf(L"  %ls[+]%ls Loader Lock Released: LdrUnlockStatus = 0x%08X\n",
+        LOG(0, L"  %ls[+]%ls Loader Lock Released: LdrUnlockStatus = 0x%08X\n",
             kGreen, kReset, (unsigned)exec->LdrUnlockStatus);
         if (exec->LdrLockStatus != 0 || exec->LdrUnlockStatus != 0)
         {
-            wprintf(L"  %ls[x]%ls Loader-Lock NTSTATUS Non-Zero (Verified Failure Path).\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Loader-Lock NTSTATUS Non-Zero (Verified Failure Path).\n", kRed, kReset);
         }
     }
 
@@ -5795,7 +5835,7 @@ DWORD BuildFlags(const WizardConfig & config)
     void StealthCleanDataDirectories(const MAP_STATS * MapStats, bool have_remote_nt, BYTE * nt_data, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Clean Data Directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Clean Data Directories...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         const bool have_shell_report = MapStats &&
             (MapStats->CleanedMask || MapStats->ImportSize || MapStats->DelayImportSize ||
              MapStats->RelocSize || MapStats->TlsSize || MapStats->DebugSize || MapStats->ExportSize);
@@ -5803,7 +5843,7 @@ DWORD BuildFlags(const WizardConfig & config)
         if (have_shell_report)
         {
 
-            wprintf(L"  %ls[+]%ls Import = %ls%d%ls | DelayImport = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Debug = %ls%d%ls | Export = %ls%d%ls\n",
+            LOG(0, L"  %ls[+]%ls Import = %ls%d%ls | DelayImport = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Debug = %ls%d%ls | Export = %ls%d%ls\n",
                 kGreen, kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_IMPORT) & 1), kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT) & 1), kReset,
@@ -5811,7 +5851,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_TLS) & 1), kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_DEBUG) & 1), kReset,
                 kGreen, static_cast<int>((MapStats->CleanedMask >> IMAGE_DIRECTORY_ENTRY_EXPORT) & 1), kReset);
-            wprintf(L"  %ls[+]%ls Pre-Clean Sizes: Import = %ls0x%08X%ls | DelayImport = %ls0x%08X%ls | Reloc = %ls0x%08X%ls | TLS = %ls0x%08X%ls | Debug = %ls0x%08X%ls | Export = %ls0x%08X%ls\n",
+            LOG(0, L"  %ls[+]%ls Pre-Clean Sizes: Import = %ls0x%08X%ls | DelayImport = %ls0x%08X%ls | Reloc = %ls0x%08X%ls | TLS = %ls0x%08X%ls | Debug = %ls0x%08X%ls | Export = %ls0x%08X%ls\n",
                 kGreen, kReset,
                 kGreen, MapStats->ImportSize, kReset,
                 kGreen, MapStats->DelayImportSize, kReset,
@@ -5858,7 +5898,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 }
             }
             const bool all_cleaned = (satisfied == populated);
-            wprintf(L"  %ls%s%ls %ls%zu Of %zu%ls Non-Empty Director%s Reported Cleaned By The Mapper%s%s.\n",
+            LOG(0, L"  %ls%s%ls %ls%zu Of %zu%ls Non-Empty Director%s Reported Cleaned By The Mapper%s%s.\n",
                 all_cleaned ? L"[+]" : L"[x]",
                 all_cleaned ? kGreen : kRed, kReset,
                 kGreen, satisfied, populated, kReset,
@@ -5866,7 +5906,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 all_cleaned ? L"" : L" - unreported: ", missed);
             if (MapStats->Verified)
             {
-                wprintf(L"  %ls[+]%ls Payload-Side Re-Read After Header Cloak: Residual Mask "
+                LOG(0, L"  %ls[+]%ls Payload-Side Re-Read After Header Cloak: Residual Mask "
                         L"0x%08X Across All %zu Directories (Mapper-Side Snapshot).\n",
                     kGreen, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
             }
@@ -5879,13 +5919,13 @@ DWORD BuildFlags(const WizardConfig & config)
                 {
                     ++residual_dirs;
                 }
-                wprintf(L"  %ls[!]%ls Re-Read Found %d Directory Entry/Entries Still Non-Zero "
+                LOG(0, L"  %ls[!]%ls Re-Read Found %d Directory Entry/Entries Still Non-Zero "
                         L"(Mask 0x%08X).\n",
                     kYellow, kReset, residual_dirs, MapStats->ResidualMask);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Payload Reported Success But Performed No Read-Back "
+                LOG(0, L"  %ls[!]%ls Payload Reported Success But Performed No Read-Back "
                         L"Verification.\n", kYellow, kReset);
             }
             if (have_remote_nt && nt_data)
@@ -5901,16 +5941,16 @@ DWORD BuildFlags(const WizardConfig & config)
                     dd[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0 && dd[IMAGE_DIRECTORY_ENTRY_TLS].Size == 0;
                 if (all_zero)
                 {
-                    wprintf(L"  %ls[+]%ls Remote Directories Confirmed Zeroed Post-Clean.\n", kGreen, kReset);
+                    LOG(0, L"  %ls[+]%ls Remote Directories Confirmed Zeroed Post-Clean.\n", kGreen, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls Remote Directories Retain Entries Post-Clean.\n", kYellow, kReset);
+                    LOG(0, L"  %ls[!]%ls Remote Directories Retain Entries Post-Clean.\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[*]%ls Cross-Process Re-Read Not Performed: The Header Is Intentionally "
+                LOG(0, L"  %ls[*]%ls Cross-Process Re-Read Not Performed: The Header Is Intentionally "
                         L"Cloaked (PAGE_NOACCESS) By The Mapper Before Control Returns, So The Host Cannot "
                         L"Read The Directory Table Back. This Is A Coverage Gap, Not A Pass.\n",
                     kDim, kReset);
@@ -5941,7 +5981,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 non_zero += present(idx);
             }
             constexpr int kSurveyedDirs = static_cast<int>(sizeof(surveyed_dirs) / sizeof(surveyed_dirs[0]));
-            wprintf(L"  %ls%s%ls Import = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Exception = %ls%d%ls | Security = %ls%d%ls | Debug = %ls%d%ls | GlobalPtr = %ls%d%ls\n",
+            LOG(0, L"  %ls%s%ls Import = %ls%d%ls | Reloc = %ls%d%ls | TLS = %ls%d%ls | Exception = %ls%d%ls | Security = %ls%d%ls | Debug = %ls%d%ls | GlobalPtr = %ls%d%ls\n",
                 non_zero == 0 ? L"[+]" : L"[!]",
                 non_zero == 0 ? kGreen : kYellow, kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_IMPORT), kReset,
@@ -5953,14 +5993,14 @@ DWORD BuildFlags(const WizardConfig & config)
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR), kReset);
             
             
-            wprintf(L"  %ls[*]%ls %ls%d%ls Of %ls%d%ls Surveyed Directories Non-Zero (Read From The Remote Header "
+            LOG(0, L"  %ls[*]%ls %ls%d%ls Of %ls%d%ls Surveyed Directories Non-Zero (Read From The Remote Header "
                     L"Only - No Mapper Telemetry This Run, So No Independent Confirmation).\n",
                 kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset,
                 kDim, kSurveyedDirs, kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls All Data Directories Zeroed; No Mapper Telemetry And No Readable Header, "
+            LOG(0, L"  %ls[!]%ls All Data Directories Zeroed; No Mapper Telemetry And No Readable Header, "
                     L"So The Wipe Is Unverified This Run.\n", kYellow, kReset);
         }
     }
@@ -5970,7 +6010,7 @@ DWORD BuildFlags(const WizardConfig & config)
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Set Page Protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Set Page Protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         
         WORD sec_count = 0;
         const IMAGE_SECTION_HEADER * secs = nullptr;
@@ -5992,8 +6032,8 @@ DWORD BuildFlags(const WizardConfig & config)
                 }
             }
         }
-        wprintf(L"  %ls[=]%ls Target Section Layout & Verification:\n", kGreen, kReset);
-        wprintf(L"  %-8s %-11s %-11s %-11s %-13s %-13s %s\n", L"Name", L"Virt-Addr", L"Virt-Size", L"Raw-Size", L"Declared", L"Queried", L"Verification");
+        LOG(0, L"  %ls[=]%ls Target Section Layout & Verification:\n", kGreen, kReset);
+        LOG(0, L"  %-8s %-11s %-11s %-11s %-13s %-13s %s\n", L"Name", L"Virt-Addr", L"Virt-Size", L"Raw-Size", L"Declared", L"Queried", L"Verification");
         int rwx_count = 0;
         int mismatch = 0;
         if (secs && process)
@@ -6013,7 +6053,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 if (queried == PAGE_EXECUTE_READWRITE) ++rwx_count;
                 const bool match = qok && (queried == declared || (declared == PAGE_EXECUTE && (queried == PAGE_EXECUTE || queried == PAGE_EXECUTE_READ)));
                 if (!match) ++mismatch;
-                wprintf(L"  %-8s 0x%08X  0x%08X  0x%08X  %-13s %-13s %ls\n",
+                LOG(0, L"  %-8s 0x%08X  0x%08X  0x%08X  %-13s %-13s %ls\n",
                     wname, secs[s].VirtualAddress,
                     secs[s].Misc.VirtualSize, secs[s].SizeOfRawData,
                     StealthPageDesc(declared), qok ? StealthPageDesc(queried) : L"Unqueryable",
@@ -6047,26 +6087,26 @@ DWORD BuildFlags(const WizardConfig & config)
             
             
             const bool wx_clean = (rwx_count == 0 && mismatch == 0);
-            wprintf(L"  %ls%s%ls RWX = %ls%d%ls | RO = %ls%d%ls | RW = %ls%d%ls | RX = %ls%d%ls | PrivateExec = %ls%d%ls | Mismatch = %ls%d%ls\n",
+            LOG(0, L"  %ls%s%ls RWX = %ls%d%ls | RO = %ls%d%ls | RW = %ls%d%ls | RX = %ls%d%ls | PrivateExec = %ls%d%ls | Mismatch = %ls%d%ls\n",
                 wx_clean ? L"[+]" : L"[x]",
                 wx_clean ? kGreen : kRed, kReset, rwx_count ? kRed : kGreen, rwx_count, kReset,
                 kGreen, ro_count, kReset, kGreen, rw_count, kReset, kGreen, rx_count, kReset,
                 kGreen, priv_exec_count, kReset, mismatch ? kRed : kGreen, mismatch, kReset);
             if (wx_clean)
-                wprintf(L"  %ls[+]%ls Strict W^X Posture Enforced (RWX == 0 And 0 Section Mismatches, "
+                LOG(0, L"  %ls[+]%ls Strict W^X Posture Enforced (RWX == 0 And 0 Section Mismatches, "
                         L"Verified By VirtualQueryEx Walk).\n", kGreen, kReset);
             else
             {
                 if (rwx_count)
-                    wprintf(L"  %ls[x]%ls W^X Violation: %d RWX Region(s) (Verified Ground Truth).\n", kRed, kReset, rwx_count);
+                    LOG(0, L"  %ls[x]%ls W^X Violation: %d RWX Region(s) (Verified Ground Truth).\n", kRed, kReset, rwx_count);
                 if (mismatch)
-                    wprintf(L"  %ls[x]%ls %d Section(s) Whose Queried Protection Differs From The Declared "
+                    LOG(0, L"  %ls[x]%ls %d Section(s) Whose Queried Protection Differs From The Declared "
                             L"Protection (See Per-Section Verification Column).\n", kRed, kReset, mismatch);
             }
         }
         else
         {
-            wprintf(L"  %ls[x]%ls Section Protections Unverified: Remote Pages Not Queryable (Hard Gate Failure).\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Section Protections Unverified: Remote Pages Not Queryable (Hard Gate Failure).\n", kRed, kReset);
         }
     }
 
@@ -6077,7 +6117,7 @@ DWORD BuildFlags(const WizardConfig & config)
         int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Verify Forensic Posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify Forensic Posture...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         const std::vector<BYTE> & posture_bytes = buffers.runtime_bytes;
         const bool posture_read = buffers.runtime_read;
@@ -6191,12 +6231,12 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         if (!posture_read)
         {
-            wprintf(L"  %ls[x]%ls Runtime DLL Unreadable; Posture Unverified.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Runtime DLL Unreadable; Posture Unverified.\n", kRed, kReset);
             posture_ok = false;
         }
         else if (!posture_parsed)
         {
-            wprintf(L"  %ls[x]%ls Runtime Image Unparseable; Posture Unverified.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Runtime Image Unparseable; Posture Unverified.\n", kRed, kReset);
             posture_ok = false;
         }
         else
@@ -6205,26 +6245,26 @@ DWORD BuildFlags(const WizardConfig & config)
             if (VerboseOutputEnabled())
             {
                 
-                wprintf(L"  %ls%s%ls Export Names: %ls%zu%ls Neutral, %ls%zu%ls Foreign\n",
+                LOG(0, L"  %ls%s%ls Export Names: %ls%zu%ls Neutral, %ls%zu%ls Foreign\n",
                     export_foreign ? L"[x]" : L"[+]", export_foreign ? kRed : kGreen, kReset,
                     kGreen, export_neutral, kReset,
                     export_foreign ? kRed : kGreen, export_foreign, kReset);
-                wprintf(L"  %ls%s%ls Standard Section Names Remaining: %ls%zu%ls\n",
+                LOG(0, L"  %ls%s%ls Standard Section Names Remaining: %ls%zu%ls\n",
                     standard_sections ? L"[x]" : L"[+]",
                     standard_sections ? kRed : kGreen, kReset,
                     kGreen, standard_sections, kReset);
-                wprintf(L"  %ls%s%ls Debug Directory Size = %ls0x%lX%ls\n",
+                LOG(0, L"  %ls%s%ls Debug Directory Size = %ls0x%lX%ls\n",
                     debug_size ? L"[x]" : L"[+]", debug_size ? kRed : kGreen, kReset,
                     kGreen, static_cast<unsigned long>(debug_size), kReset);
             }
             if (export_foreign || standard_sections || debug_size)
             {
-                wprintf(L"  %ls[x]%ls Forensic Posture Regressed; Rebuild With Mutation Enabled.\n", kRed, kReset);
+                LOG(0, L"  %ls[x]%ls Forensic Posture Regressed; Rebuild With Mutation Enabled.\n", kRed, kReset);
                 posture_ok = false;
             }
             else if (!VerboseOutputEnabled())
             {
-                wprintf(XOR_STR_W(L"  %ls[+]%ls Forensic Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+                LOG(0, XOR_STR_W(L"  %ls[+]%ls Forensic Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
             }
         }
 
@@ -6281,7 +6321,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
     if (VerboseOutputEnabled())
     {
-        wprintf(L"  %ls[+]%ls Payload Export Names: %ls%zu%ls | Standard Sections: %ls%zu%ls | RWX Sections: %ls%zu%ls | Debug: %ls0x%lX%ls\n",
+        LOG(0, L"  %ls[+]%ls Payload Export Names: %ls%zu%ls | Standard Sections: %ls%zu%ls | RWX Sections: %ls%zu%ls | Debug: %ls0x%lX%ls\n",
             kGreen, kReset,
             kGreen, payload_exports, kReset,
             kGreen, payload_standard_sections, kReset,
@@ -6290,16 +6330,16 @@ DWORD BuildFlags(const WizardConfig & config)
     }
     else if (payload_ok)
     {
-        wprintf(XOR_STR_W(L"  %ls[+]%ls Payload On-Disk Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
+        LOG(0, XOR_STR_W(L"  %ls[+]%ls Payload On-Disk Posture Clean (Detail Suppressed; Set AMEGER_VERBOSE=1).\n").get(), kGreen, kReset);
     }
 
             if (!payload_ok)
             {
-                wprintf(L"  %ls[!]%ls Payload Image Could Not Be Re-Parsed For A Posture Report.\n", kYellow, kReset);
+                LOG(0, L"  %ls[!]%ls Payload Image Could Not Be Re-Parsed For A Posture Report.\n", kYellow, kReset);
             }
             else if (payload_rwx_sections)
             {
-                wprintf(L"  %ls[!]%ls Payload Declares RWX Section(s); Mapped Regions May Inherit That.\n", kYellow, kReset);
+                LOG(0, L"  %ls[!]%ls Payload Declares RWX Section(s); Mapped Regions May Inherit That.\n", kYellow, kReset);
             }
         }
 
@@ -6327,11 +6367,11 @@ DWORD BuildFlags(const WizardConfig & config)
             }
             if (enum_ok && !listed)
             {
-                wprintf(L"  %ls[+]%ls Loader Lists Clean: Image Not Enumerated As A Module.\n", kGreen, kReset);
+                LOG(0, L"  %ls[+]%ls Loader Lists Clean: Image Not Enumerated As A Module.\n", kGreen, kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Loader-List Check Inconclusive (Enum %ls, Listed %ls).\n", kYellow, kReset,
+                LOG(0, L"  %ls[!]%ls Loader-List Check Inconclusive (Enum %ls, Listed %ls).\n", kYellow, kReset,
                     enum_ok ? L"OK" : L"Failed", listed ? L"Yes" : L"No");
             }
         }
@@ -6342,13 +6382,13 @@ DWORD BuildFlags(const WizardConfig & config)
                 GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
             if (cfg_read)
             {
-                wprintf(L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
+                LOG(0, L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
                     kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
                     kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
+                LOG(0, L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
             }
         }
 
@@ -6364,7 +6404,7 @@ DWORD BuildFlags(const WizardConfig & config)
             if (!process || !GetRemoteMainModule(process, survey_name, survey_base, survey_size) ||
                 !survey_base || !survey_size)
             {
-                wprintf(L"  %ls[*]%ls Target Image Survey...... %lsSkipped%ls (Main Module Not Enumerable; Nothing Read)\n",
+                LOG(0, L"  %ls[*]%ls Target Image Survey...... %lsSkipped%ls (Main Module Not Enumerable; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
             }
             else
@@ -6396,7 +6436,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 }
                 if (!survey_nt_ok)
                 {
-                    wprintf(L"  %ls[!]%ls Target Image Survey...... Headers Unreadable At %ls%ls%ls Base %p\n",
+                    LOG(0, L"  %ls[!]%ls Target Image Survey...... Headers Unreadable At %ls%ls%ls Base %p\n",
                         kYellow, kReset, kYellow, survey_name.c_str(), kReset,
                         ReCa<void *>(survey_base));
                 }
@@ -6444,26 +6484,26 @@ DWORD BuildFlags(const WizardConfig & config)
                     }
                     if (imp_ok && imp_done)
                     {
-                        wprintf(L"  %ls[+]%ls Target Imports.......... %ls%lu%ls Descriptor(s) In %ls%ls%ls (Read Back)\n",
+                        LOG(0, L"  %ls[+]%ls Target Imports.......... %ls%lu%ls Descriptor(s) In %ls%ls%ls (Read Back)\n",
                             kGreen, kReset, kGreen, imp_count, kReset, kGreen, survey_name.c_str(), kReset);
                         if (imp_count == 1)
                         {
-                            wprintf(L"      %ls[*]%ls Single-Import Shape Holds On This Build (Matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
+                            LOG(0, L"      %ls[*]%ls Single-Import Shape Holds On This Build (Matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
                         }
                         else if (imp_count == 0)
                         {
-                            wprintf(L"      %ls[!]%ls Zero Imports: Packed/Demand-Loaded Shape (sec 12.7 heap-trampoline model?) - Re-Fingerprint\n",
+                            LOG(0, L"      %ls[!]%ls Zero Imports: Packed/Demand-Loaded Shape (sec 12.7 heap-trampoline model?) - Re-Fingerprint\n",
                                 kYellow, kReset);
                         }
                         else
                         {
-                            wprintf(L"      %ls[*]%ls Multi-Import Shape (%lu): Eidolon May Be Reverted/Absent On This Build (sec 12.2)\n",
+                            LOG(0, L"      %ls[*]%ls Multi-Import Shape (%lu): Eidolon May Be Reverted/Absent On This Build (sec 12.2)\n",
                                 kDim, kReset, imp_count);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target Imports.......... Unreadable (Dir RVA 0x%08X Size 0x%08X)\n",
+                        LOG(0, L"  %ls[!]%ls Target Imports.......... Unreadable (Dir RVA 0x%08X Size 0x%08X)\n",
                             kYellow, kReset, static_cast<unsigned>(imp_rva), static_cast<unsigned>(imp_size));
                     }
 
@@ -6472,7 +6512,7 @@ DWORD BuildFlags(const WizardConfig & config)
                     const DWORD exp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
                     if (!exp_rva || !exp_size)
                     {
-                        wprintf(L"  %ls[+]%ls Target Exports.......... None (No Export Directory)\n", kGreen, kReset);
+                        LOG(0, L"  %ls[+]%ls Target Exports.......... None (No Export Directory)\n", kGreen, kReset);
                     }
                     else if (exp_rva < survey_size && IsSafeCodePage(process, survey_base + exp_rva, 40))
                     {
@@ -6481,19 +6521,19 @@ DWORD BuildFlags(const WizardConfig & config)
                         if (ReadProcessMemory(process, ReCa<LPCVOID>(survey_base + exp_rva),
                             &exp_dir, sizeof(exp_dir), &exp_got) && exp_got == sizeof(exp_dir))
                         {
-                            wprintf(L"  %ls[+]%ls Target Exports.......... %ls%lu%ls Funcs / %ls%lu%ls Names (OP Claimed 76 Symbols; This Build Read Back)\n",
+                            LOG(0, L"  %ls[+]%ls Target Exports.......... %ls%lu%ls Funcs / %ls%lu%ls Names (OP Claimed 76 Symbols; This Build Read Back)\n",
                                 kGreen, kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfFunctions), kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfNames), kReset);
                         }
                         else
                         {
-                            wprintf(L"  %ls[!]%ls Target Exports.......... Directory Unreadable\n", kYellow, kReset);
+                            LOG(0, L"  %ls[!]%ls Target Exports.......... Directory Unreadable\n", kYellow, kReset);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target Exports.......... Directory Out Of Image/Safepage\n", kYellow, kReset);
+                        LOG(0, L"  %ls[!]%ls Target Exports.......... Directory Out Of Image/Safepage\n", kYellow, kReset);
                     }
 
                     
@@ -6501,7 +6541,7 @@ DWORD BuildFlags(const WizardConfig & config)
                     const DWORD tls_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].Size;
                     if (!tls_rva || !tls_size)
                     {
-                        wprintf(L"  %ls[*]%ls Target TLS Callbacks.... None (No TLS Directory In Remote Headers)\n", kDim, kReset);
+                        LOG(0, L"  %ls[*]%ls Target TLS Callbacks.... None (No TLS Directory In Remote Headers)\n", kDim, kReset);
                     }
                     else if (tls_rva < survey_size && IsSafeCodePage(process, survey_base + tls_rva, sizeof(IMAGE_TLS_DIRECTORY64)))
                     {
@@ -6541,26 +6581,26 @@ DWORD BuildFlags(const WizardConfig & config)
                             }
                             if (cb_ok && cb_done)
                             {
-                                wprintf(L"  %ls[+]%ls Target TLS Callbacks.... %ls%lu%ls Configured (Remote Array Read; OP Claimed 3 In EXE)\n",
+                                LOG(0, L"  %ls[+]%ls Target TLS Callbacks.... %ls%lu%ls Configured (Remote Array Read; OP Claimed 3 In EXE)\n",
                                     kGreen, kReset, kGreen, cb_count, kReset);
                             }
                             else
                             {
-                                wprintf(L"  %ls[!]%ls Target TLS Callbacks.... Array Walk Failed After %lu\n", kYellow, kReset, cb_count);
+                                LOG(0, L"  %ls[!]%ls Target TLS Callbacks.... Array Walk Failed After %lu\n", kYellow, kReset, cb_count);
                             }
                         }
                         else if (!tls_dir.AddressOfCallBacks && tls_got == sizeof(tls_dir))
                         {
-                            wprintf(L"  %ls[*]%ls Target TLS Callbacks.... Directory Present, Zero Callbacks\n", kDim, kReset);
+                            LOG(0, L"  %ls[*]%ls Target TLS Callbacks.... Directory Present, Zero Callbacks\n", kDim, kReset);
                         }
                         else
                         {
-                            wprintf(L"  %ls[!]%ls Target TLS Directory.... Unreadable\n", kYellow, kReset);
+                            LOG(0, L"  %ls[!]%ls Target TLS Directory.... Unreadable\n", kYellow, kReset);
                         }
                     }
                     else
                     {
-                        wprintf(L"  %ls[!]%ls Target TLS Directory.... Out Of Image/Safepage\n", kYellow, kReset);
+                        LOG(0, L"  %ls[!]%ls Target TLS Directory.... Out Of Image/Safepage\n", kYellow, kReset);
                     }
                 }
             }
@@ -6572,7 +6612,7 @@ DWORD BuildFlags(const WizardConfig & config)
         const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE Header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Erase PE Header...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         SIZE_T declared_headers = 0;
         if (have_local_nt)
@@ -6635,7 +6675,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (base)
         {
-            wprintf(L"  %ls[+]%ls Image Base      = %ls0x%016llX%ls\n",
+            LOG(0, L"  %ls[+]%ls Image Base      = %ls0x%016llX%ls\n",
                 kGreen, kReset, kGreen, base, kReset);
         }
 
@@ -6658,43 +6698,43 @@ DWORD BuildFlags(const WizardConfig & config)
                 }
                 if (commit_ok && noaccess_ok)
                 {
-                    wprintf(L"  %ls[+]%ls Page Protection Assertion: VirtualQueryEx Verified 0x%llX [PAGE_NOACCESS] | State = MEM_COMMIT\n",
+                    LOG(0, L"  %ls[+]%ls Page Protection Assertion: VirtualQueryEx Verified 0x%llX [PAGE_NOACCESS] | State = MEM_COMMIT\n",
                         kGreen, kReset, base);
                 }
                 else
                 {
-                    wprintf(L"  %ls[x]%ls Page Protection Mismatch: State = 0x%X | Protect = %ls (0x%08X) (Required MEM_COMMIT+PAGE_NOACCESS)\n",
+                    LOG(0, L"  %ls[x]%ls Page Protection Mismatch: State = 0x%X | Protect = %ls (0x%08X) (Required MEM_COMMIT+PAGE_NOACCESS)\n",
                         kRed, kReset, mbi.State, protection, mbi.Protect);
                 }
-                wprintf(L"  %ls[*]%ls Pre-Section Span Bound: Span = [0x00000000-0x%llX) | Wiped = %llu Bytes\n",
+                LOG(0, L"  %ls[*]%ls Pre-Section Span Bound: Span = [0x00000000-0x%llX) | Wiped = %llu Bytes\n",
                     kDim, kReset, wiped, wiped);
             }
             else
             {
-                wprintf(L"  %ls[x]%ls Header Page Protection Unreadable: VirtualQueryEx Failed (Hard Gate Failure).\n", kRed, kReset);
+                LOG(0, L"  %ls[x]%ls Header Page Protection Unreadable: VirtualQueryEx Failed (Hard Gate Failure).\n", kRed, kReset);
             }
 
             if (declared_headers)
             {
-                wprintf(L"  %ls[+]%ls Declared SizeOfHeaders = %ls0x%llX%ls (Span The Loader Would Have Mapped)\n",
+                LOG(0, L"  %ls[+]%ls Declared SizeOfHeaders = %ls0x%llX%ls (Span The Loader Would Have Mapped)\n",
                     kGreen, kReset, kGreen,
                     static_cast<unsigned long long>(declared_headers), kReset);
             }
 
             if (wiped)
             {
-                wprintf(L"  %ls[+]%ls Structural Header Span = %ls0x%llX%ls (DOS Stub + NT Headers + Section Table)\n",
+                LOG(0, L"  %ls[+]%ls Structural Header Span = %ls0x%llX%ls (DOS Stub + NT Headers + Section Table)\n",
                     kGreen, kReset, kGreen, structural, kReset);
-                wprintf(L"  %ls[+]%ls Zeroed Header Span     = %ls0x%llX%ls (Entire Pre-Section Region; Mapper Telemetry)\n",
+                LOG(0, L"  %ls[+]%ls Zeroed Header Span     = %ls0x%llX%ls (Entire Pre-Section Region; Mapper Telemetry)\n",
                     kGreen, kReset, kGreen, wiped, kReset);
-                wprintf(L"  %ls[+]%ls Page-Protected Span    = %ls0x%llX%ls @ %ls%s%ls\n",
+                LOG(0, L"  %ls[+]%ls Page-Protected Span    = %ls0x%llX%ls @ %ls%s%ls\n",
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
 
                 
                 
                 
-                wprintf(L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
+                LOG(0, L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
 
                 if (exec)
@@ -6702,24 +6742,24 @@ DWORD BuildFlags(const WizardConfig & config)
                     const bool agree = (exec_span == wiped) && (exec_mz == scan_mz) && (exec_pe == scan_pe) && (exec_prot == wipe_protect);
                     if (agree)
                     {
-                        wprintf(L"  %ls[+]%ls Exec Telemetry Cross-Check: Span = %llu | MZ = %llu | PE = %llu | Prot = 0x%08llX - Agrees With MapStats\n",
+                        LOG(0, L"  %ls[+]%ls Exec Telemetry Cross-Check: Span = %llu | MZ = %llu | PE = %llu | Prot = 0x%08llX - Agrees With MapStats\n",
                             kGreen, kReset, exec_span, exec_mz, exec_pe, exec_prot);
                     }
                     else
                     {
-                        wprintf(L"  %ls[x]%ls Exec Telemetry Mismatch: Span = %llu/0x%llX | MZ = %llu/%llu | PE = %llu/%llu | Prot = 0x%08llX/0x%08llX\n",
+                        LOG(0, L"  %ls[x]%ls Exec Telemetry Mismatch: Span = %llu/0x%llX | MZ = %llu/%llu | PE = %llu/%llu | Prot = 0x%08llX/0x%08llX\n",
                             kRed, kReset,
                             exec_span, wiped, exec_mz, scan_mz, exec_pe, scan_pe, exec_prot, wipe_protect);
                     }
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls Exec Telemetry Unavailable: Cloak Cross-Check Skipped, Host Read-Back Failed.\n", kYellow, kReset);
+                    LOG(0, L"  %ls[!]%ls Exec Telemetry Unavailable: Cloak Cross-Check Skipped, Host Read-Back Failed.\n", kYellow, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Wiped Span Unavailable: Mapper Reported No Header-Wipe Telemetry.\n",
+                LOG(0, L"  %ls[!]%ls Wiped Span Unavailable: Mapper Reported No Header-Wipe Telemetry.\n",
                     kYellow, kReset);
             }
 
@@ -6738,25 +6778,25 @@ DWORD BuildFlags(const WizardConfig & config)
                     unsigned long long r_mz = 0;
                     unsigned long long r_pe = 0;
                     count_signatures(scan_buf.data(), got, r_mz, r_pe);
-                    wprintf(L"  %ls[+]%ls MZ/PE Scan (Host)      = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls%llu%ls Byte(s) Of Retained Allocation %ls0x%llX%ls\n",
+                    LOG(0, L"  %ls[+]%ls MZ/PE Scan (Host)      = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls%llu%ls Byte(s) Of Retained Allocation %ls0x%llX%ls\n",
                         kGreen, kReset, kGreen, r_mz, kReset, kGreen, r_pe, kReset,
                         kGreen, static_cast<unsigned long long>(got), kReset, kGreen, retained_base, kReset);
                 }
                 else
                 {
-                    wprintf(L"  %ls[!]%ls MZ/PE Scan (Host)      = Retained Allocation %ls0x%llX%ls Not Readable (Protection Changed).\n",
+                    LOG(0, L"  %ls[!]%ls MZ/PE Scan (Host)      = Retained Allocation %ls0x%llX%ls Not Readable (Protection Changed).\n",
                         kYellow, kReset, kYellow, retained_base, kReset);
                 }
             }
             else
             {
-                wprintf(L"  %ls[+]%ls MZ/PE Scan (Host)      = No Other Injection Allocation Remains Readable - The Manual-Map And Thread-Hijack Staging Regions Are Scrubbed And Released Before This Stage, And The Image Header Page Is NOACCESS By Design.\n",
+                LOG(0, L"  %ls[+]%ls MZ/PE Scan (Host)      = No Other Injection Allocation Remains Readable - The Manual-Map And Thread-Hijack Staging Regions Are Scrubbed And Released Before This Stage, And The Image Header Page Is NOACCESS By Design.\n",
                     kGreen, kReset);
             }
         }
         else if (!process || !base)
         {
-            wprintf(L"  %ls[!]%ls Image Base Not Readable; Header State Unknown.\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls Image Base Not Readable; Header State Unknown.\n", kYellow, kReset);
         }
     }
 
@@ -6764,9 +6804,9 @@ DWORD BuildFlags(const WizardConfig & config)
     void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
-        wprintf(L"\n\n[%ls%d%ls/%ls%d%ls] Survey Target Traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Survey Target Traps...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         ReportGameTraps(process, survey_pid, buffers);
-        wprintf(L"\n");
+        LOG(0, L"\n");
     }
 
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
@@ -6966,7 +7006,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            wprintf(L"  %ls[x]%ls Verification Faulted; Gate Cannot Be Satisfied.\n", kRed, kReset);
+            LOG(0, L"  %ls[x]%ls Verification Faulted; Gate Cannot Be Satisfied.\n", kRed, kReset);
             return false;
         }
     }
@@ -7482,7 +7522,7 @@ DWORD BuildFlags(const WizardConfig & config)
             if (chunk_buf.size() != kSurveyChunkBytes)
             {
 
-                wprintf(L"  %ls[!]%ls Survey Read Window Unavailable; INT3 Scan Skipped.\n", kYellow, kReset);
+                LOG(0, L"  %ls[!]%ls Survey Read Window Unavailable; INT3 Scan Skipped.\n", kYellow, kReset);
                 return;
             }
         }
@@ -7672,37 +7712,37 @@ DWORD BuildFlags(const WizardConfig & config)
                     swprintf_s(VerdictNote, L"No INT3 In Sampled Exec Bytes");
                 }
             }
-            wprintf(L"  %ls%ls%s%s (%ls%zu%s Committed Region(s) Walked, Process-Wide)\n",
+            LOG(0, L"  %ls%ls%s%s (%ls%zu%s Committed Region(s) Walked, Process-Wide)\n",
                 StageField(mod, 24).c_str(),
                 guarded ? kYellow : L"", Verdict, kReset,
                 kGreen, walked, kReset);
             if (VerdictNote[0])
             {
-                wprintf(L"  %*s%ls%s\n", static_cast<int>(StageField(mod, 24).size()), L"", VerdictNote, kReset);
+                LOG(0, L"  %*s%ls%s\n", static_cast<int>(StageField(mod, 24).size()), L"", VerdictNote, kReset);
             }
 
-            wprintf(L"\n");
+            LOG(0, L"\n");
 
-            wprintf(L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
+            LOG(0, L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
                 StageField(L"Guard:", 12).c_str(),
                 kGreen, guarded, kReset,
                 kGreen, static_cast<size_t>(guarded_bytes / 1024), kReset);
 
-            wprintf(L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
+            LOG(0, L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
                 StageField(L"No-Access:", 12).c_str(),
                 kGreen, noaccess, kReset,
                 kGreen, static_cast<size_t>(noaccess_bytes / 1024), kReset);
 
             if (eid_skipped)
             {
-                wprintf(L"      %ls%ls%zu%ls Region(s) Skipped (Encrypted Core, Never Read)\n",
+                LOG(0, L"      %ls%ls%zu%ls Region(s) Skipped (Encrypted Core, Never Read)\n",
                     StageField(L"EID:", 12).c_str(),
                     kGreen, eid_skipped, kReset);
             }
 
             if (sample_bytes)
             {
-                wprintf(L"      %ls%ls%zu%ls Of %ls%zu%ls Sampled Bytes Are INT3 (%ls0xCC%ls), %ls%zu%s%%, From %ls%zu%ls Of %ls%zu%ls Exec Region(s)\n",
+                LOG(0, L"      %ls%ls%zu%ls Of %ls%zu%ls Sampled Bytes Are INT3 (%ls0xCC%ls), %ls%zu%s%%, From %ls%zu%ls Of %ls%zu%ls Exec Region(s)\n",
                     StageField(L"INT3:", 12).c_str(),
                     kGreen, cc_bytes, kReset,
                     kGreen, sample_bytes, kReset,
@@ -7713,7 +7753,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 if (sample_capped)
                 {
 
-                    wprintf(L"%*s%ls%zu%ls Of %ls%zu%ls Exec Region(s) Not Sampled (Cap %ls%zu%ls), So The INT3 Count Is A Floor, Not A Total\n",
+                    LOG(0, L"%*s%ls%zu%ls Of %ls%zu%ls Exec Region(s) Not Sampled (Cap %ls%zu%ls), So The INT3 Count Is A Floor, Not A Total\n",
                         static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
                         kGreen, sample_capped, kReset,
                         kGreen, exec_regions, kReset,
@@ -7722,7 +7762,7 @@ DWORD BuildFlags(const WizardConfig & config)
             }
             else
             {
-                wprintf(L"      %lsNo Executable Region Was Readable\n",
+                LOG(0, L"      %lsNo Executable Region Was Readable\n",
                     StageField(L"INT3:", 12).c_str());
             }
 
@@ -7786,17 +7826,17 @@ DWORD BuildFlags(const WizardConfig & config)
                     append(unknown_extent ? L"Module Extent Unknown" : L"Query Failed Before Module End");
                 }
 
-                wprintf(L"%*sRegion Walk Stopped Early (%ls); Counts Are Partial\n",
+                LOG(0, L"%*sRegion Walk Stopped Early (%ls); Counts Are Partial\n",
                     static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
                     reason);
             }
 
-            wprintf(L"\n");
+            LOG(0, L"\n");
         }
 
         if (!found)
         {
-            wprintf(L"  %ls[!]%ls No Target Module Present; Nothing To Survey.\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls No Target Module Present; Nothing To Survey.\n", kYellow, kReset);
         }
     }
 
@@ -7938,45 +7978,45 @@ DWORD BuildFlags(const WizardConfig & config)
     void PrintHookScanResult(const wchar_t * Phase, const HookScanStats & stats,
         const std::vector<RestoredHook> & restored, const std::vector<std::wstring> & remaining)
     {
-        wprintf(L"  %s Scan Trace:\n\n", Phase);
+        LOG(0, L"  %s Scan Trace:\n\n", Phase);
 
         if (!stats.scanned)
         {
 
             if (stats.patch_blocked)
             {
-                wprintf(L"    %ls%zu%s In List, Hook Patch Not Enabled - Nothing Was Inspected\n",
+                LOG(0, L"    %ls%zu%s In List, Hook Patch Not Enabled - Nothing Was Inspected\n",
                     StageField(L"Targets").c_str(), stats.targets, kReset);
             }
             else
             {
-                wprintf(L"    %ls%zu%s In List, No Process Handle - Nothing Was Inspected\n",
+                LOG(0, L"    %ls%zu%s In List, No Process Handle - Nothing Was Inspected\n",
                     StageField(L"Targets").c_str(), stats.targets, kReset);
             }
             return;
         }
 
-        wprintf(L"    %ls%ls%zu%s\n",
+        LOG(0, L"    %ls%ls%zu%s\n",
             StageField(L"Targets").c_str(), kGreen, stats.targets, kReset);
-        wprintf(L"    %ls%ls%zu%s Of %ls%zu%s Resolved In The Target\n",
+        LOG(0, L"    %ls%ls%zu%s Of %ls%zu%s Resolved In The Target\n",
             StageField(L"Resolved").c_str(),
             (stats.resolved == stats.targets ? kGreen : kYellow), stats.resolved, kReset,
             kGreen, stats.targets, kReset);
-        wprintf(L"    %ls%ls%zu%s Already Matched The Local Image\n",
+        LOG(0, L"    %ls%ls%zu%s Already Matched The Local Image\n",
             StageField(L"Clean").c_str(), kGreen, stats.clean, kReset);
-        wprintf(L"    %ls%ls%zu%s Differed, %s%zu%s Left Alone\n",
+        LOG(0, L"    %ls%ls%zu%s Differed, %s%zu%s Left Alone\n",
             StageField(L"Hooked").c_str(), kGreen, stats.hooked, kReset,
             (stats.skipped ? kYellow : kGreen), stats.skipped, kReset);
 
         if (!restored.empty())
         {
-            wprintf(L"\n");
+            LOG(0, L"\n");
             for (size_t i = 0; i < restored.size(); ++i)
             {
                 const RestoredHook & entry = restored[i];
 
                 const wchar_t * offset_tint = entry.offset == 0 ? kGreen : kYellow;
-                wprintf(L"      [%ls%zu%s/%ls%zu%s] %s (%ls+0x%02X%s)\n",
+                LOG(0, L"      [%ls%zu%s/%ls%zu%s] %s (%ls+0x%02X%s)\n",
                     kGreen, i + 1, kReset, kGreen, restored.size(), kReset, entry.name.c_str(),
                     offset_tint, entry.offset, kReset);
             }
@@ -7984,11 +8024,11 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (!remaining.empty())
         {
-            wprintf(L"    %ls%ls%zu%s Still Differ After The Pass:\n",
+            LOG(0, L"    %ls%ls%zu%s Still Differ After The Pass:\n",
                 StageField(L"Remaining").c_str(), kYellow, remaining.size(), kReset);
             for (const std::wstring & entry : remaining)
             {
-                wprintf(L"      %ls! %s%s\n", kYellow, entry.c_str(), kReset);
+                LOG(0, L"      %ls! %s%s\n", kYellow, entry.c_str(), kReset);
             }
         }
     }
@@ -8036,78 +8076,78 @@ DWORD BuildFlags(const WizardConfig & config)
     {
         if (code == INJ_ERR_OUT_OF_MEMORY_EXT)
         {
-            wprintf(L"Reason: VirtualAllocEx Failed In Target (Adv 5 = ACCESS_DENIED, 998/3E6 = NOACCESS).\n");
-            wprintf(L"Target Is Likely Protected Or Blocks Remote RW/RX Allocations.\n");
-            wprintf(L"Staging Uses RW->RX (No RWX At Birth); Image Uses RW->RX.\n");
-            wprintf(L"Try Testing On notepad.exe.\n");
+            LOG(0, L"Reason: VirtualAllocEx Failed In Target (Adv 5 = ACCESS_DENIED, 998/3E6 = NOACCESS).\n");
+            LOG(0, L"Target Is Likely Protected Or Blocks Remote RW/RX Allocations.\n");
+            LOG(0, L"Staging Uses RW->RX (No RWX At Birth); Image Uses RW->RX.\n");
+            LOG(0, L"Try Testing On notepad.exe.\n");
         }
         else if (code == INJ_ERR_CANT_OPEN_PROCESS)
         {
-            wprintf(L"Reason: OpenProcess Denied. Run Elevated.\n");
+            LOG(0, L"Reason: OpenProcess Denied. Run Elevated.\n");
         }
         else if (code == INJ_MM_ERR_DLLMAIN_FAILED)
         {
-            wprintf(L"Reason: The Mapping, Imports, TLS And Loader-Lock Stages All Succeeded; The Payload's\n");
-            wprintf(L"Own DllMain(DLL_PROCESS_ATTACH) Returned False, I.e. The Payload Refused To Initialize.\n");
-            wprintf(L"This Is State/Thread Dependent, Not A Mapping Fault. Load Earlier In The Target's Startup:\n");
-            wprintf(L"Relaunch The Game And Load Once The Launcher Reports Its Symbol Download Is Complete.\n");
-            wprintf(L"A Failed Attempt Also Leaves Loader Bookkeeping In The Target That Cannot Be Reclaimed\n");
-            wprintf(L"(Inverted-Table Entry, TLS Index/Block Have No Removal API And Point Into The Freed\n");
-            wprintf(L"Image), So Relaunch The Game Before Trying Again.\n");
+            LOG(0, L"Reason: The Mapping, Imports, TLS And Loader-Lock Stages All Succeeded; The Payload's\n");
+            LOG(0, L"Own DllMain(DLL_PROCESS_ATTACH) Returned False, I.e. The Payload Refused To Initialize.\n");
+            LOG(0, L"This Is State/Thread Dependent, Not A Mapping Fault. Load Earlier In The Target's Startup:\n");
+            LOG(0, L"Relaunch The Game And Load Once The Launcher Reports Its Symbol Download Is Complete.\n");
+            LOG(0, L"A Failed Attempt Also Leaves Loader Bookkeeping In The Target That Cannot Be Reclaimed\n");
+            LOG(0, L"(Inverted-Table Entry, TLS Index/Block Have No Removal API And Point Into The Freed\n");
+            LOG(0, L"Image), So Relaunch The Game Before Trying Again.\n");
         }
         else if (code == INJ_MM_ERR_TLS_CALLBACK_RANGE)
         {
-            wprintf(L"Reason: A Payload TLS Callback Pointer/Array Fell Outside The Mapped Image,\n");
-            wprintf(L"So Only A Prefix Of Its Callbacks Ran. This Is Payload-Specific, Not A Mapping\n");
-            wprintf(L"Fault. Relaunch The Target Before Trying Another Payload.\n");
+            LOG(0, L"Reason: A Payload TLS Callback Pointer/Array Fell Outside The Mapped Image,\n");
+            LOG(0, L"So Only A Prefix Of Its Callbacks Ran. This Is Payload-Specific, Not A Mapping\n");
+            LOG(0, L"Fault. Relaunch The Target Before Trying Another Payload.\n");
         }
         else if (code == INJ_ERR_HANDLE_HIJACK_FAILED)
         {
-            wprintf(L"Reason: Handle Acquisition Found No Donor; The Path Is Donor-Only And Fails Closed.\n");
-            wprintf(XOR_STR_W(L"Check The Handle-Acquisition Settings In The Deployed Configuration, Or Run Elevated So The\n").get());
-            wprintf(L"Sponsor Pre-Open Succeeds.\n");
+            LOG(0, L"Reason: Handle Acquisition Found No Donor; The Path Is Donor-Only And Fails Closed.\n");
+            LOG(0, XOR_STR_W(L"Check The Handle-Acquisition Settings In The Deployed Configuration, Or Run Elevated So The\n").get());
+            LOG(0, L"Sponsor Pre-Open Succeeds.\n");
         }
         else if (code == SR_HT_ERR_OPEN_REFUSED)
         {
-            wprintf(L"Reason: Thread Handle Acquisition Found No Donor; The Path Is Donor-Only And\n");
-            wprintf(L"Fails Closed (There Is No Direct OpenThread Fallback). Run Elevated So The Sponsor\n");
-            wprintf(L"Thread Pre-Open Succeeds, Or Retry While The Target Is Active.\n");
+            LOG(0, L"Reason: Thread Handle Acquisition Found No Donor; The Path Is Donor-Only And\n");
+            LOG(0, L"Fails Closed (There Is No Direct OpenThread Fallback). Run Elevated So The Sponsor\n");
+            LOG(0, L"Thread Pre-Open Succeeds, Or Retry While The Target Is Active.\n");
         }
         else if (code == SR_HT_ERR_NO_THREADS)
         {
-            wprintf(L"Reason: No Usable Donor Thread Found. Retry While The Target Is Active.\n");
+            LOG(0, L"Reason: No Usable Donor Thread Found. Retry While The Target Is Active.\n");
         }
         else if (code == SR_ERR_TARGET_EXITED)
         {
-            wprintf(L"Reason: The Target Process Exited During Loading.\n");
+            LOG(0, L"Reason: The Target Process Exited During Loading.\n");
         }
         else if (code == SR_HT_ERR_REMOTE_PENDING_TIMEOUT)
         {
-            wprintf(L"Note: The Payload Timed Out, But The Thread Context Was Restored Automatically.\n");
-            wprintf(L"Reason: The Victim Thread Never Scheduled The Donor Stub (State Stayed Pending),\n");
-            wprintf(L"So The Memory-Loading Shell Never Started. This Is Thread Selection, Not A Verification Issue:\n");
-            wprintf(XOR_STR_W(L"CleanDataDirectories And HookRestore Are Unrelated - Keep Them Enabled.\n").get());
-            wprintf(L"The Runtime Now Retries: Each Donor Gets A Short Startup Probe, An Unscheduled\n");
-            wprintf(L"Thread Is Rolled Back And Excluded, And The Next Candidate Is Tried Inside The\n");
-            wprintf(L"Same Timeout Budget. Raising The Timeout Widens How Many Donors Get Probed.\n");
+            LOG(0, L"Note: The Payload Timed Out, But The Thread Context Was Restored Automatically.\n");
+            LOG(0, L"Reason: The Victim Thread Never Scheduled The Donor Stub (State Stayed Pending),\n");
+            LOG(0, L"So The Memory-Loading Shell Never Started. This Is Thread Selection, Not A Verification Issue:\n");
+            LOG(0, XOR_STR_W(L"CleanDataDirectories And HookRestore Are Unrelated - Keep Them Enabled.\n").get());
+            LOG(0, L"The Runtime Now Retries: Each Donor Gets A Short Startup Probe, An Unscheduled\n");
+            LOG(0, L"Thread Is Rolled Back And Excluded, And The Next Candidate Is Tried Inside The\n");
+            LOG(0, L"Same Timeout Budget. Raising The Timeout Widens How Many Donors Get Probed.\n");
         }
         else if (code == INJ_ERR_WINDOWS_VERSION)
         {
-            wprintf(L"Reason: The OS Version Gate Could Not Identify The Windows Release.\n");
-            wprintf(L"The Runtime Requires Windows 11 (Build 22000+); This Is An Environment\n");
-            wprintf(L"Issue, Not A Mapping Or Symbol Failure.\n");
+            LOG(0, L"Reason: The OS Version Gate Could Not Identify The Windows Release.\n");
+            LOG(0, L"The Runtime Requires Windows 11 (Build 22000+); This Is An Environment\n");
+            LOG(0, L"Issue, Not A Mapping Or Symbol Failure.\n");
         }
         else if (code == INJ_ERR_WINDOWS_BUILD_UNSUPPORTED)
         {
-            wprintf(L"Reason: The OS Gate Rejected The Host - Windows 11 (Build 22000+) Is Required\n");
-            wprintf(L"And This Build Is Outside The Supported Families (21H2 22000+, 22H2/23H2 22621+,\n");
-            wprintf(L"24H2 26100+, 25H2 26200+, 26H2 26300+; Newer Builds Are Forward-Mapped). This Is An\n");
-            wprintf(L"Environment Issue, Not A Mapping Or Symbol Failure. Update Windows.\n");
+            LOG(0, L"Reason: The OS Gate Rejected The Host - Windows 11 (Build 22000+) Is Required\n");
+            LOG(0, L"And This Build Is Outside The Supported Families (21H2 22000+, 22H2/23H2 22621+,\n");
+            LOG(0, L"24H2 26100+, 25H2 26200+, 26H2 26300+; Newer Builds Are Forward-Mapped). This Is An\n");
+            LOG(0, L"Environment Issue, Not A Mapping Or Symbol Failure. Update Windows.\n");
         }
         else
         {
 
-            wprintf(L"Reason: Unclassified Failure 0x%08lX; See The Runtime Error Header.\n",
+            LOG(0, L"Reason: Unclassified Failure 0x%08lX; See The Runtime Error Header.\n",
                 static_cast<unsigned long>(code));
         }
     }
@@ -8120,7 +8160,7 @@ DWORD BuildFlags(const WizardConfig & config)
             return;
         }
 
-        wprintf(L"\nPress Enter To Exit...\n");
+        LOG(0, L"\nPress Enter To Exit...\n");
         fflush(stdout);
 
         std::wcin.clear();
@@ -8195,12 +8235,12 @@ DWORD BuildFlags(const WizardConfig & config)
             }
             if (local_build)
             {
-                fwprintf(stderr, L"%lsUnsupported Windows Build: Local Build %lu (Code 0x%08X).%ls\n",
+                LOG(0,  L"%lsUnsupported Windows Build: Local Build %lu (Code 0x%08X).%ls\n",
                     kRed, static_cast<unsigned long>(local_build), init_state, kReset);
             }
             else
             {
-                fwprintf(stderr, L"%lsUnsupported Windows Version (Code 0x%08X).%ls\n",
+                LOG(0,  L"%lsUnsupported Windows Version (Code 0x%08X).%ls\n",
                     kRed, init_state, kReset);
             }
             PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+), 26H2 (26300+).");
@@ -8218,11 +8258,11 @@ DWORD BuildFlags(const WizardConfig & config)
             if (init_state != INJ_ERR_SUCCESS)
             {
 
-                fwprintf(stderr, L"%lsFailed To Initialize The Runtime = 0x%08X%ls\n", kRed, init_state, kReset);
+                LOG(0,  L"%lsFailed To Initialize The Runtime = 0x%08X%ls\n", kRed, init_state, kReset);
             }
             else
             {
-                fwprintf(stderr, L"%lsFailed To Load Symbols = 0x%08X%ls\n", kRed, symbol_state, kReset);
+                LOG(0,  L"%lsFailed To Load Symbols = 0x%08X%ls\n", kRed, symbol_state, kReset);
             }
         }
         else if (import_state == INJ_ERR_IMPORT_HANDLER_NOT_DONE)
@@ -8231,7 +8271,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else if (import_state != INJ_ERR_SUCCESS)
         {
-            fwprintf(stderr, L"%lsFailed To Resolve Imports = 0x%08X%ls\n", kRed, import_state, kReset);
+            LOG(0,  L"%lsFailed To Resolve Imports = 0x%08X%ls\n", kRed, import_state, kReset);
         }
         PrintError(L"Failed To Initialize The Runtime Or Download Symbols.");
     }
@@ -8283,7 +8323,7 @@ DWORD BuildFlags(const WizardConfig & config)
         
         
         (void)runtime;
-        wprintf(L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
+        LOG(0, L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
 
         WizardConfig config;
         std::wstring config_path;
@@ -8404,7 +8444,7 @@ DWORD BuildFlags(const WizardConfig & config)
         if (confirmation == ConfirmationResult::Cancelled)
         {
             Trace::End();
-            wprintf(L"Cancelled.\n");
+            LOG(0, L"Cancelled.\n");
             Trace::Summary(L"Cancelled By Operator");
             return 0;
         }
@@ -8424,7 +8464,7 @@ DWORD BuildFlags(const WizardConfig & config)
             Trace::End();
             if (cancelled)
             {
-                wprintf(L"Cancelled.\n");
+                LOG(0, L"Cancelled.\n");
                 Trace::Summary(L"Cancelled By Operator");
                 return 0;
             }
@@ -8446,24 +8486,24 @@ DWORD BuildFlags(const WizardConfig & config)
         if (target.architecture != Architecture::Unknown &&
             fileInformation.architecture != target.architecture)
         {
-            wprintf(L"Warning: DLL Is %ls But Target Is %ls.\n",
+            LOG(0, L"Warning: DLL Is %ls But Target Is %ls.\n",
                 ArchitectureName(fileInformation.architecture),
                 ArchitectureName(target.architecture));
             bool proceed = false;
             if (!ReadYesNo(L"Continue Anyway?", false, proceed) || !proceed)
             {
-                wprintf(L"Cancelled.\n");
+                LOG(0, L"Cancelled.\n");
                 return 0;
             }
         }
 
         const int timeout_value = config.timeout;
 
-        wprintf(L"\n");
+        LOG(0, L"\n");
 
         if (config.detach_console)
         {
-            wprintf(L"%ls[+]%ls Detaching Console; Running Headless From Here.\n", kGreen, kReset);
+            LOG(0, L"%ls[+]%ls Detaching Console; Running Headless From Here.\n", kGreen, kReset);
             fflush(stdout);
             DetachInterfaceConsole();
         }
@@ -8531,7 +8571,7 @@ DWORD BuildFlags(const WizardConfig & config)
             }
             else
             {
-                wprintf(L"  %ls[!]%ls Thread Sponsor Pre-Open Failed (0x%08X); Runtime Will Search.\n",
+                LOG(0, L"  %ls[!]%ls Thread Sponsor Pre-Open Failed (0x%08X); Runtime Will Search.\n",
                     kYellow, kReset, thread_sponsor_err);
             }
         }
@@ -8565,7 +8605,7 @@ DWORD BuildFlags(const WizardConfig & config)
         FileHandleGuard targetHandleGuard(targetHandle);
         if (!targetHandle)
         {
-            wprintf(L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
+            LOG(0, L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
                 kYellow, kReset, GetLastError());
         }
 
@@ -8584,7 +8624,7 @@ DWORD BuildFlags(const WizardConfig & config)
         data.hThreadHandleValue = threadSponsorRaw ? ReCa<ULONG_PTR>(threadSponsorRaw) : 0;
         data.DllPath = config.payload_name.c_str();
 
-        wprintf(L"\n");
+        LOG(0, L"\n");
 
         if (config.hook_restore)
         {
@@ -8600,13 +8640,13 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (data.TargetTid)
         {
-            wprintf(L"Requested Sponsor TID %ls0x%04lX%s | Timeout %ls%lu ms%s (Runtime May Reject It; Hijacked Thread Reported On Completion)...\n",
+            LOG(0, L"Requested Sponsor TID %ls0x%04lX%s | Timeout %ls%lu ms%s (Runtime May Reject It; Hijacked Thread Reported On Completion)...\n",
                 kGreen, static_cast<unsigned long>(data.TargetTid), kReset,
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
         else
         {
-            wprintf(L"Working (Runtime Thread Search, Timeout %ls%lu ms%s)...\n",
+            LOG(0, L"Working (Runtime Thread Search, Timeout %ls%lu ms%s)...\n",
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
 
@@ -8639,7 +8679,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (result != INJ_ERR_SUCCESS)
         {
-            wprintf(L"%ls[x]%ls Operation Failed With Code %08X%ls\n", kRed, kReset, result);
+            LOG(0, L"%ls[x]%ls Operation Failed With Code %08X%ls\n", kRed, kReset, result);
             PrintFailureHint(result);
 
             if (runtime.get_last_error_info)
@@ -8649,20 +8689,20 @@ DWORD BuildFlags(const WizardConfig & config)
 
                 if (detail_status == INJ_ERR_NO_LAST_ERROR)
                 {
-                    wprintf(L"  Runtime Recorded No Diagnostic Detail For This Attempt.\n");
+                    LOG(0, L"  Runtime Recorded No Diagnostic Detail For This Attempt.\n");
                 }
                 else if (detail_status == INJ_ERR_SUCCESS)
                 {
-                    wprintf(L"  Runtime Detail: Adv = %08X | Line = %d | Native = %d\n",
+                    LOG(0, L"  Runtime Detail: Adv = %08X | Line = %d | Native = %d\n",
                         detail.AdvErrorCode, detail.Line, detail.bNative);
                     if (detail.DllFileName[0])
                     {
-                        wprintf(L"  Payload: %ls\n", detail.DllFileName);
+                        LOG(0, L"  Payload: %ls\n", detail.DllFileName);
                     }
                     if (detail.AdvErrorCode >= 0xC0000000u)
                     {
 
-                        wprintf(L"  Adv Is An NTSTATUS From The Target: 0x%08X (%ls).\n",
+                        LOG(0, L"  Adv Is An NTSTATUS From The Target: 0x%08X (%ls).\n",
                             detail.AdvErrorCode, DescribeNtStatus(detail.AdvErrorCode));
                     }
                 }
@@ -8670,9 +8710,9 @@ DWORD BuildFlags(const WizardConfig & config)
 
             if (result >= 0x00400000u && result < 0x00500000u)
             {
-                wprintf(L"  %ls[!]%ls Remote Mapping Reached The Shell; Unreclaimable Loader State May Remain.\n",
+                LOG(0, L"  %ls[!]%ls Remote Mapping Reached The Shell; Unreclaimable Loader State May Remain.\n",
                     kYellow, kReset);
-                wprintf(L"      Relaunch The Target Before Attempting Another Load.\n");
+                LOG(0, L"      Relaunch The Target Before Attempting Another Load.\n");
             }
             targetHandleGuard.reset();
             threadSponsorGuard.reset();
@@ -8747,7 +8787,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            wprintf(L"%ls[x]%ls Verification Could Not Run (No Target Handle); The Result Is Unproven.\n",
+            LOG(0, L"%ls[x]%ls Verification Could Not Run (No Target Handle); The Result Is Unproven.\n",
                 kRed, kReset);
         }
         Trace::Note(L"Verification Gate = %s | W^X Violated = %s",
@@ -8756,16 +8796,16 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (!runtime.get_last_thread_exec_stats || !ThreadExec.Attempted)
         {
-            wprintf(L"  %ls[!]%ls Thread Context Not Reported (No Telemetry, Or No Donor Was Attempted).\n", kYellow, kReset);
+            LOG(0, L"  %ls[!]%ls Thread Context Not Reported (No Telemetry, Or No Donor Was Attempted).\n", kYellow, kReset);
         }
         else if (ThreadExec.Success)
         {
-            wprintf(L"  %ls[+]%ls Thread Context Restored To Original On TID: %ls0x%04lX%s.\n",
+            LOG(0, L"  %ls[+]%ls Thread Context Restored To Original On TID: %ls0x%04lX%s.\n",
                 kGreen, kReset, kGreen, static_cast<unsigned long>(ThreadExec.HijackedTid), kReset);
         }
         else
         {
-            wprintf(L"  %ls[!]%ls Thread Context %sNOT Restored%s On TID: %s0x%04lX%s (Code 0x%08lX) - It May Still Be Running Donor Code.\n",
+            LOG(0, L"  %ls[!]%ls Thread Context %sNOT Restored%s On TID: %s0x%04lX%s (Code 0x%08lX) - It May Still Be Running Donor Code.\n",
                 kYellow, kReset, kYellow, kReset, kYellow,
                 static_cast<unsigned long>(ThreadExec.HijackedTid), kReset,
                 static_cast<unsigned long>(ThreadExec.FailCode));
@@ -8773,19 +8813,19 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (ThreadExec.Attempted)
         {
-            wprintf(L"  %ls[+]%ls Donor-Scan Rounds: %ls%lu%ls (Donor-Thread Rounds Attempted Before Success Or Exhaustion).\n",
+            LOG(0, L"  %ls[+]%ls Donor-Scan Rounds: %ls%lu%ls (Donor-Thread Rounds Attempted Before Success Or Exhaustion).\n",
                 kGreen, kReset, kGreen, static_cast<unsigned long>(ThreadExec.DonorRounds), kReset);
         }
 
         if (ThreadExec.Attempted && data.TargetTid && ThreadExec.HijackedTid
             && ThreadExec.HijackedTid != data.TargetTid)
         {
-            wprintf(L"  %ls[!]%ls Sponsor TID %ls0x%04lX%ls Not Usable; Hijacked TID %ls0x%04lX%ls Instead (Donor Scan Fallback).\n",
+            LOG(0, L"  %ls[!]%ls Sponsor TID %ls0x%04lX%ls Not Usable; Hijacked TID %ls0x%04lX%ls Instead (Donor Scan Fallback).\n",
                 kYellow, kReset,
                 kGreen, static_cast<unsigned long>(data.TargetTid), kReset,
                 kGreen, static_cast<unsigned long>(ThreadExec.HijackedTid), kReset);
         }
-        wprintf(L"\n");
+        LOG(0, L"\n");
         if (config.hook_restore)
         {
             std::vector<RestoredHook> unhooked;
@@ -8822,7 +8862,7 @@ DWORD BuildFlags(const WizardConfig & config)
             }
         };
 
-        record(ReCa<ULONGLONG>(threadSponsorRaw));
+        record(static_cast<ULONGLONG>(Context.SponsorThreadValue));
         record(ReCa<ULONGLONG>(targetHandle));
 
         
@@ -8877,17 +8917,17 @@ DWORD BuildFlags(const WizardConfig & config)
 
             if (walked)
             {
-                wprintf(L"\n  Post-State Re-Query Of The Mapped Image (Taken After The Verification Suite):\n");
-                wprintf(L"    [%ls%ls%ls] Image Base %p | First Region Protect %ls%s%s | State %s\n",
+                LOG(0, L"\n  Post-State Re-Query Of The Mapped Image (Taken After The Verification Suite):\n");
+                LOG(0, L"    [%ls%ls%ls] Image Base %p | First Region Protect %ls%s%s | State %s\n",
                     post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
                     data.hDllOut,
                     kGreen, StealthPageDesc(base_prot), kReset,
                     head.State == MEM_COMMIT ? L"MEM_COMMIT" : L"Not Committed");
-                wprintf(L"    [%ls%ls%ls] Committed Extent %llu KB | RX = %d | RW = %d | RO = %d | NOACCESS = %d | RWX = %d\n",
+                LOG(0, L"    [%ls%ls%ls] Committed Extent %llu KB | RX = %d | RW = %d | RO = %d | NOACCESS = %d | RWX = %d\n",
                     post_rwx ? L"x" : L"+", post_rwx ? kRed : kGreen, kReset,
                     static_cast<unsigned long long>(committed / 1024),
                     post_rx, post_rw, post_ro, post_noaccess, post_rwx);
-                wprintf(L"    [%ls%ls%ls] DllMain Result Read Back At Exit: %ls%s%s | TLS %u/%u Executed "
+                LOG(0, L"    [%ls%ls%ls] DllMain Result Read Back At Exit: %ls%s%s | TLS %u/%u Executed "
                         L"| Loader Lock 0x%08X/0x%08X | Hijacked TID 0x%04X\n",
                     L"+", kGreen, kReset,
                     ExecTelemetry.DllMainResult ? L"True" : L"False",
@@ -8897,18 +8937,18 @@ DWORD BuildFlags(const WizardConfig & config)
                     (unsigned)ThreadExec.HijackedTid);
                 if (post_rwx)
                 {
-                    wprintf(L"    [%lsx%s] Warning: %d RWX Region(s) Observed In The Post-State Query.\n",
+                    LOG(0, L"    [%lsx%s] Warning: %d RWX Region(s) Observed In The Post-State Query.\n",
                         kRed, kReset, post_rwx);
                 }
             }
             else
             {
-                wprintf(L"\n  [%lsx%s] Post-State Re-Query Failed: Image Base Not Queryable.\n", kRed, kReset);
+                LOG(0, L"\n  [%lsx%s] Post-State Re-Query Failed: Image Base Not Queryable.\n", kRed, kReset);
             }
         }
         else if (!had_target)
         {
-            wprintf(L"\n  [%ls*%s] Post-State Re-Read Not Performed: No Target Handle Was Retained.\n", kDim, kReset);
+            LOG(0, L"\n  [%ls*%s] Post-State Re-Read Not Performed: No Target Handle Was Retained.\n", kDim, kReset);
         }
 
         targetHandleGuard.reset();
@@ -8925,33 +8965,33 @@ DWORD BuildFlags(const WizardConfig & config)
             }
             if (released.count)
             {
-                wprintf(L"  %ls[+]%ls Closed %ls%u%ls Handle(s) Before Exit: %ls\n",
+                LOG(0, L"  %ls[+]%ls Closed %ls%u%ls Handle(s) Before Exit: %ls\n",
                     kGreen, kReset, kGreen, released.count, kReset, list);
             }
             else
             {
-                wprintf(L"  %ls[*]%ls No Handles Were Open At Cleanup (None Acquired This Run).\n", kDim, kReset);
+                LOG(0, L"  %ls[*]%ls No Handles Were Open At Cleanup (None Acquired This Run).\n", kDim, kReset);
             }
         }
 
-        wprintf(L"\n");
+        LOG(0, L"\n");
         if (!stealth_gate_ok)
         {
             if (!had_target)
             {
 
-                wprintf(L"%ls[x] Verification Not Performed%s - The Payload Is Mapped In The\n", kRed, kReset);
-                wprintf(L"    Target, But No Target Handle Was Available, So Neither The String-Encryption\n");
-                wprintf(L"    Gate Nor The W^X Posture Could Be Checked. The Result Is Unproven; Do Not\n");
-                wprintf(L"    Treat It As A Clean Load Until It Can Be Verified.\n");
+                LOG(0, L"%ls[x] Verification Not Performed%s - The Payload Is Mapped In The\n", kRed, kReset);
+                LOG(0, L"    Target, But No Target Handle Was Available, So Neither The String-Encryption\n");
+                LOG(0, L"    Gate Nor The W^X Posture Could Be Checked. The Result Is Unproven; Do Not\n");
+                LOG(0, L"    Treat It As A Clean Load Until It Can Be Verified.\n");
             }
             else
             {
-                wprintf(L"%ls[x] Verification Gate Failed%s - The Payload Is Mapped In The Target, But The\n", kRed, kReset);
-                wprintf(L"    Runtime DLL Does Not Pass Verification (String-Encryption Or Forensic Posture).\n");
-                wprintf(L"    It Must Not Be Treated As A Clean Load: A Plaintext Symbol Name In .rdata Is\n");
-                wprintf(L"    Scannable, And Shipping It Defeats The Point Of The String Tiers.\n");
-                wprintf(L"    Fix The Leak And Rebuild Before Using This Build.\n");
+                LOG(0, L"%ls[x] Verification Gate Failed%s - The Payload Is Mapped In The Target, But The\n", kRed, kReset);
+                LOG(0, L"    Runtime DLL Does Not Pass Verification (String-Encryption Or Forensic Posture).\n");
+                LOG(0, L"    It Must Not Be Treated As A Clean Load: A Plaintext Symbol Name In .rdata Is\n");
+                LOG(0, L"    Scannable, And Shipping It Defeats The Point Of The String Tiers.\n");
+                LOG(0, L"    Fix The Leak And Rebuild Before Using This Build.\n");
             }
             Trace::Summary(had_target ? L"Failed At Verification Gate" : L"Verification Not Performed");
             PauseBeforeExit();
@@ -8959,10 +8999,10 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         if (wx_violated)
         {
-            wprintf(L"%ls[!] W^X Advisory:%s The W^X Posture Was Not Confirmed (See The Verify W^X Execution Step).\n", kYellow, kReset);
-            wprintf(L"    Either A Mapped Page Is Not RX As Expected, Or The Image Could Not Be Queried\n");
-            wprintf(L"    Or Bounded. The Load Is Functional, But This Weakens Confidence In The\n");
-            wprintf(L"    W^X Posture. Treat This Build As Suspect.\n\n");
+            LOG(0, L"%ls[!] W^X Advisory:%s The W^X Posture Was Not Confirmed (See The Verify W^X Execution Step).\n", kYellow, kReset);
+            LOG(0, L"    Either A Mapped Page Is Not RX As Expected, Or The Image Could Not Be Queried\n");
+            LOG(0, L"    Or Bounded. The Load Is Functional, But This Weakens Confidence In The\n");
+            LOG(0, L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
         
@@ -9013,46 +9053,46 @@ DWORD BuildFlags(const WizardConfig & config)
                 unchecked += coverage[i].checked ? 0u : 1u;
             }
 
-            wprintf(L"\n");
-            wprintf(L"  Verification Coverage (%ls%u Of %zu Capabilities Externally Checked%ls):\n",
+            LOG(0, L"\n");
+            LOG(0, L"  Verification Coverage (%ls%u Of %zu Capabilities Externally Checked%ls):\n",
                 kGreen, checked, kCoverageCount, kReset);
             for (size_t i = 0; i < kCoverageCount; ++i)
             {
-                wprintf(L"    %ls%s%ls %-34ls %ls\n",
+                LOG(0, L"    %ls%s%ls %-34ls %ls\n",
                     coverage[i].checked ? L"[+]" : L"[*]",
                     coverage[i].checked ? kGreen : kDim, kReset,
                     coverage[i].label, coverage[i].note);
             }
             if (unchecked)
             {
-                wprintf(L"  %ls[*]%ls %ls%u%ls Capabilit%s Not Checkable From Outside The Target - Reported As\n",
+                LOG(0, L"  %ls[*]%ls %ls%u%ls Capabilit%s Not Checkable From Outside The Target - Reported As\n",
                     kDim, kReset, kYellow, unchecked, kReset, unchecked == 1 ? L"y Is" : L"ies Are");
-                wprintf(L"    Observations, Not Passes. A Green Gate Means Every Check That Could Run Did.\n");
+                LOG(0, L"    Observations, Not Passes. A Green Gate Means Every Check That Could Run Did.\n");
             }
         }
 
         
         
         
-        wprintf(L"\n");
-        wprintf(L"Load Result (Every Value Below Was Read Back During This Run):\n");
+        LOG(0, L"\n");
+        LOG(0, L"Load Result (Every Value Below Was Read Back During This Run):\n");
 
         
         
         const auto row = [](const wchar_t * label, bool ok)
         {
-            wprintf(L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
+            LOG(0, L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
         };
 
         row(L"Return Code............... ", result == INJ_ERR_SUCCESS);
-        wprintf(L"0x%08X (%s)\n", static_cast<unsigned>(result),
+        LOG(0, L"0x%08X (%s)\n", static_cast<unsigned>(result),
             result == INJ_ERR_SUCCESS ? L"INJ_ERR_SUCCESS" : L"Non-Zero");
 
         row(L"Mapped Image Base......... ", data.hDllOut != nullptr);
-        wprintf(L"%p\n", data.hDllOut);
+        LOG(0, L"%p\n", data.hDllOut);
 
         row(L"Inject Call Wall Time..... ", true);
-        wprintf(L"%llu ms (Timeout %lu ms)\n",
+        LOG(0, L"%llu ms (Timeout %lu ms)\n",
             static_cast<unsigned long long>(inject_window_ms),
             static_cast<unsigned long>(data.Timeout));
 
@@ -9060,17 +9100,17 @@ DWORD BuildFlags(const WizardConfig & config)
             ExecTelemetry.DllMainCyclesDelta == 0 ? true : ExecTelemetry.DllMainResult != 0);
         if (ExecTelemetry.DllMainCyclesDelta == 0)
         {
-            wprintf(L"Not Entered (No Entry Point; Cycle Counter 0)\n");
+            LOG(0, L"Not Entered (No Entry Point; Cycle Counter 0)\n");
         }
         else
         {
-            wprintf(L"%s\n", ExecTelemetry.DllMainResult ? L"True" : L"False");
+            LOG(0, L"%s\n", ExecTelemetry.DllMainResult ? L"True" : L"False");
         }
 
         const bool tls_ok = ExecTelemetry.TlsCallbacksConfigured == ExecTelemetry.TlsCallbacksExecuted &&
             ExecTelemetry.TlsCallbacksFailed == 0;
         row(L"TLS Callbacks............. ", tls_ok);
-        wprintf(L"%u Executed Of %u Configured (%u Failed)\n",
+        LOG(0, L"%u Executed Of %u Configured (%u Failed)\n",
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
@@ -9083,49 +9123,49 @@ DWORD BuildFlags(const WizardConfig & config)
         row(L"Loader Lock Acquire/Release  ", lock_ok);
         if (!lock_attempted)
         {
-            wprintf(L"Not Attempted (Inside The DllMain Step; DllMain Not Entered)\n");
+            LOG(0, L"Not Attempted (Inside The DllMain Step; DllMain Not Entered)\n");
         }
         else
         {
-            wprintf(L"0x%08X / 0x%08X\n",
+            LOG(0, L"0x%08X / 0x%08X\n",
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
         }
 
         row(L"Thread Hijack............. ", ThreadExec.Success != 0);
-        wprintf(L"TID 0x%04X | Success = %u | Routine Return Value = 0x%08X | %u Poll(s) Over %u ms\n",
+        LOG(0, L"TID 0x%04X | Success = %u | Routine Return Value = 0x%08X | %u Poll(s) Over %u ms\n",
             (unsigned)ThreadExec.HijackedTid, (unsigned)ThreadExec.Success,
             (unsigned)ThreadExec.RoutineRet, (unsigned)ThreadExec.PollIterations,
             (unsigned)ThreadExec.ExecMs);
 
         row(L"Hijacked Stack Scrubbed... ", ThreadExec.StackScrubbedBytes != 0);
-        wprintf(L"%llu Bytes In %llu Cycles\n",
+        LOG(0, L"%llu Bytes In %llu Cycles\n",
             static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
             static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
 
         row(L"Thread Context Snapshot... ", ThreadExec.OldRip != 0);
-        wprintf(L"Original RIP = 0x%llX | Original RSP = 0x%llX | Post-Scrub Limit = 0x%llX | FP Mode %ls\n",
+        LOG(0, L"Original RIP = 0x%llX | Original RSP = 0x%llX | Post-Scrub Limit = 0x%llX | FP Mode %ls\n",
             static_cast<unsigned long long>(ThreadExec.OldRip),
             static_cast<unsigned long long>(ThreadExec.OldRsp),
             static_cast<unsigned long long>(ThreadExec.StackLimit),
             ThreadExec.FpMode ? L"XSAVE" : L"FXSAVE");
 
         row(L"Data Directories Wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
-        wprintf(L"Cleaned Mask = 0x%08X | Residual = 0x%08X | Mapper Re-Read %s\n",
+        LOG(0, L"Cleaned Mask = 0x%08X | Residual = 0x%08X | Mapper Re-Read %s\n",
             (unsigned)MapStats.CleanedMask, (unsigned)MapStats.ResidualMask,
             MapStats.Verified ? L"Verified" : L"Not Verified");
 
         row(L"W^X....................... ", !wx_violated);
-        wprintf(L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,
+        LOG(0, L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,
             wx_violated ? L"Violated" : L"Enforced");
 
         
         
         row(L"Verification Gate......... ", stealth_gate_ok);
-        wprintf(L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
-        wprintf(L"====================================================================================================\n");
-        wprintf(L"[Result] [+] Mapped At %p In %ls (PID %lu)\n",
+        LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
+        LOG(0, L"====================================================================================================\n");
+        LOG(0, L"[Result] [+] Mapped At %p In %ls (PID %lu)\n",
             data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
-        wprintf(L"====================================================================================================\n");
+        LOG(0, L"====================================================================================================\n");
         Trace::Summary(L"Success");
         PauseBeforeExit();
         return 0;
