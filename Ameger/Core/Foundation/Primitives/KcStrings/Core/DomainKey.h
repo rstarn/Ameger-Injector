@@ -10,7 +10,7 @@ namespace detail
 {
 
 #ifndef AMEGER_STRING_SEED
-#define AMEGER_STRING_SEED 0x1B873593u
+#define AMEGER_STRING_SEED (__LINE__ * 0x5A827999u + 0x6ED9EBA1u)
 #endif
 inline constexpr std::uint32_t kStringSeed = static_cast<std::uint32_t>(AMEGER_STRING_SEED);
 

@@ -7201,8 +7201,8 @@ DWORD BuildFlags(const WizardConfig & config)
     
     
     
-    static_assert(offsetof(AMEGER_PEB, CrossProcessFlags) == 80);
-    static_assert(offsetof(AMEGER_PEB, Mutant) == 8);
+    static_assert(offsetof(PEB, CrossProcessFlags) == 80);
+    static_assert(offsetof(PEB, Mutant) == 8);
 
     inline bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out)
     {
@@ -7250,9 +7250,9 @@ DWORD BuildFlags(const WizardConfig & config)
         out.pebAddress = pbi.PebBaseAddress;
 
         const ULONG_PTR peb = ReCa<ULONG_PTR>(pbi.PebBaseAddress);
-        const ULONG_PTR cross_addr = peb + offsetof(AMEGER_PEB, CrossProcessFlags);
+        const ULONG_PTR cross_addr = peb + offsetof(PEB, CrossProcessFlags);
         const ULONG_PTR debugged_addr = peb + 2;
-        const ULONG_PTR global_flag_addr = peb + offsetof(AMEGER_PEB, NtGlobalFlag);
+        const ULONG_PTR global_flag_addr = peb + offsetof(PEB, NtGlobalFlag);
 
         ULONG cross = 0;
         BYTE debugged = 0;

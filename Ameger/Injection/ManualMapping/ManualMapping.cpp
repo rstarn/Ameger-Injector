@@ -756,7 +756,7 @@ __forceinline void FreeDependencyNodeList(MANUAL_MAPPING_FUNCTION_TABLE * f, MM_
 
 
 
-DWORD __declspec(code_seg(".mmap_sec$05")) __stdcall MMI_SetExecProtections(MANUAL_MAPPING_DATA * pData, DWORD NewState)
+DWORD __declspec(code_seg(".code$05")) __stdcall MMI_SetExecProtections(MANUAL_MAPPING_DATA * pData, DWORD NewState)
 {
 	if (!pData || !pData->FunctionTable || !pData->pNtHeaders || !pData->pFileHeader)
 	{
@@ -809,7 +809,7 @@ DWORD __declspec(code_seg(".mmap_sec$05")) __stdcall MMI_SetExecProtections(MANU
 
 
 
-bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPPING_DATA * pData, const UNICODE_STRING * FullName, HINSTANCE * hModule)
+bool __declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPPING_DATA * pData, const UNICODE_STRING * FullName, HINSTANCE * hModule)
 {
 	*hModule = nullptr;
 
@@ -844,8 +844,8 @@ bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_FindLoadedModule(MANUAL_
 		return false;
 	}
 
-	const DWORD peb_ldr_offset = dyno.PebLdr ? dyno.PebLdr : static_cast<DWORD>(offsetof(AMEGER_PEB, Ldr));
-	auto * pLdr = *ReCa<AMEGER_PEB_LDR_DATA * const *>(ReCa<const BYTE *>(Basic.pPEB) + peb_ldr_offset);
+	const DWORD peb_ldr_offset = dyno.PebLdr ? dyno.PebLdr : static_cast<DWORD>(offsetof(PEB, Ldr));
+	auto * pLdr = *ReCa<PEB_LDR_DATA * const *>(ReCa<const BYTE *>(Basic.pPEB) + peb_ldr_offset);
 
 	if (!pLdr)
 	{
@@ -908,7 +908,7 @@ bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_FindLoadedModule(MANUAL_
 
 
 
-bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_AddressInLoadedImage(MANUAL_MAPPING_DATA * pData, const void * Address)
+bool __declspec(code_seg(".code$11")) __stdcall MMI_AddressInLoadedImage(MANUAL_MAPPING_DATA * pData, const void * Address)
 {
 	if (!pData || !pData->FunctionTable || !pData->FunctionTable->NtQueryInformationProcess || !Address)
 	{
@@ -931,8 +931,8 @@ bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_AddressInLoadedImage(MAN
 		return false;
 	}
 
-	const DWORD peb_ldr_offset = dyno.PebLdr ? dyno.PebLdr : static_cast<DWORD>(offsetof(AMEGER_PEB, Ldr));
-	auto * pLdr = *ReCa<AMEGER_PEB_LDR_DATA * const *>(ReCa<const BYTE *>(Basic.pPEB) + peb_ldr_offset);
+	const DWORD peb_ldr_offset = dyno.PebLdr ? dyno.PebLdr : static_cast<DWORD>(offsetof(PEB, Ldr));
+	auto * pLdr = *ReCa<PEB_LDR_DATA * const *>(ReCa<const BYTE *>(Basic.pPEB) + peb_ldr_offset);
 
 	if (!pLdr)
 	{
@@ -964,7 +964,7 @@ bool __declspec(code_seg(".mmap_sec$11")) __stdcall MMI_AddressInLoadedImage(MAN
 
 #pragma region manual mapping internal helper functions
 
-NTSTATUS __declspec(code_seg(".mmap_sec$12")) __stdcall MMIH_PreprocessModuleName(MANUAL_MAPPING_DATA * pData, const char * szModule, UNICODE_STRING * Module, LDRP_LOAD_CONTEXT_FLAGS * CtxFlags)
+NTSTATUS __declspec(code_seg(".code$12")) __stdcall MMIH_PreprocessModuleName(MANUAL_MAPPING_DATA * pData, const char * szModule, UNICODE_STRING * Module, LDRP_LOAD_CONTEXT_FLAGS * CtxFlags)
 {
 	auto f = pData->FunctionTable;
 
@@ -1070,7 +1070,7 @@ NTSTATUS __declspec(code_seg(".mmap_sec$12")) __stdcall MMIH_PreprocessModuleNam
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS __declspec(code_seg(".mmap_sec$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPING_DATA * pData, UNICODE_STRING * Module, LDRP_LOAD_CONTEXT_FLAGS CtxFlag, HINSTANCE * hModule, MM_DEPENDENCY_RECORD ** head)
+NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPING_DATA * pData, UNICODE_STRING * Module, LDRP_LOAD_CONTEXT_FLAGS CtxFlag, HINSTANCE * hModule, MM_DEPENDENCY_RECORD ** head)
 {
 	auto f = pData->FunctionTable;
 	const DYNAMIC_NT_OFFSETS & dyno = pData->NtOffsets;
@@ -1140,7 +1140,7 @@ NTSTATUS __declspec(code_seg(".mmap_sec$13")) __stdcall MMIH_LoadModule(MANUAL_M
 
 #pragma endregion
 
-DWORD __declspec(code_seg(".mmap_sec$01")) __stdcall ManualMapping_Shell(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPPING_DATA * pData)
 {
 	if (!pData || !pData->FunctionTable)
 	{
@@ -1264,7 +1264,7 @@ DWORD __declspec(code_seg(".mmap_sec$01")) __stdcall ManualMapping_Shell(MANUAL_
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$02")) __stdcall MMI_MapSections(MANUAL_MAPPING_DATA * pData)
 {
 	auto f = pData->FunctionTable;
 
@@ -1415,7 +1415,7 @@ DWORD __declspec(code_seg(".mmap_sec$02")) __stdcall MMI_MapSections(MANUAL_MAPP
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$03")) __stdcall MMI_RelocateImage(MANUAL_MAPPING_DATA * pData)
 {
 	BYTE * LocationDelta = pData->pImageBase - pData->pOptionalHeader->ImageBase;
 
@@ -1472,7 +1472,7 @@ DWORD __declspec(code_seg(".mmap_sec$03")) __stdcall MMI_RelocateImage(MANUAL_MA
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$04")) __stdcall MMI_InitializeCookie(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$04")) __stdcall MMI_InitializeCookie(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_INIT_SECURITY_COOKIE) || !MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size)
 	{
@@ -1512,7 +1512,7 @@ DWORD __declspec(code_seg(".mmap_sec$04")) __stdcall MMI_InitializeCookie(MANUAL
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & (INJ_MM_RESOLVE_IMPORTS | INJ_MM_RUN_DLL_MAIN)))
 	{
@@ -1711,7 +1711,7 @@ DWORD __declspec(code_seg(".mmap_sec$06")) __stdcall MMI_LoadImports(MANUAL_MAPP
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_RESOLVE_DELAY_IMPORTS))
 	{
@@ -1908,7 +1908,7 @@ DWORD __declspec(code_seg(".mmap_sec$07")) __stdcall MMI_LoadDelayImports(MANUAL
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_SET_PAGE_PROTECTIONS))
 	{
@@ -2030,7 +2030,7 @@ DWORD __declspec(code_seg(".mmap_sec$08")) __stdcall MMI_SetPageProtections(MANU
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAPPING_DATA * pData)
 {
 
 	if (!(pData->Flags & INJ_MM_ENABLE_EXCEPTIONS))
@@ -2165,7 +2165,7 @@ DWORD __declspec(code_seg(".mmap_sec$09")) __stdcall MMI_EnableExceptions(MANUAL
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_EXECUTE_TLS))
 	{
@@ -2264,7 +2264,7 @@ DWORD __declspec(code_seg(".mmap_sec$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPIN
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPPING_DATA * pData)
 {
 	auto f = pData->FunctionTable;
 
@@ -2422,7 +2422,7 @@ DWORD __declspec(code_seg(".mmap_sec$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_
 	return tls_result;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_RUN_DLL_MAIN))
 	{
@@ -2517,7 +2517,7 @@ DWORD __declspec(code_seg(".mmap_sec$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_M
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_MM_CLEAN_DATA_DIR))
 	{
@@ -2988,7 +2988,7 @@ DWORD __declspec(code_seg(".mmap_sec$0C")) __stdcall MMI_CleanDataDirectories(MA
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_DATA * pData)
 {
 	if (!(pData->Flags & INJ_ERASE_HEADER))
 	{
@@ -3175,7 +3175,7 @@ DWORD __declspec(code_seg(".mmap_sec$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPP
 	return INJ_ERR_SUCCESS;
 }
 
-DWORD __declspec(code_seg(".mmap_sec$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA * pData)
+DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA * pData)
 {
 	if (!pData || !pData->FunctionTable)
 	{
@@ -3216,10 +3216,10 @@ DWORD __declspec(code_seg(".mmap_sec$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_
 }
 
 #ifndef AMEGER_MMAP_SENTINEL
-#define AMEGER_MMAP_SENTINEL 1337
+#define AMEGER_MMAP_SENTINEL (__LINE__ * 37u + 101u)
 #endif
 
-DWORD __declspec(code_seg(".mmap_sec$14")) MMAP_SEC_END()
+DWORD __declspec(code_seg(".code$14")) MMAP_SEC_END()
 {
 	return AMEGER_MMAP_SENTINEL;
 }

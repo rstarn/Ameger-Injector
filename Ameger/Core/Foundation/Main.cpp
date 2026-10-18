@@ -1,6 +1,7 @@
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Error.h"
+#include "Core/Utility/Tools/Tools.h"
 #include "Injection/Injection.h"
 #include "System/Import/ImportHandler.h"
 
@@ -25,6 +26,8 @@ namespace
 	};
 
 	volatile LONG g_RuntimeInitializationState = 0;
+
+std::wstring g_SymbolCacheRoot;
 
 	void CloseEventHandle(HANDLE & handle)
 	{
@@ -72,6 +75,9 @@ namespace
 		sym_ntdll_native.Cleanup();
 		sym_parser.Cleanup();
 		sym_ntdll_native.PurgePdb();
+
+		DeleteSymbolCacheRoot(g_SymbolCacheRoot);
+		g_SymbolCacheRoot.clear();
 
 		CloseRuntimeEvents();
 
@@ -241,6 +247,8 @@ DWORD __stdcall InitializeRuntime()
 			return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 		}
 	}
+
+	g_SymbolCacheRoot = symbol_cache_root;
 
 	SymbolWorkerParams * sym_params = nullptr;
 	try

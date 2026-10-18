@@ -335,14 +335,69 @@ namespace
 		0x0F, 0x05, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90
 	};
 
-	void WriteStub(BYTE * Destination, DWORD Service)
+	static void * FindSyscallGadget()
 	{
-		memcpy(Destination, StubTemplate, SC_STUB_SIZE);
+		auto name = XOR_STR_W(L"ntdll.dll");
+		const BYTE * base = ReCa<const BYTE *>(GetModuleHandleW(name.get()));
+		if (!base) return nullptr;
+
+		const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(base);
+		if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+
+		const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
+		if (!nt || nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+
+		const auto * sec = IMAGE_FIRST_SECTION(nt);
+		for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+		{
+			if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
+			{
+				const BYTE * start = base + sec[i].VirtualAddress;
+				DWORD size = sec[i].Misc.VirtualSize;
+				if (!size) size = sec[i].SizeOfRawData;
+				for (DWORD j = 0; j + 2 < size; ++j)
+				{
+					if (start[j] == 0x0F && start[j + 1] == 0x05 && start[j + 2] == 0xC3)
+					{
+						return ReCa<void *>(const_cast<BYTE *>(start + j));
+					}
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	void WriteStub(BYTE * Destination, DWORD Service, void * Gadget)
+	{
+		if (!Gadget)
+		{
+			memcpy(Destination, StubTemplate, SC_STUB_SIZE);
+			*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
+			return;
+		}
+
+		Destination[0] = 0x4C;
+		Destination[1] = 0x8B;
+		Destination[2] = 0xD1;
+		Destination[3] = 0xB8;
 		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
+
+		Destination[8] = 0xFF;
+		Destination[9] = 0x25;
+
+		const BYTE * pool = ReCa<const BYTE *>(g_SyscallPool.load(std::memory_order_acquire));
+		const BYTE * slot = pool ? (pool + kStubAreaSize) : (Destination + 14);
+		LONG rel = static_cast<LONG>(slot - (Destination + 14));
+		*ReCa<LONG *>(Destination + 10) = rel;
+
+		Destination[14] = 0x90;
+		Destination[15] = 0x90;
 	}
 
 bool BuildPool()
 {
+	void * gadget = FindSyscallGadget();
 	SC_LOG_INFO("Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...", kSyscallTableCount, SC_STUB_SIZE);
 
 	
@@ -356,12 +411,14 @@ bool BuildPool()
 		g_SyscallTable[i].Stub = nullptr;
 	}
 	
-	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize + 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
 		SC_LOG_ERR("VirtualAlloc Failed For Stub Pool");
 		return false;
 	}
+
+	g_SyscallPool.store(Pool, std::memory_order_relaxed);
 
 	DWORD Written = 0;
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
@@ -373,7 +430,7 @@ bool BuildPool()
 			continue;
 		}
 
-		WriteStub(Pool + (i * SC_STUB_SIZE), Entry.Service);
+		WriteStub(Pool + (i * SC_STUB_SIZE), Entry.Service, gadget);
 		Entry.Stub = Pool + (i * SC_STUB_SIZE);
 
 		++Written;
@@ -387,7 +444,12 @@ bool BuildPool()
 	}
 
 	DWORD OldProtect = 0;
-	if (!VirtualProtect(Pool, kStubAreaSize, PAGE_EXECUTE_READ, &OldProtect))
+	if (gadget)
+	{
+		*ReCa<void **>(Pool + kStubAreaSize) = gadget;
+	}
+
+	if (!VirtualProtect(Pool, kStubAreaSize + 16, PAGE_EXECUTE_READ, &OldProtect))
 	{
 		for (size_t i = 0; i < kSyscallTableCount; ++i)
 		{

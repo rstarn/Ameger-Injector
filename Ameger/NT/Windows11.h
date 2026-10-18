@@ -83,8 +83,8 @@ typedef struct _LDR_DATA_TABLE_ENTRY_WIN11
 	PVOID		ParentDllBase;
 	PVOID		SwitchBackContext;
 
-	AMEGER_RTL_BALANCED_NODE BaseAddressIndexNode;
-	AMEGER_RTL_BALANCED_NODE MappingInfoIndexNode;
+	RTL_BALANCED_NODE BaseAddressIndexNode;
+	RTL_BALANCED_NODE MappingInfoIndexNode;
 
 	ULONG_PTR			OriginalBase;
 	LARGE_INTEGER		LoadTime;

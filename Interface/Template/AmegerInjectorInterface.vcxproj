@@ -38,7 +38,7 @@
     <AmegerRuntimeHash5>0</AmegerRuntimeHash5>
     <AmegerRuntimeHash6>0</AmegerRuntimeHash6>
     <AmegerRuntimeHash7>0</AmegerRuntimeHash7>
-    <AmegerStringSeed>0x1B873593</AmegerStringSeed>
+    <AmegerStringSeed Condition="'$(AmegerStringSeed)' == ''"></AmegerStringSeed>
     <AmegerConfigMagic Condition="'$(AmegerConfigMagic)' == ''">SYSCFG01</AmegerConfigMagic>
     <AmegerWindowClass Condition="'$(AmegerWindowClass)' == ''">AmgWLayered</AmegerWindowClass>
   </PropertyGroup>

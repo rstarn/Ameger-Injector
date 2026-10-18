@@ -59,6 +59,7 @@ $data = [IO.File]::ReadAllBytes($Path)
 
 
 $stubTemplate = [int[]](0x4C, 0x8B, 0xD1, 0xB8, -1, -1, -1, -1, 0x0F, 0x05, 0xC3)
+$indirectTemplate = [int[]](0x4C, 0x8B, 0xD1, 0xB8, -1, -1, -1, -1, 0xFF, 0x25)
 
 
 $healthyPrologue = [int[]](0x4C, 0x8B, 0xD1, 0xB8)
@@ -74,11 +75,13 @@ $keystreamAlt2     = [int[]](0xEB, 0x11, 0x31, 0x13, 0xBB, 0x49, 0xD0, 0x94)
 
 if ($Check -eq "Stub") {
     $stubCount = Get-ByteMatches $data $stubTemplate
-    if ($stubCount -lt 1) {
-        Write-Fail "Direct-Syscall Stub Template (mov r10,rcx; mov eax,imm; syscall; ret) Not Present"
+    $indirectCount = Get-ByteMatches $data $indirectTemplate
+    if ($stubCount -lt 1 -and $indirectCount -lt 1) {
+        Write-Fail "Syscall Stub Template (direct or indirect) Not Present"
         exit 1
     }
-    Write-Ok ("Direct-Syscall Stub Template Present (" + $stubCount + " Match)")
+    if ($stubCount -ge 1) { Write-Ok ("Direct-Syscall Stub Template Present (" + $stubCount + " Match)") }
+    if ($indirectCount -ge 1) { Write-Ok ("Indirect-Syscall Stub Template Present (" + $indirectCount + " Match)") }
 
     $prologueCount = Get-ByteMatches $data $healthyPrologue
     if ($prologueCount -lt 1) {
@@ -90,10 +93,6 @@ if ($Check -eq "Stub") {
 
     $syscallOp = [int[]](0x0F, 0x05)
     $opCount = Get-ByteMatches $data $syscallOp
-    if ($opCount -lt 1) {
-        Write-Fail "Syscall Opcode 0F 05 Not Found; Direct-Syscall Layer Would Be Inert"
-        exit 1
-    }
     Write-Ok ("Syscall Opcode Issued (" + $opCount + " Match)")
 }
 
@@ -185,7 +184,7 @@ if ($Check -eq "MmapSections") {
 
 
 
-    $mmapExact = @($chars | Where-Object { $_.Name -eq ".mmap_sec" })
+    $mmapExact = @($chars | Where-Object { $_.Name -eq ".code" })
     $mmapTrunc = @($chars | Where-Object { $_.Name -eq ".mmap_se" })
 
 
@@ -193,14 +192,14 @@ if ($Check -eq "MmapSections") {
     $dollarParts = @($chars | Where-Object { $_.Name -match "\`$" })
 
     if ($mmapExact.Count -eq 0 -and $mmapTrunc.Count -eq 0) {
-        Write-Fail "No .mmap_sec Section Present At All; The Remote Shell Was Not Emitted"
+        Write-Fail "No .code Section Present At All; The Remote Shell Was Not Emitted"
         Write-Host ("      Sections: " + ($names -join ", "))
         exit 1
     }
 
     $mergedCount = $mmapExact.Count + $mmapTrunc.Count
     if ($mergedCount -ne 1) {
-        Write-Fail ("Expected Exactly One Merged .mmap_sec Section, Found " + $mergedCount)
+        Write-Fail ("Expected Exactly One Merged .code Section, Found " + $mergedCount)
         exit 1
     }
 
@@ -217,11 +216,11 @@ if ($Check -eq "MmapSections") {
     $entry = ($mmapExact + $mmapTrunc)[0]
     $characteristics = [BitConverter]::ToUInt32($data, $entry.Offset + 36)
     if (($characteristics -band 0x20000000) -eq 0) {
-        Write-Fail "Merged .mmap_sec Section Is Not Executable"
+        Write-Fail "Merged .code Section Is Not Executable"
         exit 1
     }
     if (($characteristics -band 0x80000000) -ne 0) {
-        Write-Fail "Merged .mmap_sec Section Is Writable; W^X Regression In The Staged Image"
+        Write-Fail "Merged .code Section Is Writable; W^X Regression In The Staged Image"
         exit 1
     }
     Write-Ok ("Merged Shell Section Is Execute+Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")

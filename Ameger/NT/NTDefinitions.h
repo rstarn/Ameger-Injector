@@ -130,7 +130,7 @@ typedef enum _LDR_HOT_PATCH_STATE
 
 #pragma endregion
 
-struct AMEGER_PEB;
+struct PEB;
 
 typedef struct _ANSI_STRING
 {
@@ -146,25 +146,25 @@ typedef struct _UNICODE_STRING
 	wchar_t *	szBuffer;
 } UNICODE_STRING, * PUNICODE_STRING;
 
-typedef struct _AMEGER_RTL_BALANCED_NODE
+typedef struct _RTL_BALANCED_NODE
 {
 	union
 	{
-		struct _AMEGER_RTL_BALANCED_NODE * Children[2];
+		struct _RTL_BALANCED_NODE * Children[2];
 		struct
 		{
-			struct _AMEGER_RTL_BALANCED_NODE * Left;
-			struct _AMEGER_RTL_BALANCED_NODE * Right;
+			struct _RTL_BALANCED_NODE * Left;
+			struct _RTL_BALANCED_NODE * Right;
 		};
 	};
 
 	ULONG_PTR ParentValue;
-} AMEGER_RTL_BALANCED_NODE, * PAMEGER_RTL_BALANCED_NODE;
+} RTL_BALANCED_NODE, * PRTL_BALANCED_NODE;
 
 typedef struct _RTL_RB_TREE
 {
-	AMEGER_RTL_BALANCED_NODE * Root;
-	AMEGER_RTL_BALANCED_NODE * Min;
+	RTL_BALANCED_NODE * Root;
+	RTL_BALANCED_NODE * Min;
 } RTL_RB_TREE, * PRTL_RB_TREE;
 
 typedef struct _CLIENT_ID
@@ -186,7 +186,7 @@ typedef struct _THREAD_BASIC_INFORMATION
 typedef struct _PROCESS_BASIC_INFORMATION
 {
 	NTSTATUS	ExitStatus;
-	AMEGER_PEB	*	pPEB;
+	PEB	*	pPEB;
 	ULONG_PTR	AffinityMask;
 	LONG		BasePriority;
 	HANDLE		UniqueProcessId;
@@ -274,7 +274,7 @@ typedef struct _IO_STATUS_BLOCK
 	ULONG_PTR Information;
 } IO_STATUS_BLOCK, * PIO_STATUS_BLOCK;
 
-typedef struct _AMEGER_PEB_LDR_DATA
+typedef struct _PEB_LDR_DATA
 {
 	ULONG		Length;
 	BYTE		Initialized;
@@ -285,21 +285,21 @@ typedef struct _AMEGER_PEB_LDR_DATA
 	PVOID		EntryInProgress;
 	BYTE		ShutdownInProgress;
 	HANDLE		ShutdownThreadId;
-} AMEGER_PEB_LDR_DATA, * PAMEGER_PEB_LDR_DATA;
+} PEB_LDR_DATA, * PPEB_LDR_DATA;
 
 static_assert(sizeof(CLIENT_ID) == 16);
 static_assert(sizeof(UNICODE_STRING) == 16);
 static_assert(sizeof(ANSI_STRING) == 16);
-static_assert(sizeof(AMEGER_RTL_BALANCED_NODE) == 24);
+static_assert(sizeof(RTL_BALANCED_NODE) == 24);
 static_assert(sizeof(RTL_RB_TREE) == 16);
 static_assert(sizeof(OBJECT_ATTRIBUTES) == 48);
 static_assert(sizeof(IO_STATUS_BLOCK) == 16);
-static_assert(sizeof(AMEGER_PEB_LDR_DATA) == 88);
-static_assert(offsetof(AMEGER_PEB_LDR_DATA, InLoadOrderModuleListHead) == 16);
-static_assert(offsetof(AMEGER_PEB_LDR_DATA, InMemoryOrderModuleListHead) == 32);
-static_assert(offsetof(AMEGER_PEB_LDR_DATA, InInitializationOrderModuleListHead) == 48);
+static_assert(sizeof(PEB_LDR_DATA) == 88);
+static_assert(offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead) == 16);
+static_assert(offsetof(PEB_LDR_DATA, InMemoryOrderModuleListHead) == 32);
+static_assert(offsetof(PEB_LDR_DATA, InInitializationOrderModuleListHead) == 48);
 
-struct AMEGER_PEB
+struct PEB
 {
 	BOOLEAN InheritedAddressSpace;
 	BOOLEAN ReadImageFileExecOptions;
@@ -325,7 +325,7 @@ struct AMEGER_PEB
 
 	PVOID ImageBaseAddress;
 
-	AMEGER_PEB_LDR_DATA * Ldr;
+	PEB_LDR_DATA * Ldr;
 
 	PVOID					*	ProcessParameters;
 	PVOID						SubSystemData;
@@ -404,16 +404,16 @@ struct AMEGER_PEB
 	USHORT OSCSDVersion;
 };
 
-static_assert(sizeof(AMEGER_PEB) == 296);
-static_assert(offsetof(AMEGER_PEB, Mutant) == 8);
-static_assert(offsetof(AMEGER_PEB, ImageBaseAddress) == 16);
-static_assert(offsetof(AMEGER_PEB, Ldr) == 24);
-static_assert(offsetof(AMEGER_PEB, ProcessParameters) == 32);
-static_assert(offsetof(AMEGER_PEB, ProcessHeap) == 48);
-static_assert(offsetof(AMEGER_PEB, CrossProcessFlags) == 80);
-static_assert(offsetof(AMEGER_PEB, TlsExpansionCounter) == 112);
-static_assert(offsetof(AMEGER_PEB, LoaderLock) == 272);
-static_assert(offsetof(AMEGER_PEB, OSBuildNumber) == 288);
+static_assert(sizeof(PEB) == 296);
+static_assert(offsetof(PEB, Mutant) == 8);
+static_assert(offsetof(PEB, ImageBaseAddress) == 16);
+static_assert(offsetof(PEB, Ldr) == 24);
+static_assert(offsetof(PEB, ProcessParameters) == 32);
+static_assert(offsetof(PEB, ProcessHeap) == 48);
+static_assert(offsetof(PEB, CrossProcessFlags) == 80);
+static_assert(offsetof(PEB, TlsExpansionCounter) == 112);
+static_assert(offsetof(PEB, LoaderLock) == 272);
+static_assert(offsetof(PEB, OSBuildNumber) == 288);
 
 
 

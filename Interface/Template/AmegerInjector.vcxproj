@@ -35,8 +35,8 @@
     <TargetName>Ameger Injector - $(PlatformShortName)</TargetName>
     <IntDir>$(ProjectDir)..\..\Build\obj\Ameger\$(Configuration)\$(PlatformShortName)\</IntDir>
     <LinkIncremental>false</LinkIncremental>
-    <AmegerMmapSentinel>1337</AmegerMmapSentinel>
-    <AmegerStringSeed>0x1B873593</AmegerStringSeed>
+    <AmegerMmapSentinel Condition="'$(AmegerMmapSentinel)' == ''"></AmegerMmapSentinel>
+    <AmegerStringSeed Condition="'$(AmegerStringSeed)' == ''"></AmegerStringSeed>
 
     <AmegerStubSeed Condition="'$(AmegerStubSeed)' == ''">0</AmegerStubSeed>
   </PropertyGroup>
