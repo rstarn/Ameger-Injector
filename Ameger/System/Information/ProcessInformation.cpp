@@ -153,6 +153,9 @@ bool ProcessInformation::RefreshInformation()
 		m_pFirstProcess = nullptr;
 	}
 
+	m_pCurrentProcess = nullptr;
+	m_pCurrentThread = nullptr;
+
 	m_pFirstProcess = ReCa<SYSTEM_PROCESS_INFORMATION *>(new(std::nothrow) BYTE[m_BufferSize]());
 	if (!m_pFirstProcess)
 	{

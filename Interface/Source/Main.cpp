@@ -1311,6 +1311,52 @@ int UiLog(int indent, const wchar_t * format, ...)
     
     
     
+    bool IsDeletableSelfCopy(const std::wstring & own_path, const std::wstring & candidate)
+    {
+        const size_t own_slash = own_path.find_last_of(L"\\/");
+        const size_t cand_slash = candidate.find_last_of(L"\\/");
+        if (own_slash == std::wstring::npos || cand_slash == std::wstring::npos || cand_slash == 0)
+        {
+            return false;
+        }
+
+        const std::wstring own_dir = own_path.substr(0, own_slash + 1);
+        const std::wstring cand_dir = candidate.substr(0, cand_slash + 1);
+        if (_wcsicmp(own_dir.c_str(), cand_dir.c_str()) != 0)
+        {
+            return false;
+        }
+
+        const std::wstring name = candidate.substr(cand_slash + 1);
+        if (name.size() < 12 || name.size() > 16)
+        {
+            return false;
+        }
+        if (_wcsicmp(name.c_str() + name.size() - 4, L".exe") != 0)
+        {
+            return false;
+        }
+
+        const auto is_letter = [](wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z'); };
+        const auto is_alnum = [&](wchar_t c) { return is_letter(c) || (c >= L'0' && c <= L'9'); };
+
+        if (!is_letter(name[0]))
+        {
+            return false;
+        }
+
+        const size_t stem = name.size() - 4;
+        for (size_t i = 1; i < stem; ++i)
+        {
+            if (!is_alnum(name[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     bool PolymorphicSelfRename(const std::wstring & parentHint)
     {
         const std::wstring cmd = GetCommandLineW();
@@ -1320,7 +1366,8 @@ int UiLog(int indent, const wchar_t * format, ...)
             if (!parentHint.empty() && FileExists(parentHint))
             {
                 std::wstring own;
-                if (GetOwnExePath(own) && _wcsicmp(own.c_str(), parentHint.c_str()) != 0)
+                if (GetOwnExePath(own) && _wcsicmp(own.c_str(), parentHint.c_str()) != 0 &&
+                    IsDeletableSelfCopy(own, parentHint))
                 {
                     (void)DeleteFileW(parentHint.c_str());
                 }
@@ -3431,6 +3478,28 @@ wchar_t name[48]{};
             load_error = GetLastError();
             if (runtime.module)
             {
+                BY_HANDLE_FILE_INFORMATION verified_info{};
+                BY_HANDLE_FILE_INFORMATION loaded_info{};
+                HANDLE verify_reopen = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+                const bool same_file =
+                    GetFileInformationByHandle(runtime_file, &verified_info) &&
+                    verify_reopen != INVALID_HANDLE_VALUE &&
+                    GetFileInformationByHandle(verify_reopen, &loaded_info) &&
+                    verified_info.dwVolumeSerialNumber == loaded_info.dwVolumeSerialNumber &&
+                    verified_info.nFileIndexHigh == loaded_info.nFileIndexHigh &&
+                    verified_info.nFileIndexLow == loaded_info.nFileIndexLow;
+                if (verify_reopen != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(verify_reopen);
+                }
+                if (!same_file)
+                {
+                    LOG(0, L"%lsRuntime File Identity Changed Between Verification And Load; Refusing.%ls\n", kRed, kReset);
+                    FreeLibrary(runtime.module);
+                    runtime.module = nullptr;
+                    return false;
+                }
+
 
                 auto resolve_export = [&](const char * old_name) -> FARPROC
                 {
@@ -7328,6 +7397,31 @@ DWORD BuildFlags(const WizardConfig & config)
             return 0;
         }
 
+        DWORD remote_nt_offset = 0;
+        if (!ReadProcessMemory(process, reinterpret_cast<const void *>(remote_base + 0x3C), &remote_nt_offset, sizeof(remote_nt_offset), nullptr) ||
+            remote_nt_offset > 0x1000)
+        {
+            return 0;
+        }
+
+        DWORD remote_stamp = 0;
+        DWORD local_stamp = 0;
+        if (!ReadProcessMemory(process, reinterpret_cast<const void *>(remote_base + remote_nt_offset + 8), &remote_stamp, sizeof(remote_stamp), nullptr))
+        {
+            return 0;
+        }
+
+        const BYTE * local_nt = reinterpret_cast<const BYTE *>(local_module) +
+            *reinterpret_cast<const DWORD *>(reinterpret_cast<const BYTE *>(local_module) + 0x3C);
+        memcpy(&local_stamp, local_nt + 8, sizeof(local_stamp));
+
+        if (remote_stamp != local_stamp)
+        {
+            LOG(0, L"%lsHook Restore Skipped: %ls Remote Build Stamp 0x%08X Differs From Local 0x%08X.%ls\n",
+                kYellow, target.module.c_str(), remote_stamp, local_stamp, kReset);
+            return 0;
+        }
+
         memcpy(local_bytes_out, local_function, kHookScanBytes);
 
         return remote_base +
@@ -8046,28 +8140,39 @@ DWORD BuildFlags(const WizardConfig & config)
         case 0xC0000017u: return L"NO_MEMORY";
         case 0xC0000018u: return L"CONFLICTING_ADDRESSES";
         case 0xC0000022u: return L"ACCESS_DENIED";
-        case 0xC0000023u: return L"STATUS_HANDLE_NOT_CLOSABLE";
-        case 0xC0000035u: return L"OBJECT_NAME_INVALID";
+        case 0xC0000023u: return L"BUFFER_TOO_SMALL";
+        case 0xC0000033u: return L"OBJECT_NAME_INVALID";
+        case 0xC0000035u: return L"OBJECT_NAME_COLLISION";
         case 0xC0000043u: return L"SHARING_VIOLATION";
-        case 0xC000006Du: return L"API_SET_NOT_HOSTED";
+        case 0xC000006Du: return L"LOGON_FAILURE";
         case 0xC000007Fu: return L"DISK_FULL";
+        case 0xC00000A0u: return L"MEMORY_NOT_ALLOCATED";
+        case 0xC00000E5u: return L"INTERNAL_ERROR";
+        case 0xC00000FDu: return L"STACK_OVERFLOW";
         case 0xC0000135u: return L"DLL_NOT_FOUND";
         case 0xC0000138u: return L"ORDINAL_NOT_FOUND";
         case 0xC0000139u: return L"ENTRYPOINT_NOT_FOUND";
         case 0xC000013Au: return L"CONTROL_C_EXIT";
-        case 0xC000014Au: return L"DLL_INIT_FAILED";
-        case 0xC000014Bu: return L"DLL_INIT_FAILED_LOGOFF";
-        case 0xC00001A5u: return L"INVALID_BUFFER_SIZE";
-        case 0xC0000203u: return L"STACK_OVERFLOW";
-        case 0xC0000205u: return L"STATUS_POSSIBLE_DEADLOCK";
-        case 0xC0000225u: return L"STATUS_NOT_FOUND";
-        case 0xC000026Du: return L"LOGON_FAILURE";
+        case 0xC0000142u: return L"DLL_INIT_FAILED";
+        case 0xC000014Au: return L"ILLEGAL_FLOAT_CONTEXT";
+        case 0xC000014Bu: return L"PIPE_BROKEN";
+        case 0xC0000194u: return L"POSSIBLE_DEADLOCK";
+        case 0xC00001A5u: return L"INVALID_EXCEPTION_HANDLER";
+        case 0xC0000203u: return L"USER_SESSION_DELETED";
+        case 0xC0000205u: return L"INSUFF_SERVER_RESOURCES";
+        case 0xC0000206u: return L"INVALID_BUFFER_SIZE";
+        case 0xC0000225u: return L"NOT_FOUND";
+        case 0xC0000235u: return L"HANDLE_NOT_CLOSABLE";
+        case 0xC000026Bu: return L"DLL_INIT_FAILED_LOGOFF";
+        case 0xC000026Du: return L"DFS_UNAVAILABLE";
         case 0xC0000374u: return L"HEAP_CORRUPTION";
         case 0xC0000409u: return L"STACK_BUFFER_OVERRUN (__fastfail: cookie or GS failure)";
-        case 0xC000040Au: return L"FAST_FAIL_GUARD_CHECK / __fastfail_gs cookie violation";
-        case 0xC000040Bu: return L"FAST_FAIL_FATAL_APP_EXIT";
-        case 0xC000041Du: return L"COOKIE_INIT_FAILED";
-        case 0xC00000A0u: return L"INTERNAL_ERROR";
+        case 0xC000040Au: return L"NO_S4U_PROT_SUPPORT";
+        case 0xC000040Bu: return L"CROSSREALM_DELEGATION_FAILURE";
+        case 0xC000041Du: return L"FATAL_USER_CALLBACK_EXCEPTION";
+        case 0xC0000481u: return L"APISET_NOT_HOSTED";
+        case 0xC0000482u: return L"APISET_NOT_PRESENT";
+        case 0x40000015u: return L"FATAL_APP_EXIT";
         default: return L"Unknown";
         }
     }

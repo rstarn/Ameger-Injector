@@ -57,6 +57,24 @@ namespace
 		return v == 4 || v == 6 || v == 11 || v == 13 || v == 15;
 	}
 
+	bool ResumeThreadWithRetry(HANDLE hThread)
+	{
+		for (int attempt = 0; attempt < 4; ++attempt)
+		{
+			if (NT_SUCCESS(ScNtResumeThread(hThread, nullptr)))
+			{
+				return true;
+			}
+
+			if (attempt + 1 < 4)
+			{
+				Sleep(1);
+			}
+		}
+
+		return false;
+	}
+
 	bool IsWorkerTid(HANDLE hTargetProc, DWORD tid)
 	{
 		if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE || !tid)
@@ -206,6 +224,8 @@ namespace
 		DWORD best = 0;
 		DWORD best_exe = 0;
 		DWORD probes = 0;
+		ProcessInformation wait_probe;
+		const bool wait_probe_ready = wait_probe.SetProcess(hTargetProc);
 		do
 		{
 			if (entry.th32OwnerProcessID != target_pid)
@@ -225,6 +245,31 @@ namespace
 			if (IsWorkerTid(hTargetProc, tid))
 			{
 				continue;
+			}
+			if (wait_probe_ready)
+			{
+				UniqueHandle probe_thread(ScOpenThread(tid, THREAD_QUERY_LIMITED_INFORMATION));
+				if (probe_thread)
+				{
+					bool wait_ok = true;
+					wait_probe.SetCurrentThreadHandle(probe_thread.get(), tid);
+
+					KTHREAD_STATE probe_state{};
+					KWAIT_REASON probe_reason{};
+					if (wait_probe.GetThreadState(probe_state, probe_reason) &&
+						probe_state == KTHREAD_STATE::Waiting &&
+						!IsSafeWaitReason(probe_reason))
+					{
+						wait_ok = false;
+					}
+
+					wait_probe.SetCurrentThreadHandle(nullptr, 0);
+
+					if (!wait_ok)
+					{
+						continue;
+					}
+				}
 			}
 			bool exe_start = false;
 			if (exe_base && exe_size)
@@ -284,7 +329,7 @@ namespace
 			{
 				if (probes >= kMaxHandleProbes)
 				{
-					break;
+					continue;
 				}
 				++probes;
 
@@ -355,7 +400,7 @@ namespace
 		Entry.Base		= nullptr;
 	}
 
-	void EnqueueDeferredTrampoline(HANDLE Process, HANDLE Thread, void * Base)
+	bool EnqueueDeferredTrampoline(HANDLE Process, HANDLE Thread, void * Base)
 	{
 		HANDLE DupProcess = nullptr;
 		HANDLE DupThread	= nullptr;
@@ -387,16 +432,39 @@ namespace
 			}
 
 			LOG(2, "Deferred Trampoline Handles Not Duplicated (Error = %u); Remote Allocation Retained\n", DupError);
-			return;
+			return false;
 		}
 
+		bool lock_held = false;
+		bool queued = false;
+		try
 		{
 			AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
+			lock_held = true;
 			g_DeferredTrampolines.push_back(DeferredTrampoline{ DupProcess, DupThread, Base });
+			queued = true;
+		}
+		catch (...)
+		{
+			queued = false;
+		}
+
+		if (lock_held)
+		{
 			ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
 		}
 
+		if (!queued)
+		{
+			CloseHandle(DupThread);
+			CloseHandle(DupProcess);
+
+			LOG(2, "Deferred Trampoline Enqueue Failed; Remote Allocation Retained\n");
+			return false;
+		}
+
 		LOG(2, "Remote Allocation Deferred For Reclaim (Base = %p)\n", Base);
+		return true;
 	}
 
 	bool DeferredProcessGone(HANDLE Process)
@@ -478,7 +546,7 @@ namespace
 
 			if (previous > 0)
 			{
-				ScNtResumeThread(Entry.Thread, nullptr);
+				ResumeThreadWithRetry(Entry.Thread);
 				retained.push_back(Entry);
 				continue;
 			}
@@ -486,7 +554,7 @@ namespace
 			CONTEXT ctx{ 0 };
 			ctx.ContextFlags = CONTEXT_CONTROL;
 			const bool have_context = NT_SUCCESS(ScNtGetContextThread(Entry.Thread, &ctx)) != FALSE;
-			ScNtResumeThread(Entry.Thread, nullptr);
+			ResumeThreadWithRetry(Entry.Thread);
 
 			const ULONG_PTR base = ReCa<ULONG_PTR>(Entry.Base);
 			if (!have_context || (ctx.Rip >= base && ctx.Rip < base + kDeferredCodePage))
@@ -513,9 +581,34 @@ namespace
 
 		if (!retained.empty())
 		{
-			AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
-			g_DeferredTrampolines.insert(g_DeferredTrampolines.end(), retained.begin(), retained.end());
-			ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
+			bool lock_held = false;
+			bool inserted = false;
+			try
+			{
+				AcquireSRWLockExclusive(&g_DeferredTrampolineLock);
+				lock_held = true;
+				g_DeferredTrampolines.insert(g_DeferredTrampolines.end(), retained.begin(), retained.end());
+				inserted = true;
+			}
+			catch (...)
+			{
+				inserted = false;
+			}
+
+			if (lock_held)
+			{
+				ReleaseSRWLockExclusive(&g_DeferredTrampolineLock);
+			}
+
+			if (!inserted)
+			{
+				for (DeferredTrampoline & Entry : retained)
+				{
+					LOG(2, "Deferred Trampoline Requeue Failed; Dropping Handles (Base = %p)\n", Entry.Base);
+
+					CloseDeferredTrampoline(Entry);
+				}
+			}
 		}
 	}
 }
@@ -593,7 +686,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return SR_HT_ERR_PROC_INFO_FAIL;
 	}
 
-	const DWORD threadAccess = THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME;
+	const DWORD threadAccess = THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME | SYNCHRONIZE;
 
 	const DWORD hijackAccess = INJ_THREAD_HIJACK_ACCESS;
 
@@ -794,11 +887,17 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		const DWORD exclude_tid = (attempt < 7) ? smallest_tid : 0;
 
-		ThreadID = FindHijackThread(processInformation, excluded, &selected_was_running, attempt >= 7);
+		std::vector<DWORD> attempt_excluded = excluded;
+		if (exclude_tid)
+		{
+			attempt_excluded.push_back(exclude_tid);
+		}
+
+		ThreadID = FindHijackThread(processInformation, attempt_excluded, &selected_was_running, attempt >= 7);
 
 		if (!ThreadID && exclude_tid)
 		{
-			ThreadID = FindHijackThreadToolhelp(hTargetProc, excluded);
+			ThreadID = FindHijackThreadToolhelp(hTargetProc, attempt_excluded);
 			selected_was_running = false;
 			if (ThreadID)
 			{
@@ -905,6 +1004,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 
 		hThread.reset(ScOpenThread(ThreadID, threadAccess));
+
+		if (hThread && ScGetProcessIdOfThread(hThread.get()) != GetProcessId(hTargetProc))
+		{
+			LOG(2, "Opened Thread %06X No Longer Belongs To The Target Process; Discarding\n", ThreadID);
+
+			hThread.reset();
+		}
 	}
 	if (!hThread)
 	{
@@ -914,6 +1020,18 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		return SR_HT_ERR_OPEN_THREAD_FAIL;
 	}
+
+	auto ResumeDonorThread = [&](const char * site) -> bool
+	{
+		if (ResumeThreadWithRetry(hThread.get()))
+		{
+			return true;
+		}
+
+		LOG(1, "[ThreadHijack] [!] ResumeThread Failed Permanently (%s); Donor Thread Left Suspended\n", site);
+
+		return false;
+	};
 
 	constexpr size_t kWxCodePage = 0x1000;
 	constexpr size_t kWxAllocSize = 0x2000;
@@ -928,7 +1046,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	const ULONG_PTR shellcode_end = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd);
 
 	const size_t shellcode_size = static_cast<size_t>(shellcode_end - shellcode_begin);
-	if (!shellcode_size || shellcode_size > kWxCodePage)
+	if (!shellcode_size)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1097,7 +1215,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		LOG(2, "Thread Was Already Suspended (Previous Count %u); Skipping It\n", sr_suspend);
 
-		ScNtResumeThread(hThread, nullptr);
+		ResumeDonorThread("already-suspended");
 
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1115,7 +1233,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		LOG(2, "GetThreadContext Failed\n");
 
-		ScNtResumeThread(hThread, nullptr);
+		ResumeDonorThread("get-context");
 
 		return SR_HT_ERR_GET_CONTEXT_FAIL;
 	}
@@ -1161,7 +1279,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		LOG(2, "WriteProcessMemory Failed\n");
 
-		ScNtResumeThread(hThread, nullptr);
+		ResumeDonorThread("write-memory");
 
 		return SR_HT_ERR_WPM_FAIL;
 	}
@@ -1173,7 +1291,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			LOG(2, "Protect(RX) Failed\n");
 
-			ScNtResumeThread(hThread, nullptr);
+			ResumeDonorThread("protect-rx");
 
 			return SR_HT_ERR_WPM_FAIL;
 		}
@@ -1191,7 +1309,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		LOG(2, "SetThreadContext Failed\n");
 
-		ScNtResumeThread(hThread, nullptr);
+		ResumeDonorThread("set-context");
 
 		return SR_HT_ERR_SET_CONTEXT_FAIL;
 	}
@@ -1211,19 +1329,16 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 				LOG(2, "Thread Context Recovery Failed; Remote Allocation Retained\n");
 
-				EnqueueDeferredTrampoline(hTargetProc, hThread, pMem);
+				if (!EnqueueDeferredTrampoline(hTargetProc, hThread, pMem))
+				{
+					LOG(1, "[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n", pMem);
+				}
+
 				allocation_guard.release();
 				return SR_HT_ERR_RECOVERY_REQUIRED;
 			}
 
-			if (NT_FAIL(ScNtResumeThread(hThread, nullptr)))
-			{
-				INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-				LOG(2, "Recovered Thread Could Not Be Resumed\n");
-
-				return SR_HT_ERR_RESUME_FAIL;
-			}
+			ResumeDonorThread("rollback-resume");
 
 			return SR_HT_ERR_RESUME_FAIL;
 		}
@@ -1304,11 +1419,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			}
 
-			resumed = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
+			resumed = ResumeDonorThread("force-restore");
 			
 			
 			if (!resumed)
 			{
+				restored = false;
+
 				return;
 			}
 
@@ -1367,8 +1484,20 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			LOG(2, "Thread Context Recovery Failed; Remote Allocation Deferred For Reclaim\n");
 		}
 
-		EnqueueDeferredTrampoline(hTargetProc, hThread, pMem);
-		allocation_guard.release();
+		if (EnqueueDeferredTrampoline(hTargetProc, hThread, pMem))
+		{
+			allocation_guard.release();
+		}
+		else if (StubRegionFreeToRelease())
+		{
+			LOG(2, "Deferred Tracking Unavailable; Thread Outside Stub, Reclaiming Now\n");
+		}
+		else
+		{
+			LOG(1, "[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n", pMem);
+
+			allocation_guard.release();
+		}
 	};
 
 	auto Timer = GetTickCount64();
@@ -1460,7 +1589,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		if (dwWaitRet == WAIT_OBJECT_0)
 		{
-			INIT_ERROR_DATA(error_data, GetLastError());
+			INIT_ERROR_DATA(error_data, INJ_ERR_INTERRUPT);
 
 			LOG(2, "Interrupt!\n");
 
@@ -1593,11 +1722,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 
-			resumed_check = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
+			resumed_check = ResumeDonorThread("exec-verify");
 		}
 		else
 		{
-			resumed_check = NT_SUCCESS(ScNtResumeThread(hThread, nullptr));
+			resumed_check = ResumeDonorThread("exec-verify-no-context");
 		}
 
 		if (!resumed_check)

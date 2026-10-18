@@ -229,7 +229,11 @@ set "VMP_PRESENT="
 set "VMP_PROBE_OK="
 set "BASELINE="
 if exist "%RELEASE_CACHE%\pe-sections.txt" for /f "usebackq tokens=1,* delims=:" %%A in ("%RELEASE_CACHE%\pe-sections.txt") do if /i "%%A"=="%TARGET_NAME%" set "BASELINE=%%B"
-if not defined BASELINE set "BASELINE=@none@"
+if not defined BASELINE (
+  echo   %C_RED%Warning: No Section Baseline Recorded For %TARGET_NAME%.%C_RESET%
+  echo   %C_RED%         Refusing To Guess Whether The Payload Is Already Protected.%C_RESET%
+  goto :vmp_check_cleanup
+)
 REM The VMProtect probe is a PowerShell script carried as base64 so that batch never has to parse a
 REM stray parenthesis from the PowerShell grammar. certutil decodes it to a unique temp .ps1, which is
 REM run and then removed. The probe reads the target's PE section table and reports any section absent

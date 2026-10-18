@@ -562,39 +562,53 @@ __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, S
 		return;
 	}
 
-	ULONG old_protect = 0;
-	
-	
-	
-	
-	if (!ScProtectMemory(ProcessHandle, BaseAddress, Size, PAGE_READWRITE, &old_protect))
-	{
-		return;
-	}
-
 	const SIZE_T Chunk = Size < ChunkSize ? Size : ChunkSize;
 	BYTE * Zeros = ReCa<BYTE *>(VirtualAlloc(nullptr, Chunk, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Zeros)
 	{
-		ScProtectMemory(ProcessHandle, BaseAddress, Size, old_protect);
 		return;
 	}
+
+	SYSTEM_INFO system_info{};
+	GetSystemInfo(&system_info);
+	const SIZE_T page = system_info.dwPageSize ? system_info.dwPageSize : 0x1000;
 
 	BYTE * Cursor = ReCa<BYTE *>(BaseAddress);
 	SIZE_T Remaining = Size;
 	while (Remaining)
 	{
-		const SIZE_T ThisChunk = Remaining < Chunk ? Remaining : Chunk;
-		if (!ScWriteProcessMemory(ProcessHandle, Cursor, Zeros, ThisChunk, nullptr))
+		const SIZE_T page_remainder = page - (ReCa<ULONG_PTR>(Cursor) & (page - 1));
+		const SIZE_T span = Remaining < page_remainder ? Remaining : page_remainder;
+
+		ULONG old_protect = 0;
+		if (!ScProtectMemory(ProcessHandle, Cursor, span, PAGE_READWRITE, &old_protect))
 		{
 			break;
 		}
 
-		Cursor += ThisChunk;
-		Remaining -= ThisChunk;
+		SIZE_T written = 0;
+		while (written < span)
+		{
+			const SIZE_T this_chunk = (span - written) < Chunk ? (span - written) : Chunk;
+			if (!ScWriteProcessMemory(ProcessHandle, Cursor + written, Zeros, this_chunk, nullptr))
+			{
+				break;
+			}
+
+			written += this_chunk;
+		}
+
+		ScProtectMemory(ProcessHandle, Cursor, span, old_protect);
+
+		if (written < span)
+		{
+			break;
+		}
+
+		Cursor += span;
+		Remaining -= span;
 	}
 
-	ScProtectMemory(ProcessHandle, BaseAddress, Size, old_protect);
 	VirtualFree(Zeros, 0, MEM_RELEASE);
 }
 

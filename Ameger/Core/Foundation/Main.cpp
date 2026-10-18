@@ -152,13 +152,31 @@ DWORD __stdcall InitializeRuntime()
 	
 	
 	
-	const LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
+	LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
 	if (previous_state == RUNTIME_STATE_READY)
 	{
 		return INJ_ERR_SUCCESS;
 	}
 	if (previous_state == RUNTIME_STATE_INITIALIZING)
 	{
+		return INJ_ERR_ALREADY_RUNNING;
+	}
+
+	bool owns_state = (previous_state == RUNTIME_STATE_UNINITIALIZED);
+	if (!owns_state)
+	{
+		const LONG claimed = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, previous_state);
+		owns_state = (claimed == previous_state);
+		previous_state = claimed;
+	}
+
+	if (!owns_state)
+	{
+		if (previous_state == RUNTIME_STATE_READY)
+		{
+			return INJ_ERR_SUCCESS;
+		}
+
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 

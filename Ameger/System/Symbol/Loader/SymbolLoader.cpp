@@ -506,6 +506,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::wstring & path, bool Redownload, bool AutoDownload)
 {
 	Cleanup();
+	m_bInterruptEvent = false;
 
 	if (AutoDownload)
 	{

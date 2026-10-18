@@ -26,7 +26,8 @@ SR_STATE_FINISHED EQU 2
 SR_STATE_EXITED   EQU 3
 
 ;; XSAVE/XRSTOR take a 64-bit feature mask in EDX:EAX. Every component this stub can
-;; request lives in EAX (x87/SSE/AVX, and AVX-512 when enabled); EDX must be zero because
-;; a non-zero EDX names an XCR0 bit that does not exist and raises #GP.
+;; request lives in EAX (x87/SSE/AVX only; the probe caps the mask at XCR0 bits 0-2 and
+;; never enables AVX-512 state); EDX must be zero because a non-zero EDX names an XCR0
+;; bit that does not exist and raises #GP.
 
 TEB_LAST_ERROR EQU 68H
