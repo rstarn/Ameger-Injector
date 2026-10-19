@@ -36,6 +36,7 @@ set "VERIFY_SCRIPT=%SCRIPTS_DIR%\VerifyEmbedMagic.ps1"
 set "VERIFY_SYSCALL_SCRIPT=%SCRIPTS_DIR%\VerifySyscallsLayer.ps1"
 set "NAMES_SCRIPT=%SCRIPTS_DIR%\ShuffleNaming.ps1"
 set "RENAME_SCRIPT=%SCRIPTS_DIR%\ShuffleExports.ps1"
+set "EXPORTS_SCRIPT=%SCRIPTS_DIR%\VerifyExports.ps1"
 set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinPayload.ps1"
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
@@ -139,9 +140,9 @@ if errorlevel 1 goto :build_error
 
 REM The remote mapping shell is staged into the target as one contiguous span sized from
 REM (MMAP_SEC_END - ManualMapping_Shell), which is only correct if the linker merged every
-REM .mmap_sec$NN part into a single section. That has to be checked on the raw linker output:
+REM .code$NN part into a single section. That has to be checked on the raw linker output:
 REM BuildPE.ps1 randomises every section name a few lines below, so by the end of the build the
-REM section is no longer called .mmap_sec and the check could not find it. This is the one content
+REM section is no longer called .code and the check could not find it. This is the one content
 REM check that cannot be a byte scan, because an unmerged link still passes every pattern scan.
 call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
 if errorlevel 1 goto :verify_error
@@ -241,6 +242,8 @@ if errorlevel 1 goto :verify_content_error
 call :verify_syscall_payload
 if errorlevel 1 goto :verify_content_error
 call :verify_syscall_stealth
+if errorlevel 1 goto :verify_content_error
+call :verify_exports "%RUNTIME_DLL%"
 if errorlevel 1 goto :verify_content_error
 echo.
 echo   %C_GREEN%[+]%C_RESET% SyscallStub         = %C_GREEN%OK%C_RESET%
@@ -482,6 +485,15 @@ if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
 set "MMAP_VERIFY_PATH=%~1"
 if not defined MMAP_VERIFY_PATH set "MMAP_VERIFY_PATH=%RUNTIME_DLL%"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check MmapSections -Path "%MMAP_VERIFY_PATH%"
+exit /b %ERRORLEVEL%
+
+REM Refuses to ship a runtime whose export table still carries a stable, greppable entrypoint
+REM name. ShuffleExports.ps1 renames them per build; this is the gate that proves it happened.
+:verify_exports
+if not exist "%EXPORTS_SCRIPT%" exit /b 1
+where powershell.exe >nul 2>&1
+if errorlevel 1 exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%EXPORTS_SCRIPT%" -Path "%~1"
 exit /b %ERRORLEVEL%
 
 :remove_import_artifacts

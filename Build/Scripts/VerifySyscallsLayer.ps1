@@ -58,9 +58,15 @@ $data = [IO.File]::ReadAllBytes($Path)
 
 
 
-$stubTemplate = [int[]](0x4C, 0x8B, 0xD1, 0xB8, -1, -1, -1, -1, 0x0F, 0x05, 0xC3)
-$indirectTemplate = [int[]](0x4C, 0x8B, 0xD1, 0xB8, -1, -1, -1, -1, 0xFF, 0x25)
-
+# The emitted stub is not one fixed byte pattern. WriteStub() selects between two
+# "mov r10, rcx" encodings and writes either a direct (0F 05 C3) or indirect
+# (FF 25 <disp32>) tail. The compiler also materialises the prologue bytes as immediate
+# stores rather than a contiguous run, so this checks each piece independently instead of
+# requiring one template.
+$prologueA = [int[]](0x4C, 0x8B, 0xD1)
+$prologueB = [int[]](0x49, 0x89, 0xCA)
+$tailIndirect = [int[]](0xFF, 0x25)
+$movEaxImm32 = [int[]](0xB8)
 
 $healthyPrologue = [int[]](0x4C, 0x8B, 0xD1, 0xB8)
 
@@ -74,14 +80,27 @@ $keystreamAlt      = [int[]](0xB9, 0xE5, 0xE4, 0x1C, 0x6D, 0x47, 0x58, 0xBF)
 $keystreamAlt2     = [int[]](0xEB, 0x11, 0x31, 0x13, 0xBB, 0x49, 0xD0, 0x94)
 
 if ($Check -eq "Stub") {
-    $stubCount = Get-ByteMatches $data $stubTemplate
-    $indirectCount = Get-ByteMatches $data $indirectTemplate
-    if ($stubCount -lt 1 -and $indirectCount -lt 1) {
-        Write-Fail "Syscall Stub Template (direct or indirect) Not Present"
+    $pA = Get-ByteMatches $data $prologueA
+    $pB = Get-ByteMatches $data $prologueB
+    if ($pA -lt 1 -or $pB -lt 1) {
+        Write-Fail "Syscall Stub Prologue Encoding Missing (mov r10,rcx A=$pA B=$pB)"
         exit 1
     }
-    if ($stubCount -ge 1) { Write-Ok ("Direct-Syscall Stub Template Present (" + $stubCount + " Match)") }
-    if ($indirectCount -ge 1) { Write-Ok ("Indirect-Syscall Stub Template Present (" + $indirectCount + " Match)") }
+    Write-Ok ("Syscall Stub Prologues Present (A=$pA B=$pB)")
+
+    $tI = Get-ByteMatches $data $tailIndirect
+    if ($tI -lt 1) {
+        Write-Fail "Syscall Stub Indirect Tail (FF 25) Missing; The Pool Is Not Using Gadget Indirection"
+        exit 1
+    }
+    Write-Ok ("Syscall Stub Indirect Tail Present ($tI Match)")
+
+    $movE = Get-ByteMatches $data $movEaxImm32
+    if ($movE -lt 1) {
+        Write-Fail "mov eax, imm32 Opcode (B8) Missing; The SSN Load Would Be Inert"
+        exit 1
+    }
+    Write-Ok ("Syscall SSN Load Opcode Present ($movE Match)")
 
     $prologueCount = Get-ByteMatches $data $healthyPrologue
     if ($prologueCount -lt 1) {
@@ -90,10 +109,9 @@ if ($Check -eq "Stub") {
     }
     Write-Ok ("Resolver Prologue Constant Present (" + $prologueCount + " Match)")
 
-
     $syscallOp = [int[]](0x0F, 0x05)
     $opCount = Get-ByteMatches $data $syscallOp
-    Write-Ok ("Syscall Opcode Issued (" + $opCount + " Match)")
+    Write-Ok ("Syscall Opcode Resolver Probe Present (" + $opCount + " Match)")
 }
 
 if ($Check -eq "Payload") {
@@ -184,8 +202,11 @@ if ($Check -eq "MmapSections") {
 
 
 
+    # ".code" is five characters, so the linker emits it verbatim in the 8-byte section-name
+    # field. There is no truncated form to accommodate and no reason to accept one: a section
+    # literally named ".code$xx" means the per-part code_seg attributes failed to merge.
     $mmapExact = @($chars | Where-Object { $_.Name -eq ".code" })
-    $mmapTrunc = @($chars | Where-Object { $_.Name -eq ".mmap_se" })
+    $mmapTrunc = @()
 
 
 

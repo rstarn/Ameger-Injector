@@ -954,11 +954,17 @@ std::wstring CharArrayToStdWstring(const char * szString)
 		const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, nullptr, 0);
 		if (required > 1)
 		{
-			out.assign(static_cast<size_t>(required) - 1, L'\0');
+			// MultiByteToWideChar(-1) reports the count *including* the terminator and writes
+			// the same number of wchar_t, so the buffer must be that size, not one less.
+			out.assign(static_cast<size_t>(required), L'\0');
 
 			if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, out.data(), required))
 			{
 				out.clear();
+			}
+			else
+			{
+				out.resize(static_cast<size_t>(required) - 1);
 			}
 		}
 	}

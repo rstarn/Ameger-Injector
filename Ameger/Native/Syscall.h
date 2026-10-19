@@ -71,11 +71,24 @@ constexpr DWORD ScHash(const char * s)
 
 
 
+// Stub layout (16 bytes):
+//   [0..2]  mov r10, rcx          (two legal encodings, selected per stub)
+//   [3]     mov eax, imm32 opcode
+//   [4..7]  service number (SSN)
+//   [8..]   tail, one of:
+//             direct   : 0F 05 C3                   (syscall ; ret)        -> ends at 11
+//             indirect : FF 25 <disp32>              (jmp qword ptr [rip+..]) -> ends at 14
+//   [..15]  architectural no-op fill
+//
+// The two forms have different instruction lengths, so the no-op fill starts at a different
+// offset in each. SC_STUB_WITH_RET is the direct form's end and is kept for the fill maths.
 #define SC_STUB_OFFSET_PROLOGUE	0
 #define SC_STUB_OFFSET_OPCODE		3
 #define SC_STUB_OFFSET_SERVICE		4
 #define SC_STUB_OFFSET_SYSCALL		8
-#define SC_STUB_OFFSET_RET		14
+#define SC_STUB_OFFSET_RET		10
+#define SC_STUB_TAIL_DIRECT		11
+#define SC_STUB_TAIL_INDIRECT	14
 
 #pragma endregion
 
