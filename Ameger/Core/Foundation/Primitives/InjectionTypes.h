@@ -2,16 +2,13 @@
 
 #include <Windows.h>
 
-
-
-
 #define INJ_HANDLE_HIJACKING			0x0040
 
 inline constexpr DWORD INJ_THREAD_HIJACK_ACCESS =
 	THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
 	THREAD_QUERY_LIMITED_INFORMATION |
-	// WaitForSingleObject on a thread handle requires SYNCHRONIZE; without it the
-	// termination checks in ThreadHijacking.cpp can never succeed.
+	
+	
 	SYNCHRONIZE;
 
 enum class HijackSource : DWORD
@@ -128,14 +125,7 @@ struct STRING_STATS
 
 static_assert(sizeof(STRING_STATS) == 24);
 
-
-
-
-
-
-
 #define AMEGER_NTSTATUS_UNSUCCESSFUL	((NTSTATUS)0xC0000001L)
-#define AMEGER_NTSTATUS_SUCCESS		((NTSTATUS)0x00000000L)
 
 struct VERIFIABLE_EXEC_TELEMETRY
 {

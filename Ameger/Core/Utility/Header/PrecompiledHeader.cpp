@@ -2,7 +2,6 @@
 
 #include "Core/Foundation/Error.h"
 
-
 static SRWLOCK g_print_lock = SRWLOCK_INIT;
 
 DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)

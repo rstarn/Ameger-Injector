@@ -13,8 +13,6 @@
 
 #define RELOC_FLAG RELOC_FLAG64
 
-
-
 #define MM_MAX_CACHED_SECTIONS 96
 
 namespace MMAP_NATIVE
@@ -220,7 +218,6 @@ namespace MMAP_NATIVE
   	};
 }
 
-
 __forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
 {
 	constexpr unsigned kBits = sizeof(DWORD64) * 8u;
@@ -236,9 +233,6 @@ __forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
 
 #pragma region inlined helper functions
 
-
-
-
 __forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
 {
 	DWORD64 x = Seed0 ^ (Index * 0x9E3779B97F4A7C15ULL);
@@ -253,8 +247,6 @@ __forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
 
 	return x;
 }
-
-
 
 __forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
 {
@@ -284,7 +276,6 @@ __forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 See
 		}
 	}
 }
-
 
 __forceinline void MMI_KeyTransformCopy(BYTE * Destination, const BYTE * Source, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
 {
@@ -357,9 +348,6 @@ __forceinline void * ReadPtrField(const void * Base, DWORD Off)
 {
 	return *ReCa<void * const *>(ReCa<const BYTE *>(Base) + Off);
 }
-
-
-
 
 __forceinline IMAGE_SECTION_HEADER * MMI_Sections(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)
 {

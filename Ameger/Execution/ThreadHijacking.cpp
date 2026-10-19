@@ -1409,7 +1409,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				{
 
 					ctx = OldContext;
-					ctx.Rip = OldRIP;	// OldContext.Rip was repointed at the stub; OldRIP holds the original
+					ctx.Rip = OldRIP;	
 					restored = NT_SUCCESS(ScNtSetContextThread(hThread, &ctx)) != FALSE;
 					settled = true;
 				}
@@ -1713,7 +1713,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 
 				check_context = OldContext;
-				check_context.Rip = OldRIP;	// OldContext.Rip was repointed at the stub; OldRIP holds the original
+				check_context.Rip = OldRIP;	
 				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 

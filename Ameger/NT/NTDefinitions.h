@@ -22,7 +22,6 @@
 
 #define STATUS_SUCCESS				0x00000000
 #define STATUS_UNSUCCESSFUL			0xC0000001
-#define STATUS_NOT_IMPLEMENTED		0xC0000002
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 #define STATUS_APISET_NOT_HOSTED	0xC0000481
 #ifndef STATUS_DLL_NOT_FOUND
@@ -67,11 +66,6 @@ typedef enum class _THREADINFOCLASS
 {
 	ThreadBasicInformation			= 0
 } THREADINFOCLASS;
-
-
-
-
-
 
 typedef enum class _KTHREAD_STATE : ULONG
 {
@@ -192,12 +186,6 @@ typedef struct _PROCESS_BASIC_INFORMATION
 	HANDLE		UniqueProcessId;
 	HANDLE		InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION, * PPROCESS_BASIC_INFORMATION;
-
-
-
-
-
-
 
 typedef struct _SYSTEM_THREAD_INFORMATION
 {
@@ -402,10 +390,6 @@ static_assert(offsetof(PEB, CrossProcessFlags) == 80);
 static_assert(offsetof(PEB, TlsExpansionCounter) == 112);
 static_assert(offsetof(PEB, LoaderLock) == 272);
 static_assert(offsetof(PEB, OSBuildNumber) == 288);
-
-
-
-
 
 static_assert(sizeof(SYSTEM_THREAD_INFORMATION) == 80);
 static_assert(sizeof(SYSTEM_PROCESS_INFORMATION) == 0x100 + sizeof(SYSTEM_THREAD_INFORMATION));

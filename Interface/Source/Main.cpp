@@ -82,11 +82,6 @@ namespace
 #define AMEGER_WIDEN2(x) L##x
 #define AMEGER_WIDEN(x) AMEGER_WIDEN2(x)
 
-
-
-
-
-
 std::wstring g_ResultLogName = L"Result.log";
 
 namespace ameger_ui_log
@@ -1622,10 +1617,10 @@ int UiLog(int indent, const wchar_t * format, ...)
         }
     }
 
-    // Both PrintError and PrintWarning publish to three sinks: the in-memory clipboard log,
-    // the debugger, and the console. The console write goes through UiWprintf/UiFwprintf,
-    // which append to the clipboard log themselves -- so these must NOT append a second
-    // time here, or every warning lands in the log twice.
+    
+    
+    
+    
     void PrintError(const wchar_t * message)
     {
         if (!message)
@@ -1684,9 +1679,9 @@ int UiLog(int indent, const wchar_t * format, ...)
     }
 
     
-    // Written by VerbosePrint on a runtime worker thread and reset from the main
-    // thread, so it has to be atomic. The census accumulator below is only ever
-    // touched from inside the callback, which the runtime serialises.
+    
+    
+    
     std::atomic<const void *> g_RuntimeCategory{ nullptr };
 
     
@@ -2245,7 +2240,6 @@ int UiLog(int indent, const wchar_t * format, ...)
     {
         
 
-
 static const bool verbose = []() -> bool
         {
             wchar_t buffer[8] = {};
@@ -2272,31 +2266,9 @@ static const bool verbose = []() -> bool
         return full;
     }
 
-    bool KeepResultLogRequested()
-    {
-        static const bool keep = []()
-        {
-            wchar_t buffer[8] = {};
-
-            const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_KEEP_LOG").get(), buffer, 4);
-            return got == 1 && buffer[0] == L'1';
-        }();
-        return keep;
-    }
-
-    
-    
-    
-    
-    
     namespace Trace
     {
         constexpr size_t kMaxPhases = 64;
-
-
-
-
-
 
 inline std::wstring Widen(const char * text)
         {
@@ -2451,9 +2423,9 @@ wchar_t name[48]{};
             LOG(0, L"====================================================================================================\n");
         }
     }
-    // SeDebugPrivilege is raised and dropped inside the runtime DLL (HandleHijack.cpp),
-    // which owns the whole donor-acquisition sequence. The launcher deliberately never
-    // touches the process token for injection, so it keeps no privilege helpers.
+    
+    
+    
     
     
     
@@ -2474,11 +2446,11 @@ wchar_t name[48]{};
     
     
     
-    // Picks a hijack-sponsor candidate thread. Suspended threads are preferred, then
-    // threads in safe wait states. The lowest-TID thread (almost always the primary
-    // thread) is avoided while any alternative exists, and callers can exclude a TID
-    // that a previous sponsor attempt already failed on so the retry loop actually
-    // walks the candidate set instead of re-opening the same thread eight times.
+    
+    
+    
+    
+    
     DWORD PickHijackThreadTid(DWORD target_pid, DWORD exclude_tid)
     {
         if (!target_pid)
@@ -3500,7 +3472,6 @@ wchar_t name[48]{};
                     return false;
                 }
 
-
                 auto resolve_export = [&](const char * old_name) -> FARPROC
                 {
                     const std::string * mapped = FindMappedExportName(config.export_map, old_name);
@@ -4375,9 +4346,9 @@ DWORD BuildFlags(const WizardConfig & config)
             FlagTint, hijack_on ? L"Y" : L"N", kReset,
             FlagTint, hijack_flag, kReset,
             FlagTint, Flags, kReset);
-        // Process-handle acquisition happens inside the runtime, which raises and drops
-        // SeDebugPrivilege itself when a donor open is denied. The launcher never elevates
-        // for this path, so the privilege row is informational only.
+        
+        
+        
         if (!IsThread)
         {
             LOG(0, XOR_STR_W(L"    %ls %ls SeDebugPrivilege %ls%s%ls\n").get(), StageTag(++Stage).c_str(), StageLabel(L"Privilege").c_str(),
@@ -5137,7 +5108,6 @@ DWORD BuildFlags(const WizardConfig & config)
 
         return static_cast<size_t>(-1);
     }
-
 
     
     
@@ -8248,11 +8218,11 @@ DWORD BuildFlags(const WizardConfig & config)
         Context.TargetName = target.name;
         Context.Verbose = config.verbose_trace && !config.quiet;
 
-        // Process-handle acquisition is the runtime's job: it either duplicates a donor
-        // handle out of another process (the preferred, access-mask-preserving route) or
-        // opens the target directly. The launcher deliberately does not hold a target
-        // handle across the injection, because doing so would leave a syscall-bearing
-        // handle in the launcher's own table for the whole load.
+        
+        
+        
+        
+        
         HANDLE threadSponsorRaw = nullptr;
         if (config.handle_hijacking)
         {
@@ -8311,8 +8281,8 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         Trace::End();
 
-        // Read-only so the verification suite can inspect the target without holding a
-        // stronger handle than it needs.
+        
+        
         HANDLE targetHandle = nullptr;
         {
             targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
@@ -8955,11 +8925,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    // Persist the log next to the launcher/config BEFORE anything that can end the process. The
-    // file is named "<config stem>.log" (randomized per build) and falls back to Result.log when
-    // no valid config is found. The retry path calls TerminateInterface(), which never returns,
-    // so a log written after it would be lost. The log is deleted at startup and rewritten from
-    // scratch at exit, so it never accumulates across attempts or runs.
+    
+    
+    
+    
+    
     ameger_ui_log::WriteResultLog();
     ameger_ui_log::Clear();
 

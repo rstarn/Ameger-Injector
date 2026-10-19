@@ -53,9 +53,6 @@ std::wstring g_SymbolCacheRoot;
 		std::wstring CacheRoot;
 	};
 
-	
-	
-	
 	void StopRuntimeWorkers()
 	{
 		sym_ntdll_native.Interrupt();
@@ -67,7 +64,6 @@ std::wstring g_SymbolCacheRoot;
 		JoinAsyncWorker(import_handler_ret);
 	}
 
-	
 	void TeardownRuntime()
 	{
 		StopRuntimeWorkers();
@@ -137,16 +133,9 @@ std::wstring g_SymbolCacheRoot;
 
 	DWORD RuntimeInitializationFailed(DWORD error_code)
 	{
-		
-		
 		StopRuntimeWorkers();
-
 		CloseRuntimeEvents();
-
-		
-		
 		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
-
 		return error_code;
 	}
 }
@@ -179,10 +168,7 @@ DWORD __stdcall InitializeRuntime()
 	if (!owns_state)
 	{
 		if (previous_state == RUNTIME_STATE_READY)
-		{
 			return INJ_ERR_SUCCESS;
-		}
-
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
@@ -219,13 +205,11 @@ DWORD __stdcall InitializeRuntime()
 	if (_wdupenv_s(&windows_directory, nullptr, XOR_STR_W(L"WINDIR").get()) || !windows_directory)
 	{
 		LOG(0, "Couldn't Resolve %%WINDIR%%\n");
-
 		return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 	}
 
 	std::wstring native_ntdll_path = windows_directory;
 	{
-
 		auto suffix = KC_WSTR(L"\\System32\\ntdll.dll");
 		native_ntdll_path += suffix.c_str();
 	}
@@ -234,16 +218,11 @@ DWORD __stdcall InitializeRuntime()
 	std::wstring symbol_cache_root;
 	if (!GetSymbolCacheRoot(symbol_cache_root))
 	{
-		
-		
-		
-		
 		symbol_cache_root = g_RootPathW + AMEGER_SCRATCH_LEAF_DIR + L"\\";
 
 		if (!CreateDirectoryW(symbol_cache_root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 		{
 			LOG(0, "Couldn't Create The Fallback Symbol Cache Directory = %08X\n", GetLastError());
-
 			return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 		}
 	}
@@ -264,14 +243,10 @@ DWORD __stdcall InitializeRuntime()
 	const bool imp_started = sym_started && StartAsyncWorker(import_handler_ret, ImportWorkerEntry, &import_handler_ret);
 	if (!sym_started || !imp_started)
 	{
-
 		if (!sym_started)
-		{
 			delete sym_params;
-		}
 
 		LOG(0, "Runtime Initialization Failed While Launching Worker Threads\n");
-
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_NEW);
 	}
 
@@ -297,25 +272,16 @@ DWORD __stdcall ShutdownRuntime()
 	{
 		return INJ_ERR_ALREADY_RUNNING;
 	}
-
 	if (state == RUNTIME_STATE_READY && InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
-	{
-		
 		return INJ_ERR_ALREADY_RUNNING;
-	}
 
-	
-	
 	try
 	{
 		TeardownRuntime();
 	}
 	catch (...)
 	{
-		
-		
 		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
-
 		return INJ_ERR_INTERRUPT;
 	}
 

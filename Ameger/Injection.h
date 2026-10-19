@@ -70,8 +70,6 @@ using f_GetLastErrorInfo = DWORD(__stdcall *)(LAST_ERROR_INFO * Out);
 using f_ClearLastErrorInfo = DWORD(__stdcall *)();
 DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out);
 
-
-
 DWORD __stdcall ClearLastErrorInfo();
 
 DWORD __stdcall InitializeRuntime();

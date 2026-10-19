@@ -11,7 +11,6 @@
 
 #define ALIGN_UP(X, A) ((((ULONG_PTR)(X)) + ((ULONG_PTR)(A) - 1)) & (~(((ULONG_PTR)(A)) - 1)))
 
-
 __forceinline PE_IMAGE::OPTIONS BuildPeValidationOptions(DWORD flags)
 {
 	PE_IMAGE::OPTIONS options;
@@ -55,7 +54,6 @@ inline std::wstring	g_RootPathW;
 inline DWORD g_OSVersion = 0;
 inline DWORD g_OSBuildNumber = 0;
 
-#define g_Windows10_1607 14393
 #define g_Windows11_21H2 22000
 #define g_Windows11_22H2 22621
 #define g_Windows11_23H2 22631
@@ -78,41 +76,21 @@ DWORD GetOSBuildVersion();
 
 bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layout_family);
 
-
-
 DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_machine, DWORD flags = 0);
 
 bool GetOwnModulePathW(std::wstring & out);
 
 bool GetSymbolCacheRoot(std::wstring & out);
 
-
-
-
-
 bool DeleteSymbolCacheRoot(const std::wstring & root);
 
-
-
-
 bool IsOwnedScratchRoot(const std::wstring & root);
-
-
-
 
 #define AMEGER_SCRATCH_LEAF_DIR L".symbols"
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code = nullptr);
 
-
-
-
 bool AllowDirectHandleFallback();
-
-
-
-
-
 
 bool SymbolDownloadDisabled();
 
@@ -130,11 +108,6 @@ bool StartAsyncWorker(ASYNC_WORKER_SLOT & slot, LPTHREAD_START_ROUTINE entry, vo
 bool PollAsyncWorker(ASYNC_WORKER_SLOT & slot);
 
 void JoinAsyncWorker(ASYNC_WORKER_SLOT & slot);
-
-
-
-
-
 
 bool WaitAsyncWorkerThread(const ASYNC_WORKER_SLOT & slot);
 

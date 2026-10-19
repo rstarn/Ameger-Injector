@@ -4,23 +4,6 @@
 
 #include "NT/Windows11.h"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 constexpr DWORD ScHash(const char * s)
 {
 	DWORD h = 0x811C9DC5u;
@@ -62,21 +45,6 @@ constexpr DWORD ScHash(const char * s)
 #define SC_STUB_SIZE			16
 #define SC_STUB_AREA_ALIGN		0x10
 
-
-
-
-
-// Stub layout (16 bytes):
-//   [0..2]  mov r10, rcx          (two legal encodings, selected per stub)
-//   [3]     mov eax, imm32 opcode
-//   [4..7]  service number (SSN)
-//   [8..]   tail, one of:
-//             direct   : 0F 05 C3                   (syscall ; ret)        -> ends at 11
-//             indirect : FF 25 <disp32>              (jmp qword ptr [rip+..]) -> ends at 14
-//   [..15]  architectural no-op fill
-//
-// The two forms have different instruction lengths, so the no-op fill starts at a different
-// offset in each. SC_STUB_WITH_RET is the direct form's end and is kept for the fill maths.
 #define SC_STUB_OFFSET_PROLOGUE	0
 #define SC_STUB_OFFSET_OPCODE		3
 #define SC_STUB_OFFSET_SERVICE		4
@@ -87,24 +55,17 @@ constexpr DWORD ScHash(const char * s)
 
 #pragma endregion
 
-
-
 #define SC_REMOTE_STUB_COUNT		4
 
 void *	SyscallStub(DWORD NameHash);
 
 DWORD	SyscallResolveAll();
 
-
 DWORD	SyscallServiceOfStub(const void * Stub);
-
-
 
 DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count);
 
 #pragma region typed wrappers
-
-
 
 using f_ScNtOpenProcess = NTSTATUS(NTAPI *)(
 	PHANDLE				ProcessHandle,
@@ -217,10 +178,6 @@ using f_ScNtSetContextThread = NTSTATUS(NTAPI *)(
 
 #pragma region direct wrappers
 
-
-
-
-
 __forceinline ULONG * ScOut(ULONG * Requested, ULONG & Scratch)
 {
 	if (Requested)
@@ -244,9 +201,6 @@ __forceinline SIZE_T * ScOut(SIZE_T * Requested, SIZE_T & Scratch)
 
 	return &Scratch;
 }
-
-
-
 
 __forceinline NTSTATUS ScNtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, OBJECT_ATTRIBUTES * ObjectAttributes, CLIENT_ID * ClientId)
 {
@@ -420,10 +374,6 @@ __forceinline NTSTATUS ScNtSetContextThread(HANDLE ThreadHandle, CONTEXT * Conte
 
 #pragma region convenience helpers
 
-
-
-
-
 __forceinline HANDLE ScOpenProcess(DWORD ProcessId, ACCESS_MASK DesiredAccess)
 {
 	if (!ProcessId)
@@ -547,9 +497,6 @@ __forceinline bool ScFreeMemory(HANDLE ProcessHandle, void * BaseAddress)
 	return NT_SUCCESS(Status);
 }
 
-
-
-
 __forceinline void ScrubRemoteRegion(HANDLE ProcessHandle, void * BaseAddress, SIZE_T Size, SIZE_T ChunkSize)
 {
 	if (!ProcessHandle || ProcessHandle == INVALID_HANDLE_VALUE || !BaseAddress || !Size || !ChunkSize)
@@ -655,11 +602,7 @@ __forceinline DWORD ScGetProcessIdOfThread(HANDLE ThreadHandle)
 	return static_cast<DWORD>(ReCa<ULONG_PTR>(Basic.ClientId.UniqueProcess) & 0xFFFFFFFF);
 }
 
-
-
-
 DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Characters);
-
 
 __forceinline bool ScGetExitCodeProcess(HANDLE ProcessHandle, DWORD & ExitCode)
 {

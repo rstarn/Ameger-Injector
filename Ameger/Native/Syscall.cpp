@@ -2,8 +2,6 @@
 
 #include "Native/Syscall.h"
 
-
-
 inline bool SyscallVerbose()
 {
     
@@ -16,10 +14,6 @@ inline bool SyscallVerbose()
     }();
     return verbose;
 }
-
-
-
-
 
 namespace
 {
@@ -64,21 +58,10 @@ void SyscallLog(int level, const char * fmt, ...)
     }
 }
 
-
-
-
 #define SC_LOG_OK(...)    SyscallLog(1, "[+] " __VA_ARGS__)
 #define SC_LOG_WARN(...)  SyscallLog(1, "[!] " __VA_ARGS__)
 #define SC_LOG_ERR(...)   SyscallLog(1, "[x] " __VA_ARGS__)
 #define SC_LOG_INFO(...)  SyscallLog(1, "[*] " __VA_ARGS__)
-
-
-
-
-
-
-
-
 
 namespace
 {
@@ -321,11 +304,8 @@ namespace
 		return Export;
 	}
 
-	// "mov r10, rcx" has two encodings with identical semantics:
-//   A: 4C 8B D1  -> 8B is MOV r64, r/m64, so reg(r10) <- rm(rcx)  = mov r10, rcx
-//   B: 49 89 CA  -> 89 is MOV r/m64, r64, so rm(r10) <- reg(rcx)  = mov r10, rcx
-// (4C 89 D1 is NOT a valid variant: 89 is the store direction and would clobber rcx.)
-// Selecting between them per stub means no single fixed prologue exists across the slab.
+	
+
 	constexpr BYTE kPrologueA[3] = { 0x4C, 0x8B, 0xD1 };
 	constexpr BYTE kPrologueB[3] = { 0x49, 0x89, 0xCA };
 
@@ -338,8 +318,8 @@ namespace
 
 	struct NOP_PATTERN { BYTE Length; BYTE Bytes[4]; };
 
-	// All of these decode as architectural no-ops, so the tail is inert either way. Varying the
-	// fill keeps the trailing bytes from being a constant marker across every stub in the slab.
+	
+	
 	constexpr NOP_PATTERN kNopPatterns[] =
 	{
 		{ 1, { 0x90, 0, 0, 0 } },
@@ -364,10 +344,10 @@ namespace
 			state = state * 1103515245u + 12345u;
 			const NOP_PATTERN & pattern = kNopPatterns[(state >> 16) % _countof(kNopPatterns)];
 
-			// Never let a pattern straddle the end of the buffer: a truncated multi-byte
-			// no-op is not a complete instruction and confuses anything disassembling the
-			// pool. The tail is unreachable (both forms end in ret or jmp), but finish on
-			// single-byte NOPs so the remaining bytes are always well-formed.
+			
+			
+			
+			
 			SIZE_T length = pattern.Length;
 			if (length > Size - written)
 			{
@@ -420,13 +400,13 @@ namespace
 		return nullptr;
 	}
 
-	// Emits into the caller's buffer. Every address this form depends on is either the
-	// instruction pointer or the supplied slot, so the same routine serves the local pool and
-	// a remote slab alike -- nothing here is bound to the address the stub is written to.
+	
+	
+	
 	void WriteStub(BYTE * Destination, DWORD Service, void * Gadget, const BYTE * GadgetSlot)
 	{
-		// The mix is keyed on a multiplicative hash of the SSN rather than its parity, so the
-		// encoding cannot be inferred from the service number alone.
+		
+		
 		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
 		const BYTE * prologue = (mix & 1u) ? kPrologueB : kPrologueA;
 		Destination[0] = prologue[0];
@@ -437,9 +417,9 @@ namespace
 
 		if (Gadget && GadgetSlot)
 		{
-			// Indirect form: tail-jump to a shared gadget pointer parked in the same region.
-			// The displacement is RIP-relative to the END of the 6-byte jmp, i.e. offset 14.
-			// Only ever valid for the buffer the caller passed the slot for.
+			
+			
+			
 			Destination[SC_STUB_OFFSET_SYSCALL] = kOpJmpRip0;
 			Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpJmpRip1;
 
@@ -450,7 +430,7 @@ namespace
 			return;
 		}
 
-		// Direct form: self-contained, position independent, safe to place in any process.
+		
 		Destination[SC_STUB_OFFSET_SYSCALL] = kOpSyscall0;
 		Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpSyscall1;
 		Destination[SC_STUB_OFFSET_RET] = kOpRet;
@@ -481,13 +461,13 @@ bool BuildPool()
 		return false;
 	}
 
-	// The gadget pointer lives in the tail of this same allocation, so every stub's
-	// RIP-relative displacement stays inside a region the stub is guaranteed to occupy.
+	
+	
 	BYTE * const GadgetSlot = Pool + kStubAreaSize;
 
-	// A disp32 only spans +/-2 GiB. The pool is tiny so this virtually always holds, but a
-	// pathological allocation landing more than 2 GiB away must degrade to the direct form
-	// rather than wrap the displacement into a jump into nowhere.
+	
+	
+	
 	const ptrdiff_t slot_delta = GadgetSlot - Pool;
 	bool use_indirect = false;
 	if (slot_delta > 0 && slot_delta < INT32_MAX)
@@ -965,7 +945,7 @@ DWORD SyscallServiceOfStub(const void * Stub)
 
 	const BYTE * Bytes = ReCa<const BYTE *>(Stub);
 
-	// Both "mov r10, rcx" encodings are legal; see WriteStub.
+	
 	const bool prologue_a = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueA, sizeof(kPrologueA)) == 0;
 	const bool prologue_b = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueB, sizeof(kPrologueB)) == 0;
 	if (!prologue_a && !prologue_b)
@@ -1093,10 +1073,10 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 	
 	DWORD Written = 0;
 
-	// These stubs are staged into the *target* process, so they must be emitted fresh here and
-	// written in the direct form. Copying the local pool's bytes would transplant either a
-	// RIP-relative displacement that resolves against the wrong address space, or an indirect
-	// tail-jump into a gadget slot that does not exist over there.
+	
+	
+	
+	
 	for (DWORD i = 0; i < Count; ++i)
 	{
 		if (NameHashes[i] == 0)

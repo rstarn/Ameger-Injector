@@ -629,9 +629,9 @@ namespace
 
 					if (!known && foreign_opened >= kMaxForeignOwners)
 					{
-						// Skip this donor only. Raising the global BudgetHit here would abort
-						// every remaining candidate in this pass *and* both later passes, turning
-						// a per-owner budget into a whole-scan budget.
+						
+						
+						
 						++BudgetSkipped;
 						return false;
 					}
@@ -769,10 +769,10 @@ namespace
 					continue;
 				}
 
-				// NtDuplicateObject clamps the duplicate to the source object's existing
-				// grant, so a donor that does not already hold every bit we need can only
-				// ever produce a weaker handle that then fails verification. Reject it here
-				// rather than spending a duplicate attempt on it.
+				
+				
+				
+				
 				if ((Entry.GrantedAccess & DesiredAccess) != DesiredAccess)
 				{
 					continue;

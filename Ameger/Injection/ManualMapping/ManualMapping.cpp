@@ -242,9 +242,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		const DWORD Built = BuildSyscallStubs(ReCa<BYTE *>(stub_slab), sizeof(stub_slab), remote_stub_hashes, SC_REMOTE_STUB_COUNT);
 		if (Built != SC_REMOTE_STUB_COUNT)
 		{
-			// A partial slab would leave holes in the remote dispatch table. Report the
-			// dedicated stub-build code rather than letting IsValid() below fail with the
-			// generic uninformative INJ_ERR_GET_PROC_ADDRESS_FAIL.
+			
+			
+			
 			INIT_ERROR_DATA(error_data, INJ_ERR_SYSCALL_RESOLVE_FAILED);
 
 			LOG(1, "Remote Syscall Stubs Only Partially Built = %u/%u\n", Built, SC_REMOTE_STUB_COUNT);
@@ -699,9 +699,6 @@ __forceinline void FreeDependencyNodeList(MANUAL_MAPPING_FUNCTION_TABLE * f, MM_
 
 #pragma region manual mapping internal helper functions
 
-
-
-
 DWORD __declspec(code_seg(".code$05")) __stdcall MMI_SetExecProtections(MANUAL_MAPPING_DATA * pData, DWORD NewState)
 {
 	if (!pData || !pData->FunctionTable || !pData->pNtHeaders || !pData->pFileHeader)
@@ -746,14 +743,6 @@ DWORD __declspec(code_seg(".code$05")) __stdcall MMI_SetExecProtections(MANUAL_M
 
 	return INJ_ERR_SUCCESS;
 }
-
-
-
-
-
-
-
-
 
 bool __declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPPING_DATA * pData, const UNICODE_STRING * FullName, HINSTANCE * hModule)
 {
@@ -849,10 +838,6 @@ bool __declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPP
 
 	return false;
 }
-
-
-
-
 
 bool __declspec(code_seg(".code$11")) __stdcall MMI_AddressInLoadedImage(MANUAL_MAPPING_DATA * pData, const void * Address)
 {

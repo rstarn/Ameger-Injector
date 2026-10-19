@@ -445,51 +445,37 @@ bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 #else
 	constexpr USHORT kHostMachine = IMAGE_FILE_MACHINE_UNKNOWN;
 #endif
-
-	if (pIsWow64Process2)
-	{
-		USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN;
-		USHORT native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
-
-		if (!pIsWow64Process2(hTargetProc, &process_machine, &native_machine))
+		if (pIsWow64Process2)
 		{
-			if (error_code)
+			USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+			USHORT native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+
+			if (!pIsWow64Process2(hTargetProc, &process_machine, &native_machine))
 			{
-				*error_code = GetLastError();
+				if (error_code)
+					*error_code = GetLastError();
+				return false;
 			}
 
+			if (error_code)
+				*error_code = ERROR_SUCCESS;
+
+			const USHORT effective = process_machine != IMAGE_FILE_MACHINE_UNKNOWN ? process_machine : native_machine;
+			return effective == kHostMachine;
+		}
+
+		BOOL bWOW64 = FALSE;
+		if (!IsWow64Process(hTargetProc, &bWOW64))
+		{
+			if (error_code)
+				*error_code = GetLastError();
 			return false;
 		}
 
 		if (error_code)
-		{
 			*error_code = ERROR_SUCCESS;
-		}
 
-		
-		
-		const USHORT effective = process_machine != IMAGE_FILE_MACHINE_UNKNOWN ? process_machine : native_machine;
-
-		return effective == kHostMachine;
-	}
-
-	BOOL bWOW64 = FALSE;
-	if (!IsWow64Process(hTargetProc, &bWOW64))
-	{
-		if (error_code)
-		{
-			*error_code = GetLastError();
-		}
-
-		return false;
-	}
-
-	if (error_code)
-	{
-		*error_code = ERROR_SUCCESS;
-	}
-
-	return !bWOW64;
+		return !bWOW64;
 }
 
 bool AllowDirectHandleFallback()
@@ -895,8 +881,8 @@ std::wstring CharArrayToStdWstring(const char * szString)
 		const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, nullptr, 0);
 		if (required > 1)
 		{
-			// MultiByteToWideChar(-1) reports the count *including* the terminator and writes
-			// the same number of wchar_t, so the buffer must be that size, not one less.
+			
+			
 			out.assign(static_cast<size_t>(required), L'\0');
 
 			if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, out.data(), required))
