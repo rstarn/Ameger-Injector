@@ -165,6 +165,28 @@ namespace
 		g_DebugPrivilegeAttempted.store(false, std::memory_order_release);
 	}
 
+	class SeDebugPrivilegeScope
+	{
+		bool m_Revoke = false;
+
+	public:
+		explicit SeDebugPrivilegeScope(bool revoke_on_exit)
+			: m_Revoke(revoke_on_exit)
+		{
+		}
+
+		~SeDebugPrivilegeScope()
+		{
+			if (m_Revoke && g_DebugPrivilegeAttempted.load(std::memory_order_acquire))
+			{
+				RevokeSeDebugPrivilege();
+			}
+		}
+
+		SeDebugPrivilegeScope(const SeDebugPrivilegeScope &) = delete;
+		SeDebugPrivilegeScope & operator=(const SeDebugPrivilegeScope &) = delete;
+	};
+
 	struct EnumSnapshot
 	{
 		std::vector<BYTE> Buffer;
@@ -812,6 +834,7 @@ namespace
 		Local.Source = static_cast<DWORD>(HijackSource::Scan);
 
 		const bool priv_previously_attempted = g_DebugPrivilegeAttempted.load(std::memory_order_acquire);
+		SeDebugPrivilegeScope debug_privilege_scope(!priv_previously_attempted);
 
 		const auto Finish = [&](DWORD Code) -> DWORD
 		{
@@ -823,11 +846,6 @@ namespace
 			if (Detail)
 			{
 				*Detail = Local;
-			}
-
-			if (!priv_previously_attempted && g_DebugPrivilegeAttempted.load(std::memory_order_acquire))
-			{
-				RevokeSeDebugPrivilege();
 			}
 
 			return Code;
@@ -905,11 +923,6 @@ namespace
 		if (Detail)
 		{
 			*Detail = Local;
-		}
-
-		if (!priv_previously_attempted && g_DebugPrivilegeAttempted.load(std::memory_order_acquire))
-		{
-			RevokeSeDebugPrivilege();
 		}
 
 		return ScanRet;

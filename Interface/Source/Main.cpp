@@ -1593,7 +1593,6 @@ int UiLog(int indent, const wchar_t * format, ...)
 
         bool detach_console = false;
         bool test_mode = false;
-        bool hook_restore = true;
         bool run_dllmain = true;
         bool page_protections = true;
         bool loader_lock = true;
@@ -2278,6 +2277,18 @@ static const bool verbose = []() -> bool
             return got == 1 && buffer[0] == L'1';
         }();
         return full;
+    }
+
+    bool KeepResultLogRequested()
+    {
+        static const bool keep = []()
+        {
+            wchar_t buffer[8] = {};
+
+            const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_KEEP_LOG").get(), buffer, 4);
+            return got == 1 && buffer[0] == L'1';
+        }();
+        return keep;
     }
 
     
@@ -3194,10 +3205,6 @@ wchar_t name[48]{};
             else if (general && EqualsNoCase(key, XOR_STR_W(L"DetachConsole").get()))
             {
                 config.detach_console = ParseConfigBool(value, config.detach_console);
-            }
-            else if (general && EqualsNoCase(key, XOR_STR_W(L"HookRestore").get()))
-            {
-                config.hook_restore = ParseConfigBool(value, config.hook_restore);
             }
             else if (general && EqualsNoCase(key, XOR_STR_W(L"Timeout").get()))
             {
@@ -7080,82 +7087,6 @@ DWORD BuildFlags(const WizardConfig & config)
         }
     }
 
-    constexpr size_t kHookScanBytes = 0x10;
-
-    struct HookTarget
-    {
-        std::wstring module;
-        std::string function;
-    };
-
-#define ADD_HOOK_TARGET(vec, mod_lit, fn_lit) do { auto hk_mod = XOR_STR_W(mod_lit); auto hk_fn = XOR_STR_A(fn_lit); (vec).push_back(HookTarget{ hk_mod.get(), hk_fn.get() }); } while (0)
-
-    const std::vector<HookTarget> & GetHookTargets()
-    {
-        static const std::vector<HookTarget> cached = [] {
-            std::vector<HookTarget> list;
-            list.reserve(22);
-            ADD_HOOK_TARGET(list, L"kernel32.dll", "BaseThreadInitThunk");
-            ADD_HOOK_TARGET(list, L"kernel32.dll", "GetModuleHandleW");
-            ADD_HOOK_TARGET(list, L"kernel32.dll", "GetProcAddress");
-            ADD_HOOK_TARGET(list, L"kernel32.dll", "GetLastError");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtOpenFile");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtReadFile");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtClose");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtAllocateVirtualMemory");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtProtectVirtualMemory");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtFreeVirtualMemory");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "NtDelayExecution");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlAllocateHeap");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlFreeHeap");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "LdrUnloadDll");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "LdrGetProcedureAddress");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "LdrGetDllPath");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "LdrLockLoaderLock");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "LdrUnlockLoaderLock");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlAddVectoredExceptionHandler");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlRemoveVectoredExceptionHandler");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlAddFunctionTable");
-            ADD_HOOK_TARGET(list, L"ntdll.dll", "RtlAnsiStringToUnicodeString");
-            return list;
-        }();
-        return cached;
-    }
-
-    bool GetRemoteModuleBase(HANDLE process, const wchar_t * module_name, ULONG_PTR & base_out)
-    {
-        base_out = 0;
-        if (!process || !module_name)
-        {
-            return false;
-        }
-
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(process));
-        if (snapshot == INVALID_HANDLE_VALUE)
-        {
-            return false;
-        }
-
-        MODULEENTRY32W entry{};
-        entry.dwSize = sizeof(entry);
-        bool found = false;
-        if (Module32FirstW(snapshot, &entry))
-        {
-            do
-            {
-                if (!_wcsicmp(entry.szModule, module_name))
-                {
-                    base_out = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
-                    found = base_out != 0;
-                    break;
-                }
-            } while (Module32NextW(snapshot, &entry));
-        }
-
-        CloseHandle(snapshot);
-        return found;
-    }
-
     bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out)
     {
         name_out.clear();
@@ -7356,78 +7287,6 @@ DWORD BuildFlags(const WizardConfig & config)
         return out.portReadOk || out.flagsReadOk;
     }
 
-    struct RestoredHook
-    {
-        std::wstring name;
-        unsigned int offset = 0;
-    };
-
-    ULONG_PTR ResolveHookTarget(HANDLE process, const HookTarget & target, BYTE * local_bytes_out)
-    {
-        HMODULE local_module = GetModuleHandleW(target.module.c_str());
-        if (!local_module)
-        {
-            return 0;
-        }
-
-        void * local_function = reinterpret_cast<void *>(GetProcAddress(local_module, target.function.c_str()));
-        if (!local_function)
-        {
-            return 0;
-        }
-
-        MEMORY_BASIC_INFORMATION local_info{};
-        if (!VirtualQuery(local_function, &local_info, sizeof(local_info)) ||
-            local_info.AllocationBase != local_module)
-        {
-            return 0;
-        }
-
-        if (local_info.State != MEM_COMMIT ||
-            (local_info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
-            reinterpret_cast<ULONG_PTR>(local_function) + kHookScanBytes >
-                reinterpret_cast<ULONG_PTR>(local_info.BaseAddress) + local_info.RegionSize)
-        {
-            return 0;
-        }
-
-        ULONG_PTR remote_base = 0;
-        if (!GetRemoteModuleBase(process, target.module.c_str(), remote_base))
-        {
-            return 0;
-        }
-
-        DWORD remote_nt_offset = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<const void *>(remote_base + 0x3C), &remote_nt_offset, sizeof(remote_nt_offset), nullptr) ||
-            remote_nt_offset > 0x1000)
-        {
-            return 0;
-        }
-
-        DWORD remote_stamp = 0;
-        DWORD local_stamp = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<const void *>(remote_base + remote_nt_offset + 8), &remote_stamp, sizeof(remote_stamp), nullptr))
-        {
-            return 0;
-        }
-
-        const BYTE * local_nt = reinterpret_cast<const BYTE *>(local_module) +
-            *reinterpret_cast<const DWORD *>(reinterpret_cast<const BYTE *>(local_module) + 0x3C);
-        memcpy(&local_stamp, local_nt + 8, sizeof(local_stamp));
-
-        if (remote_stamp != local_stamp)
-        {
-            LOG(0, L"%lsHook Restore Skipped: %ls Remote Build Stamp 0x%08X Differs From Local 0x%08X.%ls\n",
-                kYellow, target.module.c_str(), remote_stamp, local_stamp, kReset);
-            return 0;
-        }
-
-        memcpy(local_bytes_out, local_function, kHookScanBytes);
-
-        return remote_base +
-            (reinterpret_cast<ULONG_PTR>(local_function) - reinterpret_cast<ULONG_PTR>(local_module));
-    }
-
     bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size)
     {
         if (!process || !address || !size)
@@ -7458,43 +7317,6 @@ DWORD BuildFlags(const WizardConfig & config)
         }
 
         return true;
-    }
-
-    size_t FindHookDifference(HANDLE process, ULONG_PTR remote_function, const BYTE * local_bytes)
-    {
-        if (!IsSafeCodePage(process, remote_function, kHookScanBytes))
-        {
-            return static_cast<size_t>(-1);
-        }
-
-        BYTE remote_bytes[kHookScanBytes]{};
-        SIZE_T bytes_read = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<void *>(remote_function), remote_bytes, sizeof(remote_bytes), &bytes_read) ||
-            bytes_read != sizeof(remote_bytes))
-        {
-            return static_cast<size_t>(-1);
-        }
-
-        for (size_t i = 0; i < sizeof(remote_bytes); ++i)
-        {
-            if (remote_bytes[i] != local_bytes[i])
-            {
-                return i;
-            }
-        }
-
-        return sizeof(remote_bytes);
-    }
-
-    std::wstring HookDisplayName(const HookTarget & target)
-    {
-        std::wstring name = target.module;
-        name += L" -> ";
-        for (char c : target.function)
-        {
-            name += static_cast<wchar_t>(c);
-        }
-        return name;
     }
 
     bool GetRemoteEidRange(HANDLE process, ULONG_PTR base, ULONG_PTR & start_out, ULONG_PTR & end_out)
@@ -7934,199 +7756,6 @@ DWORD BuildFlags(const WizardConfig & config)
         }
     }
 
-    struct HookScanStats
-    {
-        size_t targets = 0;
-        size_t resolved = 0;
-        size_t clean = 0;
-        size_t hooked = 0;
-        size_t skipped = 0;
-        bool scanned = false;
-        bool patch_blocked = false;
-    };
-
-    bool HookPatchExplicitlyAllowed()
-    {
-        static const bool allowed = []() -> bool
-        {
-            wchar_t buffer[8] = {};
-            const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_ALLOW_HOOK_PATCH").get(), buffer, 4);
-            return (got == 1 && buffer[0] == L'1');
-        }();
-        return allowed;
-    }
-
-    void ScanAndRestoreHooks(HANDLE process, std::vector<RestoredHook> & restored, std::vector<std::wstring> & remaining, HookScanStats & stats)
-    {
-        restored.clear();
-        remaining.clear();
-        stats = HookScanStats{};
-
-        const std::vector<HookTarget> & targets = GetHookTargets();
-        stats.targets = targets.size();
-
-        if (!HookPatchExplicitlyAllowed())
-        {
-            stats.patch_blocked = true;
-            return;
-        }
-
-        if (!process)
-        {
-            return;
-        }
-        stats.scanned = true;
-
-        for (const HookTarget & target : targets)
-        {
-            BYTE local_bytes[kHookScanBytes]{};
-            const ULONG_PTR remote_function = ResolveHookTarget(process, target, local_bytes);
-            if (!remote_function)
-            {
-                continue;
-            }
-            ++stats.resolved;
-
-            const size_t first_diff = FindHookDifference(process, remote_function, local_bytes);
-            if (first_diff == static_cast<size_t>(-1))
-            {
-
-                ++stats.skipped;
-                continue;
-            }
-            if (first_diff == sizeof(local_bytes))
-            {
-                ++stats.clean;
-                continue;
-            }
-
-            if (!IsSafeCodePage(process, remote_function, sizeof(local_bytes)))
-            {
-                ++stats.skipped;
-                remaining.push_back(HookDisplayName(target));
-                continue;
-            }
-
-            MEMORY_BASIC_INFORMATION patch_mbi{};
-            if (!VirtualQueryEx(process, reinterpret_cast<void *>(remote_function), &patch_mbi, sizeof(patch_mbi)))
-            {
-                ++stats.skipped;
-                remaining.push_back(HookDisplayName(target));
-                continue;
-            }
-
-            const DWORD original_protection =
-                patch_mbi.Protect & ~(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
-
-            DWORD staged_protection = PAGE_READWRITE;
-            if (original_protection == PAGE_WRITECOPY || original_protection == PAGE_EXECUTE_WRITECOPY)
-            {
-                staged_protection = PAGE_WRITECOPY;
-            }
-
-            DWORD discard_protection = 0;
-            if (!VirtualProtectEx(process, reinterpret_cast<void *>(remote_function), sizeof(local_bytes), staged_protection, &discard_protection))
-            {
-                ++stats.skipped;
-                remaining.push_back(HookDisplayName(target));
-                continue;
-            }
-
-            SIZE_T bytes_written = 0;
-            const bool write_ok =
-                WriteProcessMemory(process, reinterpret_cast<void *>(remote_function), local_bytes, sizeof(local_bytes), &bytes_written) &&
-                bytes_written == sizeof(local_bytes);
-
-            DWORD ignored_protection = 0;
-            const bool protection_ok =
-                VirtualProtectEx(process, reinterpret_cast<void *>(remote_function), sizeof(local_bytes), original_protection, &ignored_protection) != FALSE;
-
-            if (!write_ok || !protection_ok)
-            {
-                ++stats.skipped;
-                remaining.push_back(HookDisplayName(target));
-                continue;
-            }
-
-            FlushInstructionCache(process, reinterpret_cast<void *>(remote_function), sizeof(local_bytes));
-
-            BYTE verify_bytes[kHookScanBytes]{};
-            SIZE_T bytes_verified = 0;
-            if (!ReadProcessMemory(process, reinterpret_cast<void *>(remote_function), verify_bytes, sizeof(verify_bytes), &bytes_verified) ||
-                bytes_verified != sizeof(verify_bytes) ||
-                memcmp(verify_bytes, local_bytes, sizeof(verify_bytes)) != 0)
-            {
-                ++stats.skipped;
-                remaining.push_back(HookDisplayName(target));
-                continue;
-            }
-
-            ++stats.hooked;
-            RestoredHook entry;
-            entry.name = HookDisplayName(target);
-            entry.offset = static_cast<unsigned int>(first_diff);
-            restored.push_back(entry);
-        }
-    }
-
-    void PrintHookScanResult(const wchar_t * Phase, const HookScanStats & stats,
-        const std::vector<RestoredHook> & restored, const std::vector<std::wstring> & remaining)
-    {
-        LOG(0, L"  %s Scan Trace:\n\n", Phase);
-
-        if (!stats.scanned)
-        {
-
-            if (stats.patch_blocked)
-            {
-                LOG(0, L"    %ls%zu%s In List, Hook Patch Not Enabled - Nothing Was Inspected\n",
-                    StageField(L"Targets").c_str(), stats.targets, kReset);
-            }
-            else
-            {
-                LOG(0, L"    %ls%zu%s In List, No Process Handle - Nothing Was Inspected\n",
-                    StageField(L"Targets").c_str(), stats.targets, kReset);
-            }
-            return;
-        }
-
-        LOG(0, L"    %ls%ls%zu%s\n",
-            StageField(L"Targets").c_str(), kGreen, stats.targets, kReset);
-        LOG(0, L"    %ls%ls%zu%s Of %ls%zu%s Resolved In The Target\n",
-            StageField(L"Resolved").c_str(),
-            (stats.resolved == stats.targets ? kGreen : kYellow), stats.resolved, kReset,
-            kGreen, stats.targets, kReset);
-        LOG(0, L"    %ls%ls%zu%s Already Matched The Local Image\n",
-            StageField(L"Clean").c_str(), kGreen, stats.clean, kReset);
-        LOG(0, L"    %ls%ls%zu%s Differed, %s%zu%s Left Alone\n",
-            StageField(L"Hooked").c_str(), kGreen, stats.hooked, kReset,
-            (stats.skipped ? kYellow : kGreen), stats.skipped, kReset);
-
-        if (!restored.empty())
-        {
-            LOG(0, L"\n");
-            for (size_t i = 0; i < restored.size(); ++i)
-            {
-                const RestoredHook & entry = restored[i];
-
-                const wchar_t * offset_tint = entry.offset == 0 ? kGreen : kYellow;
-                LOG(0, L"      [%ls%zu%s/%ls%zu%s] %s (%ls+0x%02X%s)\n",
-                    kGreen, i + 1, kReset, kGreen, restored.size(), kReset, entry.name.c_str(),
-                    offset_tint, entry.offset, kReset);
-            }
-        }
-
-        if (!remaining.empty())
-        {
-            LOG(0, L"    %ls%ls%zu%s Still Differ After The Pass:\n",
-                StageField(L"Remaining").c_str(), kYellow, remaining.size(), kReset);
-            for (const std::wstring & entry : remaining)
-            {
-                LOG(0, L"      %ls! %s%s\n", kYellow, entry.c_str(), kReset);
-            }
-        }
-    }
-
     const wchar_t * DescribeNtStatus(DWORD status)
     {
         switch (status)
@@ -8231,7 +7860,7 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"Note: The Payload Timed Out, But The Thread Context Was Restored Automatically.\n");
             LOG(0, L"Reason: The Victim Thread Never Scheduled The Donor Stub (State Stayed Pending),\n");
             LOG(0, L"So The Memory-Loading Shell Never Started. This Is Thread Selection, Not A Verification Issue:\n");
-            LOG(0, XOR_STR_W(L"CleanDataDirectories And HookRestore Are Unrelated - Keep Them Enabled.\n").get());
+            LOG(0, XOR_STR_W(L"CleanDataDirectories Is Unrelated - Keep It Enabled.\n").get());
             LOG(0, L"The Runtime Now Retries: Each Donor Gets A Short Startup Probe, An Unscheduled\n");
             LOG(0, L"Thread Is Rolled Back And Excluded, And The Next Candidate Is Tried Inside The\n");
             LOG(0, L"Same Timeout Budget. Raising The Timeout Widens How Many Donors Get Probed.\n");
@@ -8696,21 +8325,16 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         Trace::End();
 
-        // Read-only (plus VM_WRITE only when a hook patch is explicitly authorised) so the
-        // hook scanner can inspect the target without holding a stronger handle than it needs.
+        // Read-only so the verification suite can inspect the target without holding a
+        // stronger handle than it needs.
         HANDLE targetHandle = nullptr;
         {
-            DWORD scan_mask = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ;
-            if (config.hook_restore && HookPatchExplicitlyAllowed())
-            {
-                scan_mask |= PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
-            }
-            targetHandle = OpenProcess(scan_mask, FALSE, target.pid);
+            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
         }
         FileHandleGuard targetHandleGuard(targetHandle);
         if (!targetHandle)
         {
-            LOG(0, L"  %ls[!]%ls Could Not Open The Target For Hook Scanning (0x%08X).\n",
+            LOG(0, L"  %ls[!]%ls Could Not Open The Target For Read-Only Verification (0x%08X).\n",
                 kYellow, kReset, GetLastError());
         }
 
@@ -8730,18 +8354,6 @@ DWORD BuildFlags(const WizardConfig & config)
         data.DllPath = config.payload_name.c_str();
 
         LOG(0, L"\n");
-
-        if (config.hook_restore)
-        {
-            std::vector<RestoredHook> pre_unhooked;
-            std::vector<std::wstring> pre_remaining;
-            HookScanStats pre_stats{};
-            ScanAndRestoreHooks(targetHandle, pre_unhooked, pre_remaining, pre_stats);
-            if (!config.quiet)
-            {
-                PrintHookScanResult(L"Pre-Load Hook", pre_stats, pre_unhooked, pre_remaining);
-            }
-        }
 
         if (data.TargetTid)
         {
@@ -8931,17 +8543,6 @@ DWORD BuildFlags(const WizardConfig & config)
                 kGreen, static_cast<unsigned long>(ThreadExec.HijackedTid), kReset);
         }
         LOG(0, L"\n");
-        if (config.hook_restore)
-        {
-            std::vector<RestoredHook> unhooked;
-            std::vector<std::wstring> remaining;
-            HookScanStats post_stats{};
-            ScanAndRestoreHooks(targetHandle, unhooked, remaining, post_stats);
-            if (!config.quiet)
-            {
-                PrintHookScanResult(L"Post-Load Hook", post_stats, unhooked, remaining);
-            }
-        }
 
         const bool had_target = (targetHandle != nullptr);
         
