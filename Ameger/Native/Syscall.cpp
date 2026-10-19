@@ -106,16 +106,12 @@ namespace
 		{ SC_NtOpenProcess,					kServiceUnknown, nullptr },
 		{ SC_NtOpenThread,					kServiceUnknown, nullptr },
 		{ SC_NtDuplicateObject,				kServiceUnknown, nullptr },
-		{ SC_NtClose,						kServiceUnknown, nullptr },
 		{ SC_NtQuerySystemInformation,		kServiceUnknown, nullptr },
 		{ SC_NtQueryInformationProcess,	kServiceUnknown, nullptr },
 		{ SC_NtQueryInformationThread,		kServiceUnknown, nullptr },
 		{ SC_NtAllocateVirtualMemory,		kServiceUnknown, nullptr },
 		{ SC_NtFreeVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtProtectVirtualMemory,		kServiceUnknown, nullptr },
-		{ SC_NtCreateSection,				kServiceUnknown, nullptr },
-		{ SC_NtMapViewOfSection,			kServiceUnknown, nullptr },
-		{ SC_NtUnmapViewOfSection,			kServiceUnknown, nullptr },
 		{ SC_NtWriteVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtReadVirtualMemory,			kServiceUnknown, nullptr },
 		{ SC_NtSuspendThread,				kServiceUnknown, nullptr },
@@ -132,16 +128,12 @@ namespace
 		"NtOpenProcess",
 		"NtOpenThread",
 		"NtDuplicateObject",
-		"NtClose",
 		"NtQuerySystemInformation",
 		"NtQueryInformationProcess",
 		"NtQueryInformationThread",
 		"NtAllocateVirtualMemory",
 		"NtFreeVirtualMemory",
 		"NtProtectVirtualMemory",
-		"NtCreateSection",
-		"NtMapViewOfSection",
-		"NtUnmapViewOfSection",
 		"NtWriteVirtualMemory",
 		"NtReadVirtualMemory",
 		"NtSuspendThread",
@@ -1076,11 +1068,6 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	}
 
 	return 0;
-}
-
-bool SyscallReady()
-{
-	return g_SyscallPoolReady.load(std::memory_order_acquire);
 }
 
 DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count)

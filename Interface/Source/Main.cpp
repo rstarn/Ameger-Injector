@@ -92,7 +92,6 @@ std::wstring g_ResultLogName = L"Result.log";
 namespace ameger_ui_log
 {
     constexpr size_t kMaxChars = 2097152;
-    constexpr size_t kMaxBytes = 2097152 * sizeof(wchar_t);
 
     inline SRWLOCK & Lock()
     {
@@ -2131,12 +2130,6 @@ int UiLog(int indent, const wchar_t * format, ...)
             }
             std::wstring message = prompt ? std::wstring(prompt) : std::wstring(L"Continue?");
             value = LayeredYesNo(message, default_value);
-            
-            
-            if (!default_value && !value)
-            {
-                
-            }
             return true;
         }
         for (;;)
@@ -3873,10 +3866,6 @@ wchar_t name[48]{};
     bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
     {
         HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!process)
-        {
-            process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        }
         if (!process)
         {
             return false;
@@ -8054,9 +8043,6 @@ DWORD BuildFlags(const WizardConfig & config)
 
     int RunInteractiveWizard(Runtime & runtime)
     {
-        
-        
-        (void)runtime;
         LOG(0, L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
 
         WizardConfig config;

@@ -833,9 +833,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				Stats.DonorHandle = PtrToUlong(Sponsor);
 				Stats.GrantedAccess = hijackAccess;
 				Stats.NewHandle = PtrToUlong(hThread.get());
-				Stats.SponsorValidated = 1;
-
-				Stats.SponsorProbed = 0;
 				Stats.FailCode = INJ_ERR_SUCCESS;
 				RecordHijackOutcome(Stats, true);
 				LOG(2, "Acquired Target Thread Handle From Sponsor\n");
@@ -1533,12 +1530,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				StoreThreadExecStat(g_ThreadExecStats.RoutineRet, data.Ret);
 				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.RoutineCyclesDelta), static_cast<LONG64>(data.RoutineCyclesDelta));
 				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackScrubbedBytes), static_cast<LONG64>(data.StackScrubbedBytes));
-				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.SavedRsp), 0);
 				{
 					ULONG_PTR saved_rsp = 0;
 					if (ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(pState) + SR_SAVED_RSP, &saved_rsp, sizeof(saved_rsp), nullptr) && saved_rsp)
 					{
-						InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.SavedRsp), static_cast<LONG64>(saved_rsp));
 						if (data.StackScrubbedBytes && saved_rsp >= data.StackScrubbedBytes)
 						{
 							InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackLimit), static_cast<LONG64>(saved_rsp - data.StackScrubbedBytes));

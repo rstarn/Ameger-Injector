@@ -58,28 +58,6 @@ namespace
 		}
 	}
 
-	bool ReadFileForMapping(const std::wstring & path, std::vector<BYTE> & data)
-	{
-		std::ifstream file(path, std::ios::binary | std::ios::ate);
-		if (!file.good())
-		{
-			return false;
-		}
-
-		const std::streamoff file_size = file.tellg();
-		if (file_size <= 0 || static_cast<unsigned long long>(file_size) > PE_IMAGE::MAX_IMAGE_SIZE)
-		{
-			return false;
-		}
-
-		data.resize(static_cast<size_t>(file_size));
-		file.seekg(0, std::ios::beg);
-		file.read(reinterpret_cast<char *>(data.data()), file_size);
-		return static_cast<bool>(file) && file.gcount() == file_size;
-	}
-
-	
-	
 	constexpr SIZE_T kScrubChunk = 0x100000;
 }
 
@@ -99,30 +77,12 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	
 	const DWORD remote_flags = Flags;
 	INJECTION_SOURCE source = Source;
-	std::vector<BYTE> file_data;
 	PE_IMAGE::VIEW source_view;
 	DWORD validation_result = FILE_ERR_SUCCESS;
 
 	try
 	{
-		if (source.FromMemory)
-		{
-			validation_result = PE_IMAGE::Validate(source.RawData, source.RawSize, IMAGE_FILE_MACHINE_AMD64, BuildPeValidationOptions(remote_flags), source_view);
-		}
-		else
-		{
-		if (!ReadFileForMapping(source.DllPath, file_data))
-		{
-			INIT_ERROR_DATA(error_data, FILE_ERR_CANT_OPEN_FILE);
-
-			return FILE_ERR_CANT_OPEN_FILE;
-		}
-
-			validation_result = PE_IMAGE::Validate(file_data.data(), file_data.size(), IMAGE_FILE_MACHINE_AMD64, BuildPeValidationOptions(remote_flags), source_view);
-			source.FromMemory = true;
-			source.RawData = file_data.data();
-			source.RawSize = static_cast<DWORD>(file_data.size());
-		}
+		validation_result = PE_IMAGE::Validate(source.RawData, source.RawSize, IMAGE_FILE_MACHINE_AMD64, BuildPeValidationOptions(remote_flags), source_view);
 	}
 	catch (const std::bad_alloc &)
 	{
@@ -169,11 +129,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		SC_NtAllocateVirtualMemory,
 		SC_NtProtectVirtualMemory,
 		SC_NtFreeVirtualMemory,
-		SC_NtClose,
 		SC_NtQueryInformationProcess,
-		SC_NtCreateSection,
-		SC_NtMapViewOfSection,
-		SC_NtUnmapViewOfSection,
 	};
 
 	const SIZE_T stub_area_size	= static_cast<SIZE_T>(SC_REMOTE_STUB_COUNT) * SC_STUB_SIZE;
@@ -181,9 +137,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	
 	
-	const SIZE_T raw_span = source.FromMemory
-		? ALIGN_UP(static_cast<SIZE_T>(source.RawSize), kStagePage)
-		: 0;
+	const SIZE_T raw_span = ALIGN_UP(static_cast<SIZE_T>(source.RawSize), kStagePage);
 
 	SIZE_T AllocationSize = 0;
 	const SIZE_T allocation_parts[] =
@@ -310,11 +264,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 				case 0: table_local->NtAllocateVirtualMemory	= ReCa<f_NtAllocateVirtualMemory>(pStubArea + i * SC_STUB_SIZE); break;
 				case 1: table_local->NtProtectVirtualMemory	= ReCa<f_NtProtectVirtualMemory>	(pStubArea + i * SC_STUB_SIZE); break;
 				case 2: table_local->NtFreeVirtualMemory		= ReCa<f_NtFreeVirtualMemory>	(pStubArea + i * SC_STUB_SIZE); break;
-				case 3: table_local->NtClose					= ReCa<f_NtClose>				(pStubArea + i * SC_STUB_SIZE); break;
-				case 4: table_local->NtQueryInformationProcess = ReCa<f_NtQueryInformationProcess>(pStubArea + i * SC_STUB_SIZE); break;
-				case 5: table_local->NtCreateSection = ReCa<f_NtCreateSection>(pStubArea + i * SC_STUB_SIZE); break;
-				case 6: table_local->NtMapViewOfSection = ReCa<f_NtMapViewOfSection>(pStubArea + i * SC_STUB_SIZE); break;
-				case 7: table_local->NtUnmapViewOfSection = ReCa<f_NtUnmapViewOfSection>(pStubArea + i * SC_STUB_SIZE); break;
+				case 3: table_local->NtQueryInformationProcess = ReCa<f_NtQueryInformationProcess>(pStubArea + i * SC_STUB_SIZE); break;
 				default: break;
 			}
 		}
@@ -340,10 +290,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	data.FunctionTable = ReCa<MANUAL_MAPPING_FUNCTION_TABLE *>(pFunctionTable);
 
-	if (source.FromMemory)
-	{
-		data.pRawData = pRawData;
-	}
+	data.pRawData = pRawData;
 
 	
 	
@@ -368,7 +315,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 
 	std::vector<BYTE> transfer_image;
-	if (source.FromMemory && source.RawSize)
+	if (source.RawSize)
 	{
 		try
 		{
@@ -498,8 +445,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		LOG(1, "StartRoutine Failed = %08X\n", dwRet);
 
 		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED ||
-			dwRet == SR_HT_ERR_REMOTE_PENDING_TIMEOUT ||
-			dwRet == SR_HT_ERR_REMOTE_TIMEOUT)
+			dwRet == SR_HT_ERR_REMOTE_PENDING_TIMEOUT)
 		{
 			leak_staging = true;
 		}
@@ -1942,10 +1888,6 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 	const DWORD section_count = MMI_SectionCount(pData);
 
 	pData->SectionProtCount = 0;
-	for (DWORD si = 0; si < MM_MAX_PROT_RECORDS; ++si)
-	{
-		pData->SectionProt[si] = SECTION_PROT_RECORD{};
-	}
 
 	for (UINT i = 0; i != section_count; ++i, ++pCurrentSectionHeader)
 	{
@@ -1955,7 +1897,6 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 
 		ULONG NewProtection = PAGE_NOACCESS;
 		NTSTATUS prot_status = STATUS_SUCCESS;
-		ULONG old_prot = 0;
 
 		if (SectionSize)
 		{
@@ -1985,7 +1926,6 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 
 			pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &pSectionBase, &SectionSize, NewProtection, &OldProtection);
 			prot_status = pData->ntRet;
-			old_prot = OldProtection;
 			if (NT_FAIL(pData->ntRet))
 			{
 				section_failure = true;
@@ -1993,27 +1933,7 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 		}
 
 		
-		if (i < MM_MAX_PROT_RECORDS)
-		{
-			SECTION_PROT_RECORD rec{};
-			for (int ci = 0; ci < 8; ++ci)
-			{
-				rec.SectionName[ci] = ReCa<const char *>(pCurrentSectionHeader->Name)[ci];
-				if (rec.SectionName[ci] == '\0')
-				{
-					break;
-				}
-			}
-			rec.VirtualRva = pCurrentSectionHeader->VirtualAddress;
-			rec.VirtualSize = pCurrentSectionHeader->Misc.VirtualSize;
-			rec.RawSize = pCurrentSectionHeader->SizeOfRawData;
-			rec.Characteristics = characteristics;
-			rec.RequestedProtect = NewProtection;
-			rec.ProtectStatus = prot_status;
-			rec.OldProtect = old_prot;
-			pData->SectionProt[i] = rec;
-			pData->SectionProtCount = i + 1;
-		}
+		pData->SectionProtCount = i + 1;
 
 		if (NT_FAIL(prot_status))
 		{
@@ -3226,14 +3146,9 @@ DWORD __declspec(code_seg(".code$14")) MMAP_SEC_END()
 
 MANUAL_MAPPING_FUNCTION_TABLE::MANUAL_MAPPING_FUNCTION_TABLE()
 {
-	NT_FUNC_CONSTRUCTOR_INIT(NtClose);
-
 	NT_FUNC_CONSTRUCTOR_INIT(NtAllocateVirtualMemory);
 	NT_FUNC_CONSTRUCTOR_INIT(NtProtectVirtualMemory);
 	NT_FUNC_CONSTRUCTOR_INIT(NtFreeVirtualMemory);
-	NT_FUNC_CONSTRUCTOR_INIT(NtCreateSection);
-	NT_FUNC_CONSTRUCTOR_INIT(NtMapViewOfSection);
-	NT_FUNC_CONSTRUCTOR_INIT(NtUnmapViewOfSection);
 
 	NT_FUNC_CONSTRUCTOR_INIT(memmove);
 	NT_FUNC_CONSTRUCTOR_INIT(RtlZeroMemory);

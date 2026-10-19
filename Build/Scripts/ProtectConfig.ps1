@@ -12,9 +12,7 @@ param(
 
     [string]$DllDir,
 
-    [string]$ConfigMagic,
-
-    [switch]$Plaintext
+    [string]$ConfigMagic
 )
 
 $ErrorActionPreference = "Stop"
@@ -222,13 +220,6 @@ if ($modified) {
     $plain = (New-Object Text.UTF8Encoding($false)).GetBytes($text)
 } else {
     $plain = $existing
-}
-
-if ($Plaintext) {
-
-    [IO.File]::WriteAllBytes($Destination, $plain)
-    Write-Host "ProtectConfig: Wrote Plaintext (Opt-Out)."
-    exit 0
 }
 
 Add-Type -AssemblyName System.Security | Out-Null

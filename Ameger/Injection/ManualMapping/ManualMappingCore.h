@@ -1,4 +1,4 @@
-  #pragma once
+#pragma once
 
 #include "Core/Utility/Header/PrecompiledHeader.h"
 #include "Core/Foundation/Error.h"
@@ -7,6 +7,5 @@
 
 namespace MMAP_NATIVE
 {
-
-	DWORD ManualMap(const INJECTION_SOURCE & DllPath, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
+	DWORD ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
 }

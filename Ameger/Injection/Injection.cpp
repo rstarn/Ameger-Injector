@@ -28,7 +28,6 @@ namespace
 				if (ValidateProcessDonorHandle(sponsor, pid, access_mask))
 				{
 					validated_sponsor_owner = sponsor;
-					stats.SponsorValidated = 1;
 					stats.DonorHandle = PtrToUlong(sponsor);
 					HANDLE duplicated = nullptr;
 					bool duplicate_ok = NT_SUCCESS(ScNtDuplicateObject(GetCurrentProcess(), sponsor, GetCurrentProcess(),
@@ -43,7 +42,6 @@ namespace
 						stats.DonorPid = GetCurrentProcessId();
 						stats.GrantedAccess = access_mask;
 						stats.NewHandle = PtrToUlong(duplicated);
-						stats.SponsorProbed = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 1;
 						stats.ProbeMethod = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 3;
 						stats.FailCode = INJ_ERR_SUCCESS;
 						RecordHijackOutcome(stats, false);
@@ -64,14 +62,10 @@ namespace
 			if (!(flags & INJ_NO_DONOR_SCAN))
 			{
 				HANDLE hijacked = nullptr;
-				const DWORD saved_sponsor_validated = stats.SponsorValidated;
-				const DWORD saved_sponsor_probed = stats.SponsorProbed;
 				const DWORD saved_donor_handle = stats.DonorHandle;
 
 				const DWORD hijack_ret = HijackProcessHandle(pid, access_mask, hijacked, &stats,
 					validated_sponsor_owner);
-				stats.SponsorValidated = saved_sponsor_validated;
-				stats.SponsorProbed = saved_sponsor_probed;
 				if (stats.Success == 0)
 				{
 					stats.DonorHandle = saved_donor_handle;
@@ -318,8 +312,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 	DWORD FileErr = FILE_ERR_SUCCESS;
 	DWORD wow_error = ERROR_SUCCESS;
-	bool native_target = true;
-	native_target = IsNativeProcess(hTargetProc, &wow_error);
+	const bool native_target = IsNativeProcess(hTargetProc, &wow_error);
 	if (!native_target)
 	{
 		INIT_ERROR_DATA(error_data, wow_error != ERROR_SUCCESS ? wow_error : static_cast<DWORD>(INJ_ERR_ADVANCED_NOT_DEFINED));
@@ -344,7 +337,6 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	HINSTANCE hOut = NULL;
 
 	INJECTION_SOURCE Source;
-	Source.FromMemory	= true;
 	Source.RawData		= Data.RawData;
 	Source.RawSize		= Data.RawSize;
 
@@ -489,6 +481,5 @@ INJECTIONDATA_INTERNAL::INJECTIONDATA_INTERNAL(const MEMORY_INJECTIONDATA * pDat
 	TargetTid			= pData->TargetTid;
 	hThreadHandleValue	= pData->hThreadHandleValue;
 	GenerateErrorLog	= pData->GenerateErrorLog;
-	hDllOut				= NULL;
 	DllPath				= pData->DllPath ? pData->DllPath : L"";
 }

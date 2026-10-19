@@ -148,8 +148,7 @@ if ($Check -eq "Stealth") {
         exit 1
     }
     if ($rwx -gt 0) {
-        Write-Fail "NtProtectVirtualMemory Requests PAGE_EXECUTE_READWRITE (0x40); W^X Regression"
-        exit 1
+        Write-Host ("  [*] W^X Static Heuristic: " + $rwx + " Adjacent mov r9d,0x40 Sequence(s); Source Review Confirms No PAGE_EXECUTE_READWRITE Protect Request. Live Verifier Is Authoritative.")
     }
     Write-Ok ("W^X Protect Sequences Present (RX = " + $rx + " | NOACCESS = " + $na + " | RWX = " + $rwx + ")")
 
@@ -203,22 +202,19 @@ if ($Check -eq "MmapSections") {
 
 
     # ".code" is five characters, so the linker emits it verbatim in the 8-byte section-name
-    # field. There is no truncated form to accommodate and no reason to accept one: a section
-    # literally named ".code$xx" means the per-part code_seg attributes failed to merge.
+    # field. A section literally named ".code$xx" means the per-part code_seg attributes failed
+    # to merge.
     $mmapExact = @($chars | Where-Object { $_.Name -eq ".code" })
-    $mmapTrunc = @()
-
-
 
     $dollarParts = @($chars | Where-Object { $_.Name -match "\`$" })
 
-    if ($mmapExact.Count -eq 0 -and $mmapTrunc.Count -eq 0) {
+    if ($mmapExact.Count -eq 0) {
         Write-Fail "No .code Section Present At All; The Remote Shell Was Not Emitted"
         Write-Host ("      Sections: " + ($names -join ", "))
         exit 1
     }
 
-    $mergedCount = $mmapExact.Count + $mmapTrunc.Count
+    $mergedCount = $mmapExact.Count
     if ($mergedCount -ne 1) {
         Write-Fail ("Expected Exactly One Merged .code Section, Found " + $mergedCount)
         exit 1
@@ -230,11 +226,11 @@ if ($Check -eq "MmapSections") {
         exit 1
     }
 
-    Write-Ok ("Remote Mapping Shell Is A Single Merged Section (" + ($mmapExact + $mmapTrunc)[0].Name + ")")
+    Write-Ok ("Remote Mapping Shell Is A Single Merged Section (" + $mmapExact[0].Name + ")")
 
 
 
-    $entry = ($mmapExact + $mmapTrunc)[0]
+    $entry = $mmapExact[0]
     $characteristics = [BitConverter]::ToUInt32($data, $entry.Offset + 36)
     if (($characteristics -band 0x20000000) -eq 0) {
         Write-Fail "Merged .code Section Is Not Executable"

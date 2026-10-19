@@ -13,8 +13,6 @@
 
 #define RELOC_FLAG RELOC_FLAG64
 
-#define BASE_ALIGNMENT 0x10
-
 
 
 #define MM_MAX_CACHED_SECTIONS 96
@@ -69,16 +67,11 @@ namespace MMAP_NATIVE
 
 	ALIGN struct MANUAL_MAPPING_FUNCTION_TABLE
 	{
-	ALIGN NT_FUNC_LOCAL(NtClose);
-
 	ALIGN NT_FUNC_LOCAL(NtQueryInformationProcess);
 
 	ALIGN NT_FUNC_LOCAL(NtAllocateVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtProtectVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtFreeVirtualMemory);
-		ALIGN NT_FUNC_LOCAL(NtCreateSection);
-		ALIGN NT_FUNC_LOCAL(NtMapViewOfSection);
-		ALIGN NT_FUNC_LOCAL(NtUnmapViewOfSection);
 
 		ALIGN NT_FUNC_LOCAL(memmove);
 		ALIGN NT_FUNC_LOCAL(RtlZeroMemory);
@@ -133,9 +126,7 @@ namespace MMAP_NATIVE
 
 		bool IsValid() const
 		{
-		return NtClose &&
-	NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory &&
-	NtCreateSection && NtMapViewOfSection && NtUnmapViewOfSection &&
+			return NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory &&
 		memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
 		LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
 		RtlAnsiStringToUnicodeString &&
@@ -160,7 +151,6 @@ namespace MMAP_NATIVE
  		ALIGN DWORD	InvertedTableInstalled = 0;
 
 	ALIGN BYTE *	pAllocationBase	= nullptr;
-	ALIGN HANDLE	pSectionHandle	= nullptr;
 	ALIGN BYTE *	pImageBase		= nullptr;
  		ALIGN BYTE *	pRawData		= nullptr;
  		ALIGN DWORD		RawSize			= 0;
@@ -227,7 +217,6 @@ namespace MMAP_NATIVE
 
  		
  		ALIGN DWORD SectionProtCount = 0;
- 		ALIGN SECTION_PROT_RECORD SectionProt[MM_MAX_PROT_RECORDS]{};
   	};
 }
 

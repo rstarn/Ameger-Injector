@@ -263,17 +263,6 @@ typedef struct _OBJECT_ATTRIBUTES
 	PVOID				SecurityQualityOfService;
 }  OBJECT_ATTRIBUTES, * POBJECT_ATTRIBUTES;
 
-typedef struct _IO_STATUS_BLOCK
-{
-	union
-	{
-		NTSTATUS	Status;
-		PVOID		Pointer;
-	} DUMMYUNIONNAME;
-
-	ULONG_PTR Information;
-} IO_STATUS_BLOCK, * PIO_STATUS_BLOCK;
-
 typedef struct _PEB_LDR_DATA
 {
 	ULONG		Length;
@@ -293,7 +282,6 @@ static_assert(sizeof(ANSI_STRING) == 16);
 static_assert(sizeof(RTL_BALANCED_NODE) == 24);
 static_assert(sizeof(RTL_RB_TREE) == 16);
 static_assert(sizeof(OBJECT_ATTRIBUTES) == 48);
-static_assert(sizeof(IO_STATUS_BLOCK) == 16);
 static_assert(sizeof(PEB_LDR_DATA) == 88);
 static_assert(offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead) == 16);
 static_assert(offsetof(PEB_LDR_DATA, InMemoryOrderModuleListHead) == 32);
@@ -460,12 +448,6 @@ typedef struct _RTL_INVERTED_FUNCTION_TABLE
 	UCHAR Overflow;
 	RTL_INVERTED_FUNCTION_TABLE_ENTRY Entries[ANYSIZE_ARRAY];
 } RTL_INVERTED_FUNCTION_TABLE, * PRTL_INVERTED_FUNCTION_TABLE;
-
-typedef union _LDR_SEARCH_PATH
-{
-	BOOLEAN NoPath : 1;
-	wchar_t * szSearchPath;
-} LDR_SEARCH_PATH, * PLDR_SEARCH_PATH;
 
 typedef struct _LDRP_PATH_SEARCH_CONTEXT
 {

@@ -156,11 +156,6 @@ using f_RtlAnsiStringToUnicodeString = NTSTATUS (__stdcall *)
 	BOOLEAN					AllocateDestinationString
 );
 
-using f_NtClose = NTSTATUS (__stdcall *)
-(
-	HANDLE Handle
-);
-
 using f_NtAllocateVirtualMemory = NTSTATUS (__stdcall *)
 (
 	HANDLE			ProcessHandle,
@@ -188,36 +183,6 @@ using f_NtProtectVirtualMemory = NTSTATUS (__stdcall *)
 	ULONG	*	OldAccess
 );
 
-using f_NtCreateSection = NTSTATUS (__stdcall *)
-(
-	HANDLE		*	SectionHandle,
-	ACCESS_MASK		DesiredAccess,
-	void		*	ObjectAttributes,
-	LARGE_INTEGER	*	MaximumSize,
-	ULONG			SectionPageProtection,
-	ULONG			AllocationAttributes,
-	HANDLE			FileHandle
-);
-
-using f_NtMapViewOfSection = NTSTATUS (__stdcall *)
-(
-	HANDLE		SectionHandle,
-	HANDLE		ProcessHandle,
-	PVOID	*	BaseAddress,
-	ULONG_PTR	ZeroBits,
-	SIZE_T		CommitSize,
-	LARGE_INTEGER	*	SectionOffset,
-	SIZE_T		*	ViewSize,
-	ULONG		InheritDisposition,
-	ULONG		AllocationType,
-	ULONG		Win32Protect
-);
-
-using f_NtUnmapViewOfSection = NTSTATUS (__stdcall *)
-(
-	HANDLE		ProcessHandle,
-	PVOID		BaseAddress
-);
 using f_LdrProtectMrdata = VOID (__stdcall *)
 (
 	BOOL bProtected

@@ -43,16 +43,12 @@ struct HijackStats
 	DWORD SnapStatus = 0;
 	DWORD BudgetSkipped = 0;
 
-	DWORD SponsorValidated = 0;
-	DWORD SponsorProbed = 0;
-	
 	DWORD SnapshotBytes = 0;
 	DWORD ProbeMethod = 0;
 };
 
-static_assert(sizeof(HijackStats) == 80);
+static_assert(sizeof(HijackStats) == 72);
 static_assert(offsetof(HijackStats, Attempted) == 0);
-static_assert(offsetof(HijackStats, SponsorProbed) == 68);
 
 struct THREAD_EXEC_STATS
 {
@@ -70,23 +66,21 @@ struct THREAD_EXEC_STATS
 	DWORD RoutineRet = 0;
 	ULONG_PTR OldRip = 0;
 	ULONG_PTR OldRsp = 0;
-	ULONG_PTR SavedRsp = 0;
 	ULONG_PTR StackLimit = 0;
 	DWORD FpMode = 0;
 	DWORD FpMask = 0;
 };
 
-static_assert(sizeof(THREAD_EXEC_STATS) == 96);
+static_assert(sizeof(THREAD_EXEC_STATS) == 88);
 static_assert(offsetof(THREAD_EXEC_STATS, Attempted) == 0);
 static_assert(offsetof(THREAD_EXEC_STATS, DonorRounds) == 16);
 static_assert(offsetof(THREAD_EXEC_STATS, PollIterations) == 40);
 static_assert(offsetof(THREAD_EXEC_STATS, RoutineRet) == 48);
 static_assert(offsetof(THREAD_EXEC_STATS, OldRip) == 56);
 static_assert(offsetof(THREAD_EXEC_STATS, OldRsp) == 64);
-static_assert(offsetof(THREAD_EXEC_STATS, SavedRsp) == 72);
-static_assert(offsetof(THREAD_EXEC_STATS, StackLimit) == 80);
-static_assert(offsetof(THREAD_EXEC_STATS, FpMode) == 88);
-static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 92);
+static_assert(offsetof(THREAD_EXEC_STATS, StackLimit) == 72);
+static_assert(offsetof(THREAD_EXEC_STATS, FpMode) == 80);
+static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 84);
 
 struct MAP_STATS
 {
@@ -130,10 +124,9 @@ struct STRING_STATS
 	DWORD TiersTotal = 0;
 	DWORD TiersPassed = 0;
 	DWORD Reported = 0;
-	DWORD Reserved = 0;
 };
 
-static_assert(sizeof(STRING_STATS) == 28);
+static_assert(sizeof(STRING_STATS) == 24);
 
 
 
@@ -176,18 +169,3 @@ struct VERIFIABLE_EXEC_TELEMETRY
 };
 
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % 4 == 0);
-
-
-struct SECTION_PROT_RECORD
-{
-	char SectionName[8]{};
-	DWORD VirtualRva = 0;
-	DWORD VirtualSize = 0;
-	DWORD RawSize = 0;
-	DWORD Characteristics = 0;
-	ULONG RequestedProtect = 0;
-	NTSTATUS ProtectStatus = AMEGER_NTSTATUS_SUCCESS;
-	ULONG OldProtect = 0;
-};
-
-#define MM_MAX_PROT_RECORDS 96

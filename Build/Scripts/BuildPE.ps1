@@ -58,15 +58,6 @@ function Get-RandomUInt32 {
     return [BitConverter]::ToUInt32($b, 0)
 }
 
-function Get-RandomUInt16 {
-    $b = Get-RandomBytes 2
-    return [BitConverter]::ToUInt16($b, 0)
-}
-
-function Read-UInt16([byte[]]$Data, [int]$Offset) {
-    return [BitConverter]::ToUInt16($Data, $Offset)
-}
-
 function Read-UInt32([byte[]]$Data, [int]$Offset) {
     return [BitConverter]::ToUInt32($Data, $Offset)
 }

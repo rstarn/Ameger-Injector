@@ -57,13 +57,7 @@ DWORD ResolveDynamicOffsets()
 
 	auto f_same_teb_flags = XOR_STR_A("SameTebFlags");
 	auto f_last_error = XOR_STR_A("LastErrorValue");
-	auto f_peb = XOR_STR_A("ProcessEnvironmentBlock");
-	auto f_os_major = XOR_STR_A("OSMajorVersion");
-	auto f_os_minor = XOR_STR_A("OSMinorVersion");
-	auto f_os_build = XOR_STR_A("OSBuildNumber");
 	auto f_ldr = XOR_STR_A("Ldr");
-	auto f_process_heap = XOR_STR_A("ProcessHeap");
-	auto f_loader_lock = XOR_STR_A("LoaderLock");
 	auto f_cookie = XOR_STR_A("Cookie");
 	auto f_dll_base = XOR_STR_A("DllBase");
 	auto f_size_of_image = XOR_STR_A("SizeOfImage");
@@ -75,7 +69,6 @@ DWORD ResolveDynamicOffsets()
 	auto f_entries = XOR_STR_A("Entries");
 	auto f_table_entry = XOR_STR_A("TableEntry");
 	auto f_image_base = XOR_STR_A("ImageBase");
-	auto f_image_size = XOR_STR_A("ImageSize");
 	auto f_exception_dir = XOR_STR_A("ExceptionDirectory");
 	auto f_function_table = XOR_STR_A("FunctionTable");
 	auto f_exception_dir_size = XOR_STR_A("ExceptionDirectorySize");
@@ -155,15 +148,8 @@ DWORD ResolveDynamicOffsets()
 
 	REQUIRE_FIELD(kTeb, f_same_teb_flags.get(), tmp.TebSameTebFlags);
 	REQUIRE_FIELD(kTeb, f_last_error.get(), tmp.TebLastErrorValue);
-	OPTIONAL_FIELD(kTeb, f_peb.get(), tmp.TebProcessEnvironmentBlock);
 
-	OPTIONAL_FIELD(kPeb, f_os_major.get(), tmp.PebOsMajorVersion);
-	OPTIONAL_FIELD(kPeb, f_os_minor.get(), tmp.PebOsMinorVersion);
-	OPTIONAL_FIELD(kPeb, f_os_build.get(), tmp.PebOsBuildNumber);
 	OPTIONAL_FIELD(kPeb, f_ldr.get(), tmp.PebLdr);
-	OPTIONAL_FIELD(kPeb, f_process_heap.get(), tmp.PebProcessHeap);
-	OPTIONAL_FIELD(kPeb, f_loader_lock.get(), tmp.PebLoaderLock);
-	OPTIONAL_SIZE(kPeb, tmp.PebSize);
 
 	REQUIRE_FIELD(kKuser, f_cookie.get(), tmp.KuserCookie);
 
@@ -181,7 +167,6 @@ DWORD ResolveDynamicOffsets()
 	REQUIRE_FIELD_ALT(kInvEntry, f_exception_dir.get(), f_function_table.get(), tmp.InvertedEntryExceptionDirectory);
 	REQUIRE_FIELD_ALT(kInvEntry, f_exception_dir_size.get(), f_size_of_table.get(), tmp.InvertedEntryExceptionDirectorySize);
 	REQUIRE_SIZE(kInvEntry, tmp.InvertedEntrySize);
-	OPTIONAL_FIELD_ALT(kInvEntry, f_image_size.get(), f_size_of_image.get(), tmp.InvertedEntryImageSize);
 
 #undef REQUIRE_FIELD
 #undef REQUIRE_FIELD_ALT
@@ -253,13 +238,12 @@ DWORD ResolveDynamicOffsets()
 		}
 	}
 
-	tmp.Ready = 1;
 	g_DynamicOffsets = tmp;
 
 	g_DynamicOffsetsReady.store(1, std::memory_order_release);
-	LOG(1, "DynamicOffsets Ready: T0 = 0x%X | T1 = 0x%X | T2 = 0x%X | P0 = 0x%X | P1 = 0x%X | K0 = 0x%X | L0 = 0x%X | Size = %lu | I0 = 0x%X | I1 = 0x%X\n",
-		tmp.TebSameTebFlags, tmp.TebLastErrorValue, tmp.TebProcessEnvironmentBlock,
-		tmp.PebOsBuildNumber, tmp.PebLdr, tmp.KuserCookie, tmp.LdrEntryDllBase, tmp.LdrEntrySize,
+	LOG(1, "DynamicOffsets Ready: T0 = 0x%X | T1 = 0x%X | P0 = 0x%X | K0 = 0x%X | L0 = 0x%X | Size = %lu | I0 = 0x%X | I1 = 0x%X\n",
+		tmp.TebSameTebFlags, tmp.TebLastErrorValue, tmp.PebLdr,
+		tmp.KuserCookie, tmp.LdrEntryDllBase, tmp.LdrEntrySize,
 		tmp.InvertedTableCount, tmp.InvertedTableEntries);
 
 	return SYMBOL_ERR_SUCCESS;

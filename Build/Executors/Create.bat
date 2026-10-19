@@ -23,7 +23,6 @@ if defined ESC (
 for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\Build"
 set "OUT_ROOT=%ROOT%\Build\Release"
-set "DLL_DIR="
 set "DEPS_RELEASE=%OUT_ROOT%"
 set "RELEASE_CACHE=%OUT_ROOT%\Cache"
 set "CACHE_RUNTIME=%RELEASE_CACHE%\Runtime"
@@ -147,7 +146,6 @@ REM check that cannot be a byte scan, because an unmerged link still passes ever
 call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
 if errorlevel 1 goto :verify_error
 echo.
-:runtime_timestamp_ready
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :runtime_mutate_ready
 if not exist "%MUTATE_SCRIPT%" goto :runtime_mutate_missing
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MUTATE_SCRIPT%" "%RUNTIME_STOCK_DLL%"

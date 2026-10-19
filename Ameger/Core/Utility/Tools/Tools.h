@@ -11,7 +11,6 @@
 
 #define ALIGN_UP(X, A) ((((ULONG_PTR)(X)) + ((ULONG_PTR)(A) - 1)) & (~(((ULONG_PTR)(A)) - 1)))
 
-#define MAXPATH_IN_TCHAR	(MAX_PATH)
 
 __forceinline PE_IMAGE::OPTIONS BuildPeValidationOptions(DWORD flags)
 {
@@ -47,11 +46,8 @@ struct ERROR_INFO
 
 struct INJECTION_SOURCE
 {
-	std::wstring DllPath;
-
 	BYTE *	RawData		= nullptr;
 	DWORD	RawSize		= 0;
-	bool	FromMemory	= false;
 };
 
 inline std::wstring	g_RootPathW;
@@ -82,9 +78,7 @@ DWORD GetOSBuildVersion();
 
 bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layout_family);
 
-bool FileExistsW(const std::wstring & FilePath);
 
-DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD flags = 0);
 
 DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_machine, DWORD flags = 0);
 

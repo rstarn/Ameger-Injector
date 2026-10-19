@@ -20,7 +20,6 @@ if defined ESC (
 for %%I in ("%~dp0..\..\..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\Build"
 set "OUT_ROOT=%BUILD_DIR%\Release"
-set "DLL_DIR=%OUT_ROOT%\DLLs"
 set "RELEASE_CACHE=%OUT_ROOT%\Cache"
 set "WORK_DIR=%RELEASE_CACHE%\Protect"
 set "ASSET_TPL=%ROOT%\Assets\Template"

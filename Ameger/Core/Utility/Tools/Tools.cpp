@@ -154,65 +154,6 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 	return supported;
 }
 
-bool FileExistsW(const std::wstring & FilePath)
-{
-	const DWORD attributes = GetFileAttributesW(FilePath.c_str());
-	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
-}
-
-DWORD ValidateDllFile(const std::wstring & FilePath, DWORD target_machine, DWORD flags)
-{
-	std::ifstream file(FilePath, std::ios::binary | std::ios::ate);
-	if (!file.good())
-	{
-		LOG(1, "Can't Open File\n");
-
-		return FILE_ERR_CANT_OPEN_FILE;
-	}
-
-	const std::streamoff file_size = file.tellg();
-	if (file_size <= 0)
-	{
-		LOG(1, "Specified File Is Too Small\n");
-
-		return FILE_ERR_INVALID_FILE_SIZE;
-	}
-	if (static_cast<unsigned long long>(file_size) > PE_IMAGE::MAX_IMAGE_SIZE)
-	{
-		LOG(1, "Specified File Is Too Large\n");
-
-		return FILE_ERR_INVALID_FILE_SIZE;
-	}
-
-	try
-	{
-		std::vector<BYTE> data(static_cast<size_t>(file_size));
-		file.seekg(0, std::ios::beg);
-		file.read(reinterpret_cast<char *>(data.data()), file_size);
-		if (!file || file.gcount() != file_size)
-		{
-			LOG(1, "Failed To Read The Complete File\n");
-
-			return FILE_ERR_INVALID_FILE_SIZE;
-		}
-
-		PE_IMAGE::VIEW view;
-		const DWORD validation_result = PE_IMAGE::Validate(data.data(), data.size(), target_machine, BuildPeValidationOptions(flags), view);
-		if (validation_result != FILE_ERR_SUCCESS)
-		{
-			LOG(1, "PE Validation Failed = %08X\n", validation_result);
-		}
-
-		return validation_result;
-	}
-	catch (const std::bad_alloc &)
-	{
-		LOG(1, "Memory Allocation Failed\n");
-
-		return FILE_ERR_MEMORY_ALLOCATION_FAILED;
-	}
-}
-
 DWORD ValidateDllFileInMemory(const BYTE * RawData, DWORD RawSize, DWORD target_machine, DWORD flags)
 {
 	if (!RawData || RawSize < sizeof(IMAGE_DOS_HEADER))

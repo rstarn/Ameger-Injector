@@ -24,7 +24,6 @@ struct INJECTIONDATA_INTERNAL
 	DWORD			Flags;
 	DWORD			Timeout;
 	ULONG_PTR		hHandleValue;
-	HINSTANCE		hDllOut;
 	bool			GenerateErrorLog;
 	DWORD			TargetTid;
 	ULONG_PTR		hThreadHandleValue;

@@ -39,7 +39,6 @@ constexpr DWORD ScHash(const char * s)
 #define SC_NtOpenProcess					SC_NAME(NtOpenProcess)
 #define SC_NtOpenThread						SC_NAME(NtOpenThread)
 #define SC_NtDuplicateObject				SC_NAME(NtDuplicateObject)
-#define SC_NtClose							SC_NAME(NtClose)
 
 #define SC_NtQuerySystemInformation			SC_NAME(NtQuerySystemInformation)
 #define SC_NtQueryInformationProcess		SC_NAME(NtQueryInformationProcess)
@@ -48,9 +47,6 @@ constexpr DWORD ScHash(const char * s)
 #define SC_NtAllocateVirtualMemory			SC_NAME(NtAllocateVirtualMemory)
 #define SC_NtFreeVirtualMemory				SC_NAME(NtFreeVirtualMemory)
 #define SC_NtProtectVirtualMemory			SC_NAME(NtProtectVirtualMemory)
-#define SC_NtCreateSection					SC_NAME(NtCreateSection)
-#define SC_NtMapViewOfSection				SC_NAME(NtMapViewOfSection)
-#define SC_NtUnmapViewOfSection				SC_NAME(NtUnmapViewOfSection)
 #define SC_NtWriteVirtualMemory				SC_NAME(NtWriteVirtualMemory)
 #define SC_NtReadVirtualMemory				SC_NAME(NtReadVirtualMemory)
 
@@ -64,7 +60,6 @@ constexpr DWORD ScHash(const char * s)
 #pragma region stub layout
 
 #define SC_STUB_SIZE			16
-#define SC_STUB_WITH_RET		11
 #define SC_STUB_AREA_ALIGN		0x10
 
 
@@ -94,13 +89,11 @@ constexpr DWORD ScHash(const char * s)
 
 
 
-#define SC_REMOTE_STUB_COUNT		8
+#define SC_REMOTE_STUB_COUNT		4
 
 void *	SyscallStub(DWORD NameHash);
 
 DWORD	SyscallResolveAll();
-
-bool	SyscallReady();
 
 
 DWORD	SyscallServiceOfStub(const void * Stub);
@@ -286,17 +279,6 @@ __forceinline NTSTATUS ScNtDuplicateObject(HANDLE SourceProcessHandle, HANDLE So
 	}
 
 	return Stub(SourceProcessHandle, SourceHandle, TargetProcessHandle, TargetHandle, DesiredAccess, HandleAttributes, Options);
-}
-
-__forceinline NTSTATUS ScNtQuerySystemInformation(SYSTEM_INFORMATION_CLASS SystemInformationClass, void * SystemInformation, ULONG SystemInformationLength, ULONG * ReturnLength)
-{
-	auto Stub = ReCa<f_ScNtQuerySystemInformation>(SyscallStub(SC_NtQuerySystemInformation));
-	if (!Stub)
-	{
-		return STATUS_ENTRYPOINT_NOT_FOUND;
-	}
-
-	return Stub(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
 }
 
 __forceinline NTSTATUS ScNtQueryInformationProcess(HANDLE ProcessHandle, PROCESSINFOCLASS ProcessInformationClass, void * ProcessInformation, ULONG ProcessInformationLength, ULONG * ReturnLength)
