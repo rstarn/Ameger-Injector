@@ -59,11 +59,22 @@ namespace
 
 	bool ResumeThreadWithRetry(HANDLE hThread)
 	{
+		if (!hThread || hThread == INVALID_HANDLE_VALUE)
+		{
+			return false;
+		}
+
 		for (int attempt = 0; attempt < 4; ++attempt)
 		{
-			if (NT_SUCCESS(ScNtResumeThread(hThread, nullptr)))
+			const NTSTATUS status = ScNtResumeThread(hThread, nullptr);
+			if (NT_SUCCESS(status))
 			{
 				return true;
+			}
+
+			if (status == STATUS_INVALID_HANDLE || status == STATUS_ACCESS_DENIED)
+			{
+				return false;
 			}
 
 			if (attempt + 1 < 4)

@@ -863,6 +863,7 @@ DWORD SyscallResolveAll()
 			g_Resolution[ti].Prologue[0], g_Resolution[ti].Prologue[1], g_Resolution[ti].Prologue[2], g_Resolution[ti].Prologue[3],
 			addr, method);
 	}
+	bool verification_passed = true;
 	{
 		void * pool = g_SyscallPool.load(std::memory_order_acquire);
 		MEMORY_BASIC_INFORMATION mbi{};
@@ -873,6 +874,7 @@ DWORD SyscallResolveAll()
 			if (!is_rx && mbi.Protect == PAGE_EXECUTE_READWRITE)
 			{
 				rwx_count = 1;
+				verification_passed = false;
 			}
 			if (is_rx)
 			{
@@ -886,17 +888,26 @@ DWORD SyscallResolveAll()
 			else
 			{
 				SC_LOG_ERR("[Syscall] [x] Stub Pool Protection Mismatch = 0x%08X (RWX = %u)\n", mbi.Protect, rwx_count);
+				verification_passed = false;
 			}
 		}
 		else
 		{
 			SC_LOG_ERR("[Syscall] [x] Stub Pool Not Queryable; Protection Unverified\n");
+			verification_passed = false;
 		}
 	}
 
 	
 	
 	
+	if (!verification_passed)
+	{
+		SC_LOG_ERR("[Syscall] [x] Stub Pool W^X Verification Failed; Marking Layer Unavailable\n");
+		g_SyscallPoolReady.store(false, std::memory_order_release);
+		return 0;
+	}
+
 	g_SyscallPoolReady.store(true, std::memory_order_release);
 	if (Ready == kSyscallTableCount)
 	{
@@ -1007,18 +1018,17 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 
 		if (Status == static_cast<NTSTATUS>(0xC0000004))
 		{
-			
-			
-			
-			if (!Size)
+			ULONG Required = Size;
+			if (Required <= Scratch.size())
 			{
 				const SIZE_T Attempted = Scratch.size();
 				const ULONGLONG Grown = Attempted ? static_cast<ULONGLONG>(Attempted) * 2 : 0x800;
-				Size = Grown > 0x10000 ? 0x10000 : static_cast<ULONG>(Grown);
-				if (!Size)
-				{
-					return 0;
-				}
+				Required = Grown > 0x10000 ? 0x10000 : static_cast<ULONG>(Grown);
+			}
+			Size = Required;
+			if (!Size)
+			{
+				return 0;
 			}
 
 			continue;
