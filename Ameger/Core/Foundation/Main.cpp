@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Error.h"
 #include "Core/Utility/Tools/Tools.h"
@@ -7,15 +7,10 @@
 
 namespace
 {
-
-	
-	
-	
-	
-	
-	
-	
-	
+	// The runtime has exactly one owner at a time. The state below is the
+	// arbiter: it moves from uninitialized through initializing to ready,
+	// and a shutdown claims it through the shutting-down state so that two
+	// concurrent callers can never both run the teardown.
 	enum : LONG
 	{
 		RUNTIME_STATE_UNINITIALIZED = 0,
@@ -144,9 +139,6 @@ DWORD __stdcall InitializeRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStart", __FUNCDNAME__)
 
-	
-	
-	
 	LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
 	if (previous_state == RUNTIME_STATE_READY)
 	{
@@ -156,19 +148,30 @@ DWORD __stdcall InitializeRuntime()
 	{
 		return INJ_ERR_ALREADY_RUNNING;
 	}
+	if (previous_state == RUNTIME_STATE_SHUT_DOWN)
+	{
+		// A teardown is still in flight; initializing underneath it would race with
+		// the worker threads that teardown is about to join.
+		return INJ_ERR_ALREADY_RUNNING;
+	}
 
+	// Only a failed runtime may be taken over again. UNINITIALIZED was already
+	// claimed above, and every other state is either busy or owned by somebody else.
 	bool owns_state = (previous_state == RUNTIME_STATE_UNINITIALIZED);
 	if (!owns_state)
 	{
-		const LONG claimed = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, previous_state);
-		owns_state = (claimed == previous_state);
+		if (previous_state != RUNTIME_STATE_FAILED)
+		{
+			return INJ_ERR_ALREADY_RUNNING;
+		}
+
+		const LONG claimed = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_FAILED);
+		owns_state = (claimed == RUNTIME_STATE_FAILED);
 		previous_state = claimed;
 	}
 
 	if (!owns_state)
 	{
-		if (previous_state == RUNTIME_STATE_READY)
-			return INJ_ERR_SUCCESS;
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
@@ -255,37 +258,57 @@ DWORD __stdcall InitializeRuntime()
 
 	return INJ_ERR_SUCCESS;
 }
-
 DWORD __stdcall ShutdownRuntime()
 {
 #pragma EXPORT_FUNCTION("CoreStop", __FUNCDNAME__)
 
-	
-	
-	const LONG state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_UNINITIALIZED, RUNTIME_STATE_UNINITIALIZED);
-	if (state == RUNTIME_STATE_UNINITIALIZED || state == RUNTIME_STATE_SHUT_DOWN)
+	for (int attempt = 0; attempt < 4; ++attempt)
 	{
+		// Read the state without changing it.
+		const LONG state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_UNINITIALIZED, RUNTIME_STATE_UNINITIALIZED);
+		if (state == RUNTIME_STATE_UNINITIALIZED)
+		{
+			return INJ_ERR_SUCCESS;
+		}
+		if (state == RUNTIME_STATE_INITIALIZING || state == RUNTIME_STATE_SHUT_DOWN)
+		{
+			// Either an initialization is still running or another caller already
+			// claimed the teardown.
+			return INJ_ERR_ALREADY_RUNNING;
+		}
+
+		if (state == RUNTIME_STATE_READY && InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
+		{
+			// An injection is in flight; tearing the runtime down underneath it
+			// would pull the symbol and import state out from under it.
+			return INJ_ERR_ALREADY_RUNNING;
+		}
+
+		// Claim the teardown. SHUT_DOWN marks it as in progress and is only cleared
+		// by TeardownRuntime once it has finished, so exactly one caller ever runs
+		// the teardown.
+		const LONG claimed = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_SHUT_DOWN, state);
+		if (claimed != state)
+		{
+			// Lost the race; re-read and decide again.
+			continue;
+		}
+
+		try
+		{
+			TeardownRuntime();
+		}
+		catch (...)
+		{
+			InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
+
+			return INJ_ERR_INTERRUPT;
+		}
+
 		return INJ_ERR_SUCCESS;
 	}
 
-	if (state == RUNTIME_STATE_INITIALIZING)
-	{
-		return INJ_ERR_ALREADY_RUNNING;
-	}
-	if (state == RUNTIME_STATE_READY && InterlockedCompareExchange(&g_InjectionGate, 0, 0) != 0)
-		return INJ_ERR_ALREADY_RUNNING;
-
-	try
-	{
-		TeardownRuntime();
-	}
-	catch (...)
-	{
-		InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_FAILED);
-		return INJ_ERR_INTERRUPT;
-	}
-
-	return INJ_ERR_SUCCESS;
+	return INJ_ERR_ALREADY_RUNNING;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, void * pReserved)

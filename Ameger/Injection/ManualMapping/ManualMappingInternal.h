@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 
@@ -166,51 +166,33 @@ namespace MMAP_NATIVE
  		ALIGN MANUAL_MAPPING_FUNCTION_TABLE * FunctionTable = nullptr;
 
  		ALIGN DYNAMIC_NT_OFFSETS NtOffsets{};
-
-		
-		
-		
-		
+		// The offsets that were resolved from the live ntdll. The shell uses
+		// them instead of the compile-time guesses, so a loader layout change
+		// does not break the mapping.
 		ALIGN DWORD ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
-
-		
-		
-		
+		// Tracks whether the executable sections are currently execute-read or
+		// writable, so the stages do not have to re-apply the protection.
 		ALIGN DWORD64	PayloadSeed0	= 0;
 		ALIGN DWORD64	PayloadSeed1	= 0;
 		ALIGN DWORD		PayloadEncoded	= 0;
-
-		
-		
-		
+		// The keystream seed and whether the payload is masked at all.
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
-
-		
-		
-		
-		
-		
-		
-		
+		// The callback that was rejected and where it pointed, so the launcher
+		// can report why the TLS stage stopped.
 		ALIGN DWORD					CachedSizeOfImage	= 0;
 		ALIGN DWORD					CachedSizeOfHeaders	= 0;
 		ALIGN DWORD					CachedEntryPoint	= 0;
 		ALIGN DWORD					CachedSectionCount	= 0;
 		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
-
- 		
- 		
- 		
- 		
- 		
+		// The TLS directory and the fabricated loader nodes are handed from the
+		// TLS setup stage to the TLS callback stage through this block.
  		ALIGN void *	TlsDirectory	= nullptr;	
  		ALIGN void *	TlsDummyLdr		= nullptr;	
  		ALIGN void *	TlsDdagNode		= nullptr;	
-
- 		
- 		
+		// Everything the shell learned about its own execution is copied back
+		// into this block for the host to read.
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
 
  		

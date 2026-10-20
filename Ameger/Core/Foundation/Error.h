@@ -46,6 +46,10 @@
 
 #define INJ_ERR_NO_LAST_ERROR				0x00000050
 
+// The target's ntdll is mapped at a different base than the local one, so the
+// loader internals resolved against the local image cannot be used remotely.
+#define INJ_ERR_NTDLL_LAYOUT_MISMATCH		0x00000051
+
 #define INJ_MM_ERR_NO_DATA						0x00400001
 #define INJ_MM_ERR_HEAP_ALLOC					0x00400003
 #define INJ_MM_ERR_UPDATE_PAGE_PROTECTION		0x00400006

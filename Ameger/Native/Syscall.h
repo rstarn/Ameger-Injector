@@ -63,7 +63,25 @@ DWORD	SyscallResolveAll();
 
 DWORD	SyscallServiceOfStub(const void * Stub);
 
-DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count);
+// Address of the `syscall ; ret` gadget inside ntdll that every indirect stub jumps
+// through. The gadget lives in a legitimate system module, so no `0F 05` byte
+// pattern ever has to exist in memory this library owns.
+void *	SyscallGadgetAddress();
+
+// Builds `Count` syscall stubs for `NameHashes` into `Destination`.
+//
+// The stubs are emitted in the indirect form: each one jumps through the ntdll
+// gadget slot that is appended after the stub array, so the destination buffer
+// never contains a `syscall` instruction.
+//
+// `RemoteBase` is the address the buffer will occupy in the target process. The
+// RIP-relative jump displacements are computed against that address, not against
+// this process's copy of the buffer, so a stub that is staged remotely lands with
+// a correct displacement. Pass 0 when the buffer stays in this process.
+//
+// `DestinationSize` must cover the stub array *and* the trailing 8-byte gadget
+// slot (use `SC_REMOTE_STUB_COUNT * SC_STUB_SIZE + sizeof(void *)`).
+DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count, ULONG_PTR RemoteBase = 0);
 
 #pragma region typed wrappers
 
@@ -89,13 +107,6 @@ using f_ScNtDuplicateObject = NTSTATUS(NTAPI *)(
 	ACCESS_MASK	DesiredAccess,
 	ULONG		HandleAttributes,
 	ULONG		Options
-	);
-
-using f_ScNtQuerySystemInformation = NTSTATUS(NTAPI *)(
-	SYSTEM_INFORMATION_CLASS	SystemInformationClass,
-	void *						SystemInformation,
-	ULONG						SystemInformationLength,
-	ULONG *						ReturnLength
 	);
 
 using f_ScNtQueryInformationProcess = NTSTATUS(NTAPI *)(

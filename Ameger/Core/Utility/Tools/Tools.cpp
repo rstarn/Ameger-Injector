@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Utility/Tools/Tools.h"
 #include "../../../Injection.h"
@@ -95,12 +95,10 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 {
 
 	bool supported = true;
-
-	
-	
-	
-	
-	
+	// Builds newer than the newest known release are mapped onto the closest
+	// supported family. The loader layout only changes at a release boundary,
+	// so a newer build is expected to share the layout of the family it was
+	// released in.
 	if (build_number >= 26300)
 	{
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_26H2;
@@ -260,9 +258,9 @@ bool GetSymbolCacheRoot(std::wstring & out)
 
 namespace
 {
-	
-	
-	
+	// The scratch tree is walked iteratively rather than recursively so a
+	// pathological depth cannot overflow the stack. Anything deeper than the
+	// limit is left on disk and reported.
 	constexpr size_t kMaxScratchTreeDepth = 64;
 
 	struct ScratchTreeEntry
@@ -270,16 +268,14 @@ namespace
 		std::wstring Path;
 		size_t Depth;
 	};
-
-	
-	
-	
+	// Deleting the tree is a two phase operation: every file and directory is
+	// collected first, then the directories are removed bottom up. Doing it in
+	// one pass would require the whole tree to be held in memory.
 	bool DeleteScratchTree(const std::wstring & root)
 	{
 		bool complete = true;
-
-		
-		
+		// Directories are collected for the removal pass, subdirectories are
+		// queued for the walk.
 		std::vector<std::wstring> directories;
 		std::vector<ScratchTreeEntry> pending;
 
@@ -333,9 +329,9 @@ namespace
 
 					continue;
 				}
-
-				
-				
+				// A reparse point is removed as a link, never followed. Following
+				// one would delete whatever it points at, which is not ours to
+				// delete.
 				if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
 				{
 					if (!RemoveDirectoryW(child.c_str()))
@@ -389,11 +385,9 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 	{
 		return false;
 	}
-
-	
-	
-	
-	
+	// Only a directory this library created may be removed. The check is on
+	// the leaf name and on the parent directory, so an unrelated path that
+	// happens to look similar is left alone.
 	if (!IsOwnedScratchRoot(root))
 	{
 		LOG(1, "Refusing To Delete A Path That Is Not Owned Scratch Storage = %ls\n", root.c_str());
@@ -402,9 +396,8 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 	}
 
 	const bool tree_cleared = DeleteScratchTree(root);
-
-	
-	
+	// The root itself is removed after its contents. A root that is already
+	// gone is not an error.
 	if (RemoveDirectoryW(root.c_str()))
 	{
 		return tree_cleared;
@@ -417,10 +410,8 @@ bool DeleteSymbolCacheRoot(const std::wstring & root)
 
 bool IsNativeProcess(HANDLE hTargetProc, DWORD * error_code)
 {
-	
-	
-	
-	
+	// WOW64 targets are not supported by this build, so the target's machine
+	// type has to match the host's exactly.
 	using f_IsWow64Process2 = BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *);
 
 	static f_IsWow64Process2 pIsWow64Process2 = []() -> f_IsWow64Process2
@@ -508,13 +499,9 @@ namespace
 {
 	
 	constexpr size_t kRandomLeafLength = 10;
-
-	
-	
-	
-	
-	
-	
+	// The scratch leaf is a fixed length random name. Recognising it by shape
+	// rather than by a stored list is what makes it safe to delete later: a
+	// path that does not match the shape was never ours.
 	bool IsScratchLeafName(const std::wstring & leaf)
 	{
 		if (leaf == AMEGER_SCRATCH_LEAF_DIR)
@@ -611,9 +598,8 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 	{
 		return false;
 	}
-
-	
-	
+	// The directory this library runs from must never be deleted, even if a
+	// scratch leaf happens to sit underneath it.
 	std::wstring own_path;
 	{
 		wchar_t buffer[MAX_PATH * 2]{ 0 };
@@ -647,9 +633,8 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 			return false;
 		}
 	}
-
-	
-	
+	// A scratch root nested under the runtime's own directory is only
+	// accepted when every path segment below it is a scratch leaf.
 	if (!own_path.empty())
 	{
 		const std::wstring lower_own = Lowercase(own_path);
@@ -771,9 +756,7 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 
 	if (!have_record)
 	{
-		
-		
-		
+		// Nothing has been logged yet, so there is no detail to report.
 		return INJ_ERR_NO_LAST_ERROR;
 	}
 

@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "Injection.h"
@@ -168,10 +168,9 @@ DWORD InitErrorStruct(const INJECTIONDATA_INTERNAL & Data, int Native, DWORD Err
 
 static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 {
-	
-	
-	
-	
+	// This is the single entry point of the runtime: the launcher hands over
+	// the payload bytes, the target identifier and the option flags, and
+	// gets a status code back.
 	{
 		auto tag = XOR_STR_A("CoreExecute Called With pData = %p\n");
 		LOG(0, tag.get(), pData);
@@ -221,9 +220,8 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	ResetMapStats();
 	ResetThreadExecStats();
 	ResetExecTelemetry();
-
-	
-	
+	// The only supported source is an in-memory image, so the flag is set
+	// unconditionally rather than negotiated.
 	pData->Flags |= INJ_MM_MAP_FROM_MEMORY;
 
 	DWORD RetVal = INJ_ERR_SUCCESS;
@@ -403,11 +401,8 @@ DWORD __stdcall GetSymbolState()
 		{
 			return INJ_ERR_SYMBOL_INIT_NOT_DONE;
 		}
-
-		
-		
-		
-		
+		// The symbol worker has finished; join it so its thread handle is
+		// released before the result is read.
 		WaitAsyncWorkerThread(sym_ntdll_native_ret);
 
 		DWORD sym_ret = sym_ntdll_native_ret.Result;

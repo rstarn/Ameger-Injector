@@ -62,6 +62,7 @@ DWORD ResolveDynamicOffsets()
 	auto f_dll_base = XOR_STR_A("DllBase");
 	auto f_size_of_image = XOR_STR_A("SizeOfImage");
 	auto f_full_dll_name = XOR_STR_A("FullDllName");
+	auto f_base_dll_name = XOR_STR_A("BaseDllName");
 	auto f_ddag_node = XOR_STR_A("DdagNode");
 	auto f_state = XOR_STR_A("State");
 	auto f_count = XOR_STR_A("Count");
@@ -157,6 +158,7 @@ DWORD ResolveDynamicOffsets()
 	REQUIRE_SIZE(kLdrEntry, tmp.LdrEntrySize);
 	OPTIONAL_FIELD(kLdrEntry, f_size_of_image.get(), tmp.LdrEntrySizeOfImage);
 	OPTIONAL_FIELD(kLdrEntry, f_full_dll_name.get(), tmp.LdrEntryFullDllName);
+	OPTIONAL_FIELD(kLdrEntry, f_base_dll_name.get(), tmp.LdrEntryBaseDllName);
 	OPTIONAL_FIELD(kLdrEntry, f_ddag_node.get(), tmp.LdrEntryDdagNode);
 	OPTIONAL_FIELD(kDdag, f_state.get(), tmp.LdrDdagNodeState);
 	OPTIONAL_SIZE(kDdag, tmp.LdrDdagNodeSize);

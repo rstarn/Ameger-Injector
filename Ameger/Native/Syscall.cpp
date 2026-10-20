@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Native/Syscall.h"
 
@@ -136,15 +136,19 @@ namespace
 
 	constexpr DWORD kInvalidService = 0xFFFF0000;
 
-	constexpr BYTE kPrologueHealthy[4] = { 0x4C, 0x8B, 0xD1, 0xB8 };
+	// ntdll's syscall stubs have been emitted with two different "mov r10, rcx"
+	// encodings over the years. Both are accepted here so a build that ships the
+	// other form is still recognised as a healthy stub instead of being written
+	// off as a hooked one.
+	constexpr BYTE kPrologueHealthyA[4] = { 0x4C, 0x8B, 0xD1, 0xB8 };
+	constexpr BYTE kPrologueHealthyB[4] = { 0x49, 0x89, 0xCA, 0xB8 };
 
 	std::atomic<bool>	g_SyscallPoolReady{ false };
 	std::atomic<void *>	g_SyscallPool{ nullptr };
 
-	
-	
-	
-	
+	// The pool is built once and then treated as immutable. The lock only guards
+	// the build itself; readers go through the atomic pool pointer and the table
+	// entries, which are written before the pool is published.
 	INIT_ONCE	g_SyscallOnce = INIT_ONCE_STATIC_INIT;
 	SRWLOCK		g_SyscallLock{ };
 
@@ -182,6 +186,9 @@ namespace
 	
 	constexpr DWORD kStubProbeSize = 0x22;
 
+	// A healthy ntdll stub is "mov r10, rcx" (in one of two encodings), followed by
+	// "mov eax, <service number>", followed by "syscall" and "ret". The service
+	// number is therefore always the DWORD that follows the three prologue bytes.
 	bool StubLooksHealthy(const BYTE * Code, DWORD Available, DWORD & ServiceOut)
 	{
 		if (!Code || Available < kStubProbeSize)
@@ -189,24 +196,27 @@ namespace
 			return false;
 		}
 
-		
-		if (memcmp(Code, kPrologueHealthy, sizeof(kPrologueHealthy)) != 0)
+		const bool prologue_a = memcmp(Code, kPrologueHealthyA, sizeof(kPrologueHealthyA)) == 0;
+		const bool prologue_b = memcmp(Code, kPrologueHealthyB, sizeof(kPrologueHealthyB)) == 0;
+
+		if (!prologue_a && !prologue_b)
 		{
 			return false;
 		}
 
-		const DWORD Candidate = *ReCa<const DWORD *>(Code + sizeof(kPrologueHealthy));
+		const DWORD Candidate = *ReCa<const DWORD *>(Code + sizeof(kPrologueHealthyA));
 
-		
-		
+		// The service number is a 16-bit index; anything larger means the bytes are
+		// not a service load at all.
 		if (Candidate > 0xFFFF)
 		{
 			return false;
 		}
 
-		
-		
-		for (DWORD i = sizeof(kPrologueHealthy) + sizeof(DWORD); i + 1 < Available && i <= 0x20; ++i)
+		// The syscall instruction has to follow the service load within a short
+		// window; a ret or a jump before it means this is not a plain syscall stub
+		// (a hook trampoline, for instance).
+		for (DWORD i = sizeof(kPrologueHealthyA) + sizeof(DWORD); i + 1 < Available && i <= 0x20; ++i)
 		{
 			if (Code[i] == 0x0F && Code[i + 1] == 0x05)
 			{
@@ -300,12 +310,12 @@ namespace
 		{
 			return nullptr;
 		}
-
 		return Export;
 	}
 
-	
-
+	// "mov r10, rcx" in its two encodings. On x64 a syscall entry point copies the
+	// shadow-space copy of the first argument into R10 before issuing the
+	// instruction, and the service number is loaded into EAX.
 	constexpr BYTE kPrologueA[3] = { 0x4C, 0x8B, 0xD1 };
 	constexpr BYTE kPrologueB[3] = { 0x49, 0x89, 0xCA };
 
@@ -318,8 +328,8 @@ namespace
 
 	struct NOP_PATTERN { BYTE Length; BYTE Bytes[4]; };
 
-	
-	
+	// The stub tail is padded with a mix of multi-byte NOP encodings. The pattern is
+	// picked from the service number, so two stubs never share a tail signature.
 	constexpr NOP_PATTERN kNopPatterns[] =
 	{
 		{ 1, { 0x90, 0, 0, 0 } },
@@ -344,10 +354,9 @@ namespace
 			state = state * 1103515245u + 12345u;
 			const NOP_PATTERN & pattern = kNopPatterns[(state >> 16) % _countof(kNopPatterns)];
 
-			
-			
-			
-			
+			// The chosen pattern may not fit in the remaining space. Rather than
+			// emitting a partial instruction, the tail is padded with single-byte
+			// NOPs for the remainder.
 			SIZE_T length = pattern.Length;
 			if (length > Size - written)
 			{
@@ -400,13 +409,22 @@ namespace
 		return nullptr;
 	}
 
-	
-	
-	
-	void WriteStub(BYTE * Destination, DWORD Service, void * Gadget, const BYTE * GadgetSlot)
+	void * g_SyscallGadget = nullptr;
+
+	// Emits one syscall stub into `Destination`.
+	//
+	// `StubAddress` and `GadgetSlotAddress` are the absolute addresses the stub and
+	// the gadget slot will live at *in the process that executes the stub*. They are
+	// not necessarily this process's addresses: a stub that is staged into a remote
+	// process carries a RIP-relative displacement, and that displacement is only
+	// correct when it is computed against the remote layout.
+	//
+	// Returns false when the indirect displacement does not fit in a signed 32-bit
+	// field, in which case no stub is written.
+	bool WriteStub(BYTE * Destination, DWORD Service, void * Gadget, ULONG_PTR GadgetSlotAddress, ULONG_PTR StubAddress)
 	{
-		
-		
+		// Prologue diversity: "mov r10, rcx" is encoded two different ways depending
+		// on the service number, so a scanner cannot key on a single byte pattern.
 		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
 		const BYTE * prologue = (mix & 1u) ? kPrologueB : kPrologueA;
 		Destination[0] = prologue[0];
@@ -415,45 +433,52 @@ namespace
 		Destination[3] = kOpMovEaxImm32;
 		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
 
-		if (Gadget && GadgetSlot)
+		if (Gadget && GadgetSlotAddress)
 		{
-			
-			
-			
+			// Indirect form: "jmp qword ptr [rip+disp32]" into the slot that holds the
+			// ntdll gadget address. The displacement is relative to the end of the
+			// instruction, i.e. to SC_STUB_TAIL_INDIRECT.
+			const LONGLONG delta = static_cast<LONGLONG>(GadgetSlotAddress)
+				- static_cast<LONGLONG>(StubAddress + SC_STUB_TAIL_INDIRECT);
+
+			if (delta < INT32_MIN || delta > INT32_MAX)
+			{
+				return false;
+			}
+
 			Destination[SC_STUB_OFFSET_SYSCALL] = kOpJmpRip0;
 			Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpJmpRip1;
 
-			const LONG rel = static_cast<LONG>(GadgetSlot - (Destination + SC_STUB_TAIL_INDIRECT));
-			*ReCa<LONG *>(Destination + SC_STUB_OFFSET_SYSCALL + 2) = rel;
+			*ReCa<LONG *>(Destination + SC_STUB_OFFSET_SYSCALL + 2) = static_cast<LONG>(delta);
 
 			FillNoOpTail(Destination + SC_STUB_TAIL_INDIRECT, SC_STUB_SIZE - SC_STUB_TAIL_INDIRECT, Service);
-			return;
+			return true;
 		}
 
-		
+		// Direct form: "syscall ; ret" inline. Only used for the local pool when no
+		// gadget could be located; remote stubs always take the indirect path.
 		Destination[SC_STUB_OFFSET_SYSCALL] = kOpSyscall0;
 		Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpSyscall1;
 		Destination[SC_STUB_OFFSET_RET] = kOpRet;
 
 		FillNoOpTail(Destination + SC_STUB_TAIL_DIRECT, SC_STUB_SIZE - SC_STUB_TAIL_DIRECT, Service);
+		return true;
 	}
 
 bool BuildPool()
 {
-	void * gadget = FindSyscallGadget();
+	void * gadget = SyscallGadgetAddress();
 	SC_LOG_INFO("Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...", kSyscallTableCount, SC_STUB_SIZE);
-
-	
-	
-	
-	
-	
-	
+	// Every entry starts out unresolved. A failure half way through the build
+	// must not leave a stale pointer behind that a later caller could jump
+	// through.
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
 		g_SyscallTable[i].Stub = nullptr;
 	}
-	
+
+	// The pool is allocated writable and promoted to execute-read once the bytes
+	// are in place, so it is never simultaneously writable and executable.
 	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize + 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
@@ -461,13 +486,14 @@ bool BuildPool()
 		return false;
 	}
 
-	
-	
+	// One shared slot holds the ntdll gadget address. Every indirect stub jumps
+	// through it, so the `syscall` instruction itself only ever exists inside a
+	// legitimate system module.
 	BYTE * const GadgetSlot = Pool + kStubAreaSize;
 
-	
-	
-	
+	// The indirect displacement is a signed 32-bit value relative to the end of
+	// the jump instruction. The pool and its slot are always close enough for that,
+	// but the check keeps the fallback explicit rather than accidental.
 	const ptrdiff_t slot_delta = GadgetSlot - Pool;
 	bool use_indirect = false;
 	if (slot_delta > 0 && slot_delta < INT32_MAX)
@@ -490,9 +516,17 @@ bool BuildPool()
 			continue;
 		}
 
-		WriteStub(Pool + (i * SC_STUB_SIZE), Entry.Service, use_indirect ? gadget : nullptr,
-			use_indirect ? GadgetSlot : nullptr);
-		Entry.Stub = Pool + (i * SC_STUB_SIZE);
+		BYTE * slot = Pool + (i * SC_STUB_SIZE);
+
+		if (!WriteStub(slot, Entry.Service, use_indirect ? gadget : nullptr,
+			use_indirect ? reinterpret_cast<ULONG_PTR>(GadgetSlot) : 0,
+			reinterpret_cast<ULONG_PTR>(slot)))
+		{
+			SC_LOG_ERR("Syscall Stub Displacement Out Of Range For Entry %zu", i);
+			continue;
+		}
+
+		Entry.Stub = slot;
 
 		++Written;
 	}
@@ -527,6 +561,16 @@ bool BuildPool()
 	SC_LOG_OK("Stub Pool Built: %u/%zu Stubs At %p (RX)", Written, kSyscallTableCount, Pool);
 	return true;
 }
+}
+
+void * SyscallGadgetAddress()
+{
+	if (!g_SyscallGadget)
+	{
+		g_SyscallGadget = FindSyscallGadget();
+	}
+
+	return g_SyscallGadget;
 }
 
 DWORD SyscallResolveAll()
@@ -568,11 +612,12 @@ DWORD SyscallResolveAll()
 	}
 
 	SC_LOG_INFO("ntdll Base: %p | ImageSize: 0x%X | Exports: %u", Ntdll, ImageSize, Export->NumberOfNames);
-
-	
-	
-	
-	
+	// The harvest buffer keeps every healthy export that was seen, not just the
+	// ones this project cares about. The neighbour interpolation in pass two
+	// needs those as reference points.
+	// The harvest buffer keeps every healthy export that was seen, not just the
+	// ones this project cares about. The neighbour interpolation in pass two
+	// needs those as reference points.
 	std::vector<HARVESTED_ENTRY> HarvestedStorage;
 	try
 	{
@@ -640,8 +685,8 @@ DWORD SyscallResolveAll()
 				Entry->Service = kInvalidService;
 			}
 
-			
-			
+			// The export resolves to an address that cannot be inspected. If it is
+			// one of ours, the entry is parked for pass two to reconstruct.
 			if (Entry)
 			{
 				++oob;
@@ -706,8 +751,10 @@ DWORD SyscallResolveAll()
 	SC_LOG_INFO("Pass 1: Scanned %u Exports | Matched %u | Healthy %u | Rerouted %u | Unreadable %u",
 		Export->NumberOfNames, matched, healthy, rerouted, oob);
 
-	
-	
+	// Pass two: every entry that pass one could not read is retried. The service
+	// numbers of the healthy exports on either side of it are used to interpolate
+	// the missing one, which is how a hooked stub is recovered without executing
+	// anything.
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
 		if (g_SyscallTable[i].Service != kInvalidService)
@@ -791,14 +838,11 @@ DWORD SyscallResolveAll()
 				const DWORD span_rva		= Upper->Rva - Lower->Rva;
 				const int	span_service	= static_cast<int>(Upper->Service) - static_cast<int>(Lower->Service);
 
-				
-				
-				
-				
-				
-				
-				
-				
+				// The export table is ordered by address and the service numbers
+				// increase with it, so the distance between two healthy neighbours
+				// divided by their service-number gap gives the byte stride of one
+				// service slot. The missing entry's service number is then its
+				// offset from the lower neighbour in service slots.
 				if (span_rva > 0 && span_service > 0 && (span_rva % static_cast<DWORD>(span_service)) == 0)
 				{
 					const DWORD stride_bytes = span_rva / static_cast<DWORD>(span_service);
@@ -832,11 +876,8 @@ DWORD SyscallResolveAll()
 		SC_LOG_ERR("Failed To Build Syscall Stub Pool");
 		return 0;
 	}
-
-	
-	
-	
-	
+	// The resolution table is printed for diagnostics: it shows which service
+	// numbers were read straight out of ntdll and which were reconstructed.
 	DWORD Ready = 0;
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
@@ -846,7 +887,8 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	
+	// The resolution table is printed for diagnostics: it shows which service
+	// numbers were read straight out of ntdll and which were reconstructed.
 	SC_LOG_INFO("[Syscall] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
 	SC_LOG_INFO("[Syscall] [*] Export Census: %u Total Exports Harvested (%u Healthy)\n", Export->NumberOfNames, healthy);
 	SC_LOG_INFO("[Syscall] [=] System Service Resolution Table:\n");
@@ -879,9 +921,8 @@ DWORD SyscallResolveAll()
 			if (is_rx)
 			{
 				SC_LOG_OK("[Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n", pool, kStubAreaSize);
-				
-				
-				
+	// The pool is only armed once its live protection has been confirmed to be
+	// execute-read.
 				SC_LOG_OK("[Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n",
 					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
 			}
@@ -898,9 +939,9 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	
-	
-	
+	// The pool is only armed once its live protection has been confirmed to be
+	// execute-read. An RWX pool, or a pool whose protection cannot be queried at
+	// all, leaves the whole syscall layer unavailable rather than being used.
 	if (!verification_passed)
 	{
 		SC_LOG_ERR("[Syscall] [x] Stub Pool W^X Verification Failed; Marking Layer Unavailable\n");
@@ -995,18 +1036,22 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	{
 		return 0;
 	}
-
-	
-	
-	
+	// ProcessImageFileNameWin32 returns a UNICODE_STRING at the head of the
+	// buffer with the name following it, so the buffer has to be large enough
+	// for both. The size is grown on demand when the kernel reports a
+	// mismatch.
 	ULONG Size = 0x400;
 	std::vector<BYTE> Scratch;
 
+	// ProcessImageFileNameWin32 returns a UNICODE_STRING at the head of the buffer
+	// with the name following it, so the buffer has to be large enough for both.
+	// The size is grown on demand when the kernel reports a mismatch.
 	for (int attempt = 0; attempt < 4; ++attempt)
 	{
 		try
 		{
-			
+			// The kernel writes a UNICODE_STRING followed by the name, so a couple
+			// of extra wide characters of head room are always reserved.
 			Scratch.assign(Size + sizeof(wchar_t) * 2, 0);
 		}
 		catch (...)
@@ -1060,14 +1105,16 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	return 0;
 }
 
-DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count)
+DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count, ULONG_PTR RemoteBase)
 {
-	if (!Destination || !NameHashes || !Count || DestinationSize < static_cast<SIZE_T>(Count) * SC_STUB_SIZE)
+	const SIZE_T stub_bytes = static_cast<SIZE_T>(Count) * SC_STUB_SIZE;
+
+	// The trailing gadget slot is part of the contract: the stubs jump through it.
+	if (!Destination || !NameHashes || !Count || DestinationSize < stub_bytes + sizeof(void *))
 	{
 		return 0;
 	}
 
-	
 	if (!g_SyscallPoolReady.load(std::memory_order_acquire))
 	{
 		if (!SyscallResolveAll())
@@ -1079,14 +1126,23 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 	EnsureLock();
 	SyscallLockGuard Guard;
 
-	
-	
+	// Remote stubs never carry an inline `syscall`; they jump through the ntdll
+	// `syscall ; ret` gadget so the target process holds no `0F 05` pattern of its
+	// own. The gadget lives in ntdll, which is mapped at the same base in the target
+	// (verified before the staging buffer is built), so the same address is valid
+	// in both processes.
+	void * gadget = SyscallGadgetAddress();
+	if (!gadget)
+	{
+		SC_LOG_ERR("Remote Syscall Stubs Require The ntdll Syscall Gadget");
+		return 0;
+	}
+
+	const ULONG_PTR gadget_slot_local = reinterpret_cast<ULONG_PTR>(Destination) + stub_bytes;
+	const ULONG_PTR gadget_slot_address = RemoteBase ? (RemoteBase + stub_bytes) : gadget_slot_local;
+
 	DWORD Written = 0;
 
-	
-	
-	
-	
 	for (DWORD i = 0; i < Count; ++i)
 	{
 		if (NameHashes[i] == 0)
@@ -1103,7 +1159,18 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 
 			BYTE * slot = Destination + (i * SC_STUB_SIZE);
 
-			WriteStub(slot, g_SyscallTable[j].Service, nullptr, nullptr);
+			// The RIP-relative displacement has to be computed against the address
+			// the stub will occupy in the process that runs it, not against this
+			// process's copy of the staging buffer.
+			const ULONG_PTR stub_address = RemoteBase
+				? (RemoteBase + static_cast<ULONG_PTR>(i) * SC_STUB_SIZE)
+				: reinterpret_cast<ULONG_PTR>(slot);
+
+			if (!WriteStub(slot, g_SyscallTable[j].Service, gadget, gadget_slot_address, stub_address))
+			{
+				SC_LOG_ERR("Remote Syscall Stub %u Displacement Out Of Range", i);
+				break;
+			}
 
 			if (SyscallServiceOfStub(slot) == 0)
 			{
@@ -1113,6 +1180,11 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 			++Written;
 			break;
 		}
+	}
+
+	if (Written)
+	{
+		*reinterpret_cast<void **>(gadget_slot_local) = gadget;
 	}
 
 	return Written;

@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include <intrin.h>
 #include <TlHelp32.h>
@@ -41,10 +41,11 @@ namespace
 		}
 	}
 
-	
-	
+	// Chunk size used when zeroing a remote region before it is released.
 	constexpr SIZE_T kScrubChunk = 0x2000;
 
+	// How many threads may be probed per candidate before the scan gives up on
+	// finding a running one and falls back to a waiting thread.
 	constexpr DWORD kMaxHandleProbes = 4;
 
 	constexpr DWORD kStartupProbeMs = 2000;
@@ -632,43 +633,35 @@ static void ProbeFpCaps(DWORD & OutFlags, DWORD & OutMask, const BYTE * pStatePa
 	int regs[4]{};
 	__cpuid(regs, 1);
 
-	if ((regs[2] & (1 << 27)) == 0)
+	// CPUID.1:ECX bit 26 reports XSAVE support, bit 27 reports that the OS has
+	// actually enabled the XSAVE state management (OSXSAVE).
+	const bool cpu_has_xsave = (regs[2] & (1 << 26)) != 0;
+	const bool os_has_xsave = (regs[2] & (1 << 27)) != 0;
+
+	if (!cpu_has_xsave || !os_has_xsave)
+	{
+		// No XSAVE: the stub falls back to FXSAVE64. That form cannot carry AVX
+		// state, but it also never writes the YMM registers, so they survive.
+		return;
+	}
+
+	// CPUID.0Dh.0:EAX reports which XCR0 bits this CPU is willing to have enabled.
+	__cpuidex(regs, 0xD, 0);
+	const DWORD supported = static_cast<DWORD>(regs[0]) & SR_FP_XCR0_MASK;
+	if (!supported)
 	{
 		return;
 	}
 
-	const DWORD xcr0 = static_cast<DWORD>(_xgetbv(0));
-
-	DWORD mask = 0;
-	if (xcr0 & 0x1)
-	{
-		mask |= 0x1;
-	}
-	if (xcr0 & 0x2)
-	{
-		mask |= 0x2;
-	}
-	if (xcr0 & 0x4)
-	{
-		mask |= 0x4;
-	}
-
-	if ((mask & 0x3) != 0x3)
-	{
-		return;
-	}
-
-	const DWORD needed = (mask & 0x4) ? (576 + 256) : 576;
+	// Size the XSAVE image for the widest mask the victim could legally have: the
+	// legacy region plus the YMM region when the CPU supports AVX. AVX-512 is never
+	// requested, and XRSTOR with a mask that omits a component leaves that
+	// component's registers untouched, so the victim's ZMM state passes through.
+	const DWORD needed = (supported & SR_FP_XCR0_AVX)
+		? (SR_FP_XSAVE_LEGACY_BYTES + SR_FP_AVX_BYTES)
+		: SR_FP_XSAVE_LEGACY_BYTES;
 
 	if (needed > SR_FP_AREA_SIZE)
-	{
-		return;
-	}
-
-	__cpuidex(regs, 0xD, 0);
-	const DWORD reported = static_cast<DWORD>(regs[1]);
-
-	if (!reported || reported < needed)
 	{
 		return;
 	}
@@ -676,11 +669,16 @@ static void ProbeFpCaps(DWORD & OutFlags, DWORD & OutMask, const BYTE * pStatePa
 	const ULONG_PTR area = reinterpret_cast<ULONG_PTR>(pStatePage) + SR_FP_AREA;
 	if (area & (64 - 1))
 	{
+		// XSAVE64 requires a 64-byte aligned destination.
 		return;
 	}
 
 	OutFlags = SR_FP_FLAG_XSAVE;
-	OutMask = mask;
+
+	// This is only the capability ceiling. The stub recomputes the effective mask
+	// from the victim's own XCR0 (XGETBV) and stores it back here before XSAVE, so
+	// the value never leaks a mask the victim cannot legally honour.
+	OutMask = supported;
 }
 
 static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, const std::vector<DWORD> & excluded, ERROR_DATA & error_data)
@@ -761,15 +759,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 							}
 							else if (have_state && st == waiting_state && IsSafeWaitReason(wr))
 							{
-								
-								
-								
-								
-								
-								
-								
-								
-								
+								// A thread parked on a wait reason that cannot be re-armed by an
+								// unrelated wakeup is a good donor: it will not race the hijack,
+								// and it is not the loader's own housekeeping thread.
+								//
+								// A running thread is preferred, but a parked one is still
+								// usable: the stub is scheduled onto it either way, and the
+								// context restore path can roll it back.
 								
 								sponsor_usable = true;
 								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d; Accepting Sponsor\n",
@@ -1046,10 +1042,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
 		"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
-
-	
-	
-	
+	// The stub is copied out of this image and re-laid out in the target: the
+	// executable part goes on an execute-read page and the state block goes on a
+	// read-write page, so the target never holds a writable page of code.
 	const ULONG_PTR shellcode_begin = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin);
 	const ULONG_PTR shellcode_end = reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd);
 
@@ -1064,15 +1059,14 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	const size_t state_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - shellcode_begin);
 	const size_t return_target_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadReturnTarget) - shellcode_begin);
 	const size_t state_area_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadState));
-
-	
-	
-	
-	
-	
+	// The state block has to sit behind the code, and it has to be large enough
+	// for the FP image plus the slot that holds the thread's return address.
+	// The state block has to sit behind the code, and it has to be large enough
+	// for the FP image plus the slot that holds the thread's return address.
+	// Anything else means the assembler layout drifted away from what this
+	// code expects, and the stub must not be staged.
 	if (return_target_offset < state_offset ||
 		return_target_offset + sizeof(ULONG_PTR) > shellcode_size ||
-		state_offset + sizeof(SR_REMOTE_DATA) > shellcode_size ||
 		state_area_size < SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -1098,11 +1092,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	std::vector<BYTE> shellcode(shellcode_size);
 	memcpy(shellcode.data(), RemoteThreadHijackBegin, shellcode_size);
-
-	
-	
-	
-	
+	// The staged image is split across two pages: code on the first, the state
+	// block on the second.
+	// The staged image is split across two pages: code on the first, the state
+	// block on the second.
 	std::vector<BYTE> staged(kWxCodePage + data_size, 0x00);
 
 	void * pMem = ScAllocateMemory(hTargetProc, kWxAllocSize, PAGE_READWRITE);
@@ -1126,11 +1119,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	memcpy(staged.data() + kWxCodePage, shellcode.data() + state_offset, data_size);
 
 	{
-		
-		
-		
-		
-		
+		// The RIP-relative displacements in the stub were computed for the layout
+		// of this image. The state block moves to a different page in the target,
+		// so every displacement that points at it is shifted by the same amount.
+		// The RIP-relative displacements in the stub were computed for the layout
+		// of this image. The state block moves to a different page in the target,
+		// so every displacement that points at it is shifted by the same amount.
 		const int pad32 = static_cast<int>(pad);
 		const BYTE lea_prefix[3] = { 0x48, 0x8D, 0x1D };
 		const BYTE jmp_prefix[2] = { 0xFF, 0x25 };
@@ -1272,7 +1266,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	StoreThreadExecStat(g_ThreadExecStats.FpMode, remote_data->FpFlags);
 	StoreThreadExecStat(g_ThreadExecStats.FpMask, remote_data->FpMask);
 	LOG(1, "[ThreadHijack] [*] Context Captured: Target RIP = 0x%llX | RSP = 0x%llX\n", (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
-	LOG(1, "[ThreadHijack] [*] Floating-Point State: Mode = %s | Mask = 0x%X | Area = %u Bytes\n", remote_data->FpFlags ? "XSAVE" : "FXSAVE", remote_data->FpMask, SR_FP_AREA_SIZE);
+	LOG(1, "[ThreadHijack] [*] Floating-Point State: Mode = %s | Ceiling Mask = 0x%X | Area = %u Bytes\n", remote_data->FpFlags ? "XSAVE" : "FXSAVE", remote_data->FpMask, SR_FP_AREA_SIZE);
 	LOG(1, "[ThreadHijack] [*] Staging: VA = %p | RX = 0x1000 | RW = 0x%llX\n", pMem, (unsigned long long)(kWxAllocSize - kWxCodePage));
 	LOG(1, "[ThreadHijack] [*] RIP Redirection: 0x%llX -> %p\n", (unsigned long long)OldRIP, pRemoteFunc);
 	LOG(2, "Remote Thread Shell Prepared (W^X Split: Code RX 0x1000, State RW)\n");
@@ -1360,16 +1354,14 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	data.LastWin32Error = ERROR_SUCCESS;
 
 	LOG(2, "Entering Wait State\n");
-
-	
-	
-	
-	
+	// The thread can be interrupted at any point. When that happens the context
+	// is rolled back if the thread is still inside a recoverable frame, and the
+	// remote allocation is reclaimed or deferred otherwise.
 	constexpr int kForceRestorePolls = 24;
-	
-	
-	
-	
+
+	// The stub pushes sixteen registers plus the flags, so the stack pointer sits
+	// at most a couple of hundred bytes below the victim's RSP while it runs.
+	// A thread whose RSP is still inside that window can be rewound safely.
 	constexpr ULONG_PTR kStubFrameWindow = 0x100;
 
 	auto ForceRestoreContext = [&](bool & restored, bool & resumed) -> void
@@ -1445,8 +1437,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	};
 
 	
-	
-	
+	// The remote allocation may only be released once the hijacked thread is
+	// provably no longer executing from it.
 	
 	auto StubRegionFreeToRelease = [&]() -> bool
 	{
@@ -1468,7 +1460,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	};
 
 	
-	
+	// Decide what happens to the trampoline: reclaim it now, or hand it to the
+	// deferred reaper that will try again later.
 	
 	auto ReclaimOrRetainTrampoline = [&](bool context_restored, SR_REMOTE_STATE State) -> void
 	{
@@ -1514,8 +1507,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	DWORD poll_wait_ms = 1;
 
-	
-	
+	// A stub that never got scheduled is a common failure: the donor thread was
+	// parked on something the OS would not wake for us. A single posted message
+	// nudges it once before the whole attempt is abandoned.
 	
 	
 	bool nudge_sent = false;
@@ -1541,6 +1535,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				StoreThreadExecStat(g_ThreadExecStats.RoutineRet, data.Ret);
 				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.RoutineCyclesDelta), static_cast<LONG64>(data.RoutineCyclesDelta));
 				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackScrubbedBytes), static_cast<LONG64>(data.StackScrubbedBytes));
+				{
+					// The stub rewrote SR_FP_MASK with the mask it actually used, which
+					// is the intersection of the CPU ceiling and the victim's own XCR0.
+					// Report that effective mask rather than the staged ceiling.
+					StoreThreadExecStat(g_ThreadExecStats.FpMask, data.FpMask);
+				}
 				{
 					ULONG_PTR saved_rsp = 0;
 					if (ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(pState) + SR_SAVED_RSP, &saved_rsp, sizeof(saved_rsp), nullptr) && saved_rsp)

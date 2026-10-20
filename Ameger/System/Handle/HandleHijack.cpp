@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 #include <unordered_set>
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "System/Handle/HandleHijack.h"
@@ -15,11 +15,9 @@ namespace
 	constexpr size_t kMaxEnumBytes = 64ULL * 1024ULL * 1024ULL;
 
 	constexpr size_t kMaxForeignOwners = 16;
-
-	
-	
-	
-	
+	// The scan is bounded: at most this many foreign processes are opened and
+	// at most this many duplication attempts are made, so a machine with a
+	// very large handle table cannot turn the scan into an unbounded loop.
 	constexpr size_t kMaxDupAttempts = 4096;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
@@ -90,9 +88,9 @@ namespace
 
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
-		
-		
-		
+		// The handle enumeration and the duplication both go through the syscall
+		// layer, so the scan does not show up in the import table of this
+		// module.
 		Out.NtQuerySystemInformation = ReCa<f_NtQuerySystemInformationLocal>(SyscallStub(SC_NtQuerySystemInformation));
 		Out.NtDuplicateObject = ReCa<f_NtDuplicateObjectLocal>(SyscallStub(SC_NtDuplicateObject));
 
@@ -329,19 +327,16 @@ namespace
 
 		return false;
 	}
-
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
+	// A donor handle is only accepted once it has been proven to work.
+	// The probe has three strengths, selected by an environment variable so
+	// the behaviour can be varied per machine without a rebuild:
+	//
+	//   Reserve  - allocate and release a page in the target (default)
+	//   Protect  - re-apply the current protection to the first committed page
+	//   None     - trust the handle without probing it
+	//
+	// The probe is deliberately cheap. It proves that the handle carries the
+	// rights the injection needs without leaving anything behind.
 	enum class VM_PROBE_POLICY
 	{
 		Reserve = 0,
@@ -409,9 +404,9 @@ namespace
 
 			case VM_PROBE_POLICY::Protect:
 			{
-				
-				
-				
+				// Re-applying the current protection is a no-op for the page, but it
+				// is a real test: a handle without PROCESS_VM_OPERATION cannot
+				// call it at all.
 				MEMORY_BASIC_INFORMATION info{ 0 };
 				if (!VirtualQueryEx(Candidate, nullptr, &info, sizeof(info)) || info.State != MEM_COMMIT)
 				{
@@ -433,9 +428,8 @@ namespace
 				break;
 			}
 		}
-
-		
-		
+			// A page that can be reserved and released proves the handle carries
+			// the virtual memory rights the mapping needs.
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
 		if (!Page)
 		{
@@ -494,9 +488,8 @@ namespace
 		{
 			return nullptr;
 		}
-		
-		
-		
+		// The owner handles are cached so a process that owns many candidate
+		// handles is only opened once.
 		try
 		{
 			Owners.reserve(Owners.size() + 1);
@@ -629,9 +622,8 @@ namespace
 
 					if (!known && foreign_opened >= kMaxForeignOwners)
 					{
-						
-						
-						
+						// Opening an unbounded number of foreign processes would be
+						// noisy and slow. The budget bounds how many are tried.
 						++BudgetSkipped;
 						return false;
 					}
@@ -768,11 +760,9 @@ namespace
 				{
 					continue;
 				}
-
-				
-				
-				
-				
+				// Only a handle whose granted access already covers what the
+				// injection needs is worth duplicating. Checking the mask up
+				// front avoids a duplication attempt per candidate.
 				if ((Entry.GrantedAccess & DesiredAccess) != DesiredAccess)
 				{
 					continue;
@@ -989,17 +979,9 @@ namespace
 
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
+	// A full round trip: allocate a page in the target, write a known byte,
+	// read it back, and release the page. A handle that survives that is
+	// usable for the injection, and the target is left exactly as it was.
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
 		if (!Page)
 		{

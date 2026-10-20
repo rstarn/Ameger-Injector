@@ -15,6 +15,7 @@ struct DYNAMIC_NT_OFFSETS
 	DWORD LdrEntrySize = 0;
 	DWORD LdrEntrySizeOfImage = 0;
 	DWORD LdrEntryFullDllName = 0;
+	DWORD LdrEntryBaseDllName = 0;
 	DWORD LdrEntryDdagNode = 0;
 	DWORD LdrDdagNodeState = 0;
 	DWORD LdrDdagNodeSize = 0;

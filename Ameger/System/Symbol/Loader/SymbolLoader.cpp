@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 #include "Core/Utility/Binary/DynamicAPI.h"
 
 #include "Core/Foundation/Error.h"
@@ -55,10 +55,9 @@ namespace
 
 			return E_FAIL;
 		}
-
-		
-		
-		
+		// The download is restricted to the Microsoft symbol server. A URL
+		// that points anywhere else is refused outright, so a poisoned symbol
+		// path cannot be used to pull an arbitrary file.
 		const std::wstring allowed_prefix = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
 		if (url.size() < allowed_prefix.size() || url.compare(0, allowed_prefix.size(), allowed_prefix) != 0)
 		{
@@ -100,11 +99,9 @@ namespace
 
 			return E_FAIL;
 		}
-
-		
-		
-		
-		
+		// The TLS state of the connection is inspected before anything is
+		// written. A session that is not secure, or whose certificate chain
+		// did not validate, is abandoned.
 		DWORD security_flags = 0;
 		DWORD security_flags_size = sizeof(security_flags);
 		if (!api.InternetQueryOptionW(request, INTERNET_OPTION_SECURITY_FLAGS, &security_flags, &security_flags_size) ||
@@ -193,15 +190,8 @@ SYMBOL_LOADER::~SYMBOL_LOADER()
 
 bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 {
-	
-	
-	
-	
-	
-	
-	
-	
-	
+	// A cached PDB is only reused when its GUID and age match the module it
+	// is supposed to describe. Anything else is downloaded again.
 	LOG(2, XOR_STR_A("SymbolLoader::VerifyExistingPdb Called\n").get());
 
 	std::ifstream f(m_szPdbPath.c_str(), std::ios::binary | std::ios::ate);
@@ -449,14 +439,8 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	auto * stream_data = ReCa<GUID_StreamData *>(pdb_raw + stream_data_offset);
 
 	int guid_eq = memcmp(&stream_data->guid, &guid, sizeof(GUID));
-
-	
-	
-	
-	
-	
-	
-	
+	// The age is read from the debug information stream when the PDB
+	// carries one; otherwise it falls back to the value from the header.
 	bool dbi_age_available = false;
 	DWORD dbi_age = 0;
 	const auto dbi_stream = streams.find(3);
@@ -477,10 +461,7 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 	const bool age_eq = !dbi_age_available || dbi_age == age;
 
 	delete[] pdb_raw;
-
-	
-	
-	
+	// The raw image is released before the verdict is computed.
 	auto ret = (guid_eq == 0 && age_eq);
 
 	if (guid_eq != 0)
@@ -623,11 +604,9 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	const DWORD codeview_offset = pDebugDir->AddressOfRawData;
 	const DWORD codeview_size	= pDebugDir->SizeOfData;
-
-	
-	
-	
-	
+	// The CodeView record holds the PDB path. Its fixed part is checked
+	// before it is used, and the path itself is only accepted when it
+	// looks like a PDB reference.
 	constexpr DWORD kCodeViewFixedSize = static_cast<DWORD>(offsetof(PdbInformation, PdbFileName));
 	const bool codeview_record_ok =
 		codeview_size >= kCodeViewFixedSize &&
@@ -805,11 +784,9 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 		if (!m_bStartDownload)
 		{
-			
-			
-			
-			
-			
+			// The download needs the caller to have granted access to the
+			// symbol cache first. The grant is given a short window to land
+			// before the attempt is abandoned.
 			constexpr DWORD kGrantWaitMs = 1500;
 			const ULONGLONG grant_deadline = GetTickCount64() + kGrantWaitMs;
 
@@ -989,11 +966,8 @@ void SYMBOL_LOADER::PurgePdb()
 	{
 		return;
 	}
-
-	
-	
-	
-	
+	// The downloaded file is removed again. The cache is only meant to
+	// hold the symbol file for as long as it takes to resolve it.
 	Cleanup();
 
 	if (!DeleteFileW(m_szPdbPath.c_str()))

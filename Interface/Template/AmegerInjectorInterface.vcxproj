@@ -68,8 +68,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\Source\Launcher.h" />
     <ClInclude Include="..\Source\PCH.h" />
-    <ClCompile Include="..\Source\Main.cpp" />
+    <ClCompile Include="..\Source\Process.cpp" />
+      <ClCompile Include="..\Source\Main.cpp" />
+    <ClCompile Include="..\Source\Stealth.cpp" />
+    <ClCompile Include="..\Source\Ui.cpp" />
     <ClCompile Include="..\Source\PCH.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PCH.h</PrecompiledHeaderFile>

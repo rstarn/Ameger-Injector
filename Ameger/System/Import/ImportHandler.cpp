@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "System/Import/ImportHandler.h"
@@ -23,21 +23,46 @@ namespace
 	};
 }
 
-#define S_FUNC(f) NATIVE::f, encrypted_symbol_name(KC_STR_LAYERED(#f))
+#define S_FUNC(f) NATIVE::f, encrypted_symbol_name(KC_STR_LAYERED(#f)), stats
 
-#define S_FUNC_AS(f, sym) NATIVE::f, encrypted_symbol_name(KC_STR_LAYERED(sym))
+#define S_FUNC_AS(f, sym) NATIVE::f, encrypted_symbol_name(KC_STR_LAYERED(sym)), stats
 
 static STRING_STATS g_string_stats{};
 
+// The stats block is written by the import worker thread and read by whichever
+// thread asks for it, so it is published one LONG at a time. A plain struct copy
+// would tear, and the counters would then report a mixture of two different runs.
+static void StoreStringStats(const STRING_STATS & Src)
+{
+	static_assert(sizeof(STRING_STATS) % sizeof(LONG) == 0, "STRING_STATS must be a whole number of LONGs");
+
+	volatile LONG * dst = ReCa<volatile LONG *>(&g_string_stats);
+	const LONG * src = ReCa<const LONG *>(&Src);
+	for (size_t i = 0; i < sizeof(STRING_STATS) / sizeof(LONG); ++i)
+	{
+		InterlockedExchange(&dst[i], src[i]);
+	}
+}
+
+static void LoadStringStats(STRING_STATS & Dst)
+{
+	volatile LONG * src = ReCa<volatile LONG *>(&g_string_stats);
+	LONG * dst = ReCa<LONG *>(&Dst);
+	for (size_t i = 0; i < sizeof(STRING_STATS) / sizeof(LONG); ++i)
+	{
+		dst[i] = InterlockedCompareExchange(&src[i], 0, 0);
+	}
+}
+
 template <typename T>
-DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, bool CountDeclaration = true)
+DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, STRING_STATS & stats, bool CountDeclaration = true)
 {
 	if (CountDeclaration)
 	{
 
-		++g_string_stats.SymbolsDeclared;
+		++stats.SymbolsDeclared;
 
-		++g_string_stats.HookNamesBuilt;
+		++stats.HookNamesBuilt;
 	}
 
 	DWORD RVA = 0;
@@ -52,7 +77,11 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, bool Co
 
 	Function = ReCa<T>(ReCa<UINT_PTR>(g_hNTDLL) + RVA);
 
-	++g_string_stats.SymbolsResolved;
+	++stats.SymbolsResolved;
+
+	// Publish the running totals so a concurrent reader sees progress rather than
+	// a frozen snapshot.
+	StoreStringStats(stats);
 
 	return INJ_ERR_SUCCESS;
 }
@@ -60,10 +89,10 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, bool Co
 DWORD ResolveImports(ERROR_DATA & error_data)
 {
 	LOG(1, "ResolveImports Called\n");
-
-	
-	
-	g_string_stats = STRING_STATS{};
+	// The counters live in a local block and are published atomically, so a reader
+	// on another thread never observes a half-written snapshot.
+	STRING_STATS stats{ };
+	StoreStringStats(stats);
 
 	DWORD err = ERROR_SUCCESS;
 	if (!GetOSVersion(&err))
@@ -97,9 +126,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	}
 
 	LOG(1, "Native OS Module Loaded At %p\n", g_hNTDLL);
-	
-	
-	
+	// The resolved build number selects which loader layout the shell may
+	// assume. The launcher prints it because a mismatch here is the usual
+	// cause of a mapping failure on an unexpected Windows build.
 	LOG(1, "OSVersion = %lu\n", GetOSVersion());
 	LOG(1, "OSBuildVersion = %lu\n", GetOSBuildVersion());
 
@@ -113,11 +142,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 		return INJ_ERR_KERNEL32_MISSING;
 	}
-
-	
-	
-	
-	
+	// kernel32 is only checked for presence. The loader internals that the
+	// remote shell needs all live in ntdll, and the shell calls them
+	// directly rather than going through kernel32.
 	(void)hK32;
 
 	LOG(1, "Waiting For Native Symbol Parser To Finish Initialization\n");
@@ -249,8 +276,8 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	const unsigned kc_test = kc_strings::KcStringsSelfTest();
 	LOG(1, "KcStrings Self-Test = %08X\n", kc_test);
-	g_string_stats.TiersTotal = kc_strings::KcTierCount;
-	g_string_stats.TiersPassed = kc_strings::KcTiersPassed(kc_test);
+	stats.TiersTotal = kc_strings::KcTierCount;
+	stats.TiersPassed = kc_strings::KcTiersPassed(kc_test);
 	if (kc_test != 0)
 	{
 		INIT_ERROR_DATA(error_data, kc_test);
@@ -260,7 +287,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	}
 
-	g_string_stats.Reported = 1;
+	stats.Reported = 1;
+
+	StoreStringStats(stats);
 
 	return INJ_ERR_SUCCESS;
 }
@@ -271,6 +300,6 @@ void __stdcall GetLastStringStats(STRING_STATS * Out)
 
 	if (Out)
 	{
-		*Out = g_string_stats;
+		LoadStringStats(*Out);
 	}
 }

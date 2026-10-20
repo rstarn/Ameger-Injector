@@ -1,4 +1,4 @@
-#include "Core/Utility/Header/PrecompiledHeader.h"
+﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "System/Information/ProcessInformation.h"
 #include "Native/Syscall.h"
@@ -53,10 +53,8 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 			return false;
 		}
 	}
-
-	
-	
-	
+	// The process list is cached, so asking for the same process twice does
+	// not re-run the enumeration.
 	if (hTargetProc == m_hCurrentProcess && m_ProcessLocated)
 	{
 		m_CurrentThreadIndex = 0;
@@ -142,9 +140,9 @@ bool ProcessInformation::NextThread()
 
 bool ProcessInformation::RefreshInformation()
 {
-	
-	
-	
+	// The snapshot is rebuilt from scratch. The kernel does not guarantee
+	// that the buffer it filled is still the size it needs, so the size
+	// is grown until the query succeeds.
 	m_ProcessLocated = false;
 
 	if (m_pFirstProcess)
@@ -203,9 +201,7 @@ bool ProcessInformation::RefreshInformation()
 
 		return false;
 	}
-
-	
-	
+	// The walk starts at the first entry of the snapshot.
 	m_CurrentThreadIndex	= 0;
 	m_pCurrentProcess		= m_pFirstProcess;
 	m_pCurrentThread		= &m_pCurrentProcess->Threads[0];
@@ -229,9 +225,9 @@ bool ProcessInformation::GetThreadState(KTHREAD_STATE & state, KWAIT_REASON & re
 	{
 		return false;
 	}
-
-	
-	
+	// The thread state and the wait reason come straight out of the
+	// snapshot; they are only meaningful for the thread the cursor points
+	// at.
 	state	= static_cast<KTHREAD_STATE>(m_pCurrentThread->ThreadState);
 	reason	= static_cast<KWAIT_REASON>(m_pCurrentThread->WaitReason);
 

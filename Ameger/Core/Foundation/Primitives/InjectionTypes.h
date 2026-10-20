@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 
@@ -90,23 +90,17 @@ struct MAP_STATS
 	DWORD ExportSize = 0;
 	DWORD Verified = 0;
 	DWORD ResidualMask = 0;
-	
-	
-	
-	
-	
-	
-	
-	
+	// Header cloaking telemetry: how much of the header was structurally
+	// present, how much was actually wiped, the protection it was left with,
+	// and how many PE signatures were still found afterwards.
 	DWORD HeaderStructuralSize = 0;
 	DWORD HeaderWipeSize = 0;
 	DWORD HeaderWipeProtect = 0;
 	DWORD HeaderScanBytes = 0;
 	DWORD HeaderScanMZ = 0;
 	DWORD HeaderScanPE = 0;
-	
-	
-	
+	// An allocation that had to be kept alive because something in the target
+	// still points into the mapped image.
 	ULONG_PTR RetainedAllocBase = 0;
 	DWORD RetainedAllocSize = 0;
 };

