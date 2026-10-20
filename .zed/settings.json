@@ -1,0 +1,17 @@
+{
+  "file_types": {
+    "Assembly": ["inc", "asm", "s", "S"]
+  },
+  "languages": {
+    "Assembly": {
+      "language_servers": ["asm-lsp"]
+    }
+  },
+  "lsp": {
+    "asm-lsp": {
+      "binary": {
+        "path": "C:\\Users\\Master\\.cargo\\bin\\asm-lsp.exe"
+      }
+    }
+  }
+}

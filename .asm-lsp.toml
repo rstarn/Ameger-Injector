@@ -1,0 +1,19 @@
+[default_config]
+assembler = "masm"
+instruction_set = "x86/x86-64"
+
+[default_config.opts]
+compiler = "powershell.exe"
+compile_flags_txt = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "D:\\Ameger\\AssemblyCheck.ps1",
+    "/Zs",
+    "/nologo",
+    "/ID:\\Ameger\\Injector\\Ameger\\Execution\\Stub",
+    "/DAMEGER_STUB_SEED=0"
+]
+diagnostics = true
+default_diagnostics = true
