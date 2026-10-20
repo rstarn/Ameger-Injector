@@ -256,6 +256,53 @@ bool GetSymbolCacheRoot(std::wstring & out)
 	return true;
 }
 
+bool BuildStablePdbCachePath(const std::wstring & pdb_name, const std::wstring & guid_and_age, std::wstring & out)
+{
+	out.clear();
+
+	if (pdb_name.empty() || guid_and_age.empty())
+	{
+		return false;
+	}
+
+	if (pdb_name.find_first_of(L"\\/:") != std::wstring::npos || pdb_name.find(L"..") != std::wstring::npos ||
+		guid_and_age.find_first_of(L"\\/:") != std::wstring::npos || guid_and_age.find(L"..") != std::wstring::npos)
+	{
+		return false;
+	}
+
+	wchar_t local_app_data[MAX_PATH]{ 0 };
+	DWORD length = GetEnvironmentVariableW(XOR_STR_W(L"LOCALAPPDATA").get(), local_app_data, MAX_PATH);
+	if (!length || length >= MAX_PATH)
+	{
+
+		length = GetTempPathW(MAX_PATH, local_app_data);
+		if (!length || length >= MAX_PATH)
+		{
+			return false;
+		}
+	}
+
+	std::wstring root(local_app_data, length);
+	if (root.back() != L'\\')
+	{
+		root += L'\\';
+	}
+
+	// The layout follows the standard symbol-store shape so the file looks
+	// like an ordinary debugging cache instead of a tool-specific artifact.
+	root += XOR_STR_W(L"Symbols\\").get();
+	root += pdb_name;
+	root += L'\\';
+	root += guid_and_age;
+	root += L'\\';
+	root += pdb_name;
+
+	out = root;
+
+	return true;
+}
+
 namespace
 {
 	// The scratch tree is walked iteratively rather than recursively so a

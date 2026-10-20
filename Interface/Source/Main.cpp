@@ -4265,7 +4265,14 @@ DWORD BuildFlags(const WizardConfig & config)
         
         HANDLE targetHandle = nullptr;
         {
-            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            // The debug-port probes in the verification suite need the broader
+            // query right; the limited right stays as the fallback for targets
+            // that refuse PROCESS_QUERY_INFORMATION.
+            targetHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            if (!targetHandle)
+            {
+                targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            }
         }
         FileHandleGuard targetHandleGuard(targetHandle);
         if (!targetHandle)

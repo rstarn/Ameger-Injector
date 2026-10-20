@@ -40,6 +40,20 @@ namespace
 		return out;
 	}
 
+	void EnsureDirectoryTree(const std::wstring & dir)
+	{
+		for (size_t pos = dir.find(L'\\', dir.find(L':')); pos != std::wstring::npos; pos = dir.find(L'\\', pos + 1))
+		{
+			const std::wstring part = dir.substr(0, pos);
+			if (part.size() > 3)
+			{
+				CreateDirectoryW(part.c_str(), nullptr);
+			}
+		}
+
+		CreateDirectoryW(dir.c_str(), nullptr);
+	}
+
 	HRESULT DownloadUrlToFile(const std::wstring & url, const std::wstring & dest,
 		const std::atomic<bool> & interrupt, Manager & mgr)
 	{
@@ -723,6 +737,13 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	LOG(1, XOR_STR_A("SymbolLoader: PDB Path = %ls\n").get(), m_szPdbPath.c_str());
 
+	// The GUID and age identify the exact PDB build and also key the
+	// machine-level symbol store, so they are resolved once here instead of
+	// only when a download turns out to be necessary.
+	const std::wstring guid_filtered = FormatPdbGuid(ReCa<const BYTE *>(&pdbInformation->Guid));
+
+	LOG(1, XOR_STR_A("SymbolLoader: PDB GUID Resolved (%zu Chars, Value Redacted)\n").get(), guid_filtered.size());
+
 	m_Filesize = 0;
 	WIN32_FILE_ATTRIBUTE_DATA file_attr_data{ 0 };
 	if (GetFileAttributesExW(m_szPdbPath.c_str(), GetFileExInfoStandard, &file_attr_data))
@@ -750,8 +771,33 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 	if (Redownload)
 	{
+		// A copy left behind by an earlier run avoids the network round trip:
+		// the machine-level store is keyed by GUID and age, so it is only
+		// reused when it actually describes this module build.
+		std::wstring store_path;
+		if (guid_filtered.size() == 32 &&
+			BuildStablePdbCachePath(PdbFileName, guid_filtered + std::to_wstring(pdbInformation->Age), store_path) &&
+			GetFileAttributesW(store_path.c_str()) != INVALID_FILE_ATTRIBUTES &&
+			CopyFileW(store_path.c_str(), m_szPdbPath.c_str(), FALSE))
+		{
+			if (VerifyExistingPdb(pdbInformation->Guid, pdbInformation->Age))
+			{
+				LOG(1, XOR_STR_A("SymbolLoader: Reused Machine Symbol Store Copy\n").get());
 
-		const std::wstring guid_filtered = FormatPdbGuid(ReCa<const BYTE *>(&pdbInformation->Guid));
+				m_Filesize = 0;
+				Redownload = false;
+			}
+			else
+			{
+				DeleteFileW(m_szPdbPath.c_str());
+
+				LOG(1, XOR_STR_A("SymbolLoader: Machine Symbol Store Copy Failed Verification\n").get());
+			}
+		}
+	}
+
+	if (Redownload)
+	{
 
 		if (guid_filtered.size() != 32)
 		{
@@ -763,8 +809,6 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 
 			return SYMBOL_ERR_CANT_CONVERT_PDB_GUID;
 		}
-
-		LOG(1, XOR_STR_A("SymbolLoader: PDB GUID Resolved (%zu Chars, Value Redacted)\n").get(), guid_filtered.size());
 
 		std::wstring url = KC_WSTR_LAYERED(L"https://msdl.microsoft.com/download/symbols/").c_str();
 		url += PdbFileName;
@@ -900,6 +944,23 @@ DWORD SYMBOL_LOADER::Initialize(const std::wstring & szModulePath, const std::ws
 			LOG(1, XOR_STR_A("SymbolLoader: Downloaded PDB Failed Verification\n").get());
 
 			return SYMBOL_ERR_DOWNLOAD_FAILED;
+		}
+
+		{
+			// The freshly fetched file is also placed in the machine-level
+			// store so later runs on this machine do not repeat the download.
+			std::wstring store_path;
+			if (guid_filtered.size() == 32 &&
+				BuildStablePdbCachePath(PdbFileName, guid_filtered + std::to_wstring(pdbInformation->Age), store_path))
+			{
+				EnsureDirectoryTree(store_path);
+
+				const BOOL stored = CopyFileW(m_szPdbPath.c_str(), store_path.c_str(), TRUE);
+				if (!stored && GetLastError() != ERROR_FILE_EXISTS)
+				{
+					LOG(2, XOR_STR_A("SymbolLoader: Machine Symbol Store Copy Failed = 0x%08X\n").get(), GetLastError());
+				}
+			}
 		}
 
 		m_Filesize = 0;

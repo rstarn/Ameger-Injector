@@ -709,6 +709,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		const DWORD TargetPidForSponsor = ScGetProcessId(hTargetProc);
 		const DWORD SponsorTidActual = ScGetThreadId(Sponsor);
 		bool sponsor_usable = false;
+		bool sponsor_still_running = false;
+		bool sponsor_still_usable = false;
 		HANDLE Duplicated = nullptr;
 		if (TargetPidForSponsor && SponsorTidActual && ScGetProcessIdOfThread(Sponsor) == TargetPidForSponsor
 			&& SponsorTidActual == SponsorTid && SponsorTidActual != GetCurrentThreadId()
@@ -798,7 +800,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			if (sponsor_usable)
 			{
-				bool sponsor_still_running = false;
 				const KTHREAD_STATE rerun_running = static_cast<KTHREAD_STATE>(g_DynamicOffsets.ThreadStateRunning);
 				if (processInformation.RefreshInformation() && processInformation.SetProcess(hTargetProc))
 				{
@@ -809,18 +810,30 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 						{
 							KTHREAD_STATE rst{};
 							KWAIT_REASON rwr{};
-							if (processInformation.GetThreadState(rst, rwr) && rst == rerun_running)
+							if (processInformation.GetThreadState(rst, rwr))
 							{
-								sponsor_still_running = true;
+								if (rst == rerun_running)
+								{
+									sponsor_still_running = true;
+									sponsor_still_usable = true;
+								}
+								else if (rst == KTHREAD_STATE::Waiting && IsSafeWaitReason(rwr))
+								{
+									// A sponsor accepted because it was parked on a safe wait
+									// is parked here as well; the confirmation has to accept
+									// that same state, otherwise the safe-wait acceptance
+									// above is undone by a running-only re-check.
+									sponsor_still_usable = true;
+								}
 							}
 							break;
 						}
 					} while (processInformation.NextThread());
 					processInformation.SetCurrentThreadHandle(nullptr, 0);
 				}
-				if (!sponsor_still_running)
+				if (!sponsor_still_usable)
 				{
-					LOG(2, "Sponsor TID %06X Left Running; Falling Back To Search\n", SponsorTidActual);
+					LOG(2, "Sponsor TID %06X Not Usable On Re-Check; Falling Back To Search\n", SponsorTidActual);
 					sponsor_usable = false;
 				}
 			}
@@ -828,7 +841,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			if (sponsor_usable)
 			{
 				ThreadID = SponsorTidActual;
-				selected_was_running = true;
+				selected_was_running = sponsor_still_running;
 				hThread.reset(Duplicated);
 				Duplicated = nullptr;
 

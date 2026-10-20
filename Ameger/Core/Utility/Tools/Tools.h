@@ -82,6 +82,8 @@ bool GetOwnModulePathW(std::wstring & out);
 
 bool GetSymbolCacheRoot(std::wstring & out);
 
+bool BuildStablePdbCachePath(const std::wstring & pdb_name, const std::wstring & guid_and_age, std::wstring & out);
+
 bool DeleteSymbolCacheRoot(const std::wstring & root);
 
 bool IsOwnedScratchRoot(const std::wstring & root);
