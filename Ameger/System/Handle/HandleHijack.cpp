@@ -397,8 +397,6 @@ namespace
 		{
 			case VM_PROBE_POLICY::None:
 			{
-				
-				
 				return true;
 			}
 

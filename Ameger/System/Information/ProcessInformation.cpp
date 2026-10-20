@@ -7,8 +7,6 @@
 
 ProcessInformation::ProcessInformation()
 {
-	
-	
 	m_pNtQueryInformationProcess	= ReCa<f_NtQueryInformationProcess>	(SyscallStub(SC_NtQueryInformationProcess));
 	m_pNtQuerySystemInformation		= ReCa<f_NtQuerySystemInformation>	(SyscallStub(SC_NtQuerySystemInformation));
 	m_pNtQueryInformationThread		= ReCa<f_NtQueryInformationThread>	(SyscallStub(SC_NtQueryInformationThread));
@@ -90,7 +88,6 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 			break;
 		}
 
-		
 		if (ReCa<BYTE *>(pNext) + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer_end)
 		{
 			break;
@@ -124,7 +121,6 @@ bool ProcessInformation::NextThread()
 		return false;
 	}
 
-	
 	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
 	BYTE * next_thread_ptr = ReCa<BYTE *>(&m_pCurrentProcess->Threads[m_CurrentThreadIndex + 1]);
 	if (next_thread_ptr + sizeof(SYSTEM_THREAD_INFORMATION) > buffer_end)

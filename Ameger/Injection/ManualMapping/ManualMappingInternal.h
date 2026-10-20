@@ -195,7 +195,6 @@ namespace MMAP_NATIVE
 		// into this block for the host to read.
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
 
- 		
  		ALIGN DWORD SectionProtCount = 0;
   	};
 }

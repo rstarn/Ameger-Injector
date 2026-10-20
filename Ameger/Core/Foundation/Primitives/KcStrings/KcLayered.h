@@ -14,7 +14,8 @@ namespace detail
 	constexpr std::uint32_t kXteaDelta = 0x9E3779B9u;
 	constexpr std::size_t kXteaRounds = 32;
 
-	constexpr void XteaBlockEncrypt(std::uint8_t * block, const std::uint32_t tk[4]) noexcept
+	template <bool kEncrypt>
+	constexpr void XteaBlockCrypt(std::uint8_t * block, const std::uint32_t tk[4]) noexcept
 	{
 		std::uint32_t v0 = static_cast<std::uint32_t>(block[0])
 			| (static_cast<std::uint32_t>(block[1]) << 8)
@@ -25,12 +26,21 @@ namespace detail
 			| (static_cast<std::uint32_t>(block[6]) << 16)
 			| (static_cast<std::uint32_t>(block[7]) << 24);
 
-		std::uint32_t sum = 0;
+		std::uint32_t sum = kEncrypt ? 0u : kXteaDelta * static_cast<std::uint32_t>(kXteaRounds);
 		for (std::size_t r = 0; r < kXteaRounds; ++r)
 		{
-			v0 += (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + tk[sum & 3]);
-			sum += kXteaDelta;
-			v1 += (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + tk[(sum >> 11) & 3]);
+			if constexpr (kEncrypt)
+			{
+				v0 += (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + tk[sum & 3]);
+				sum += kXteaDelta;
+				v1 += (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + tk[(sum >> 11) & 3]);
+			}
+			else
+			{
+				v1 -= (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + tk[(sum >> 11) & 3]);
+				sum -= kXteaDelta;
+				v0 -= (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + tk[sum & 3]);
+			}
 		}
 
 		block[0] = static_cast<std::uint8_t>(v0);
@@ -43,33 +53,14 @@ namespace detail
 		block[7] = static_cast<std::uint8_t>(v1 >> 24);
 	}
 
+	constexpr void XteaBlockEncrypt(std::uint8_t * block, const std::uint32_t tk[4]) noexcept
+	{
+		XteaBlockCrypt<true>(block, tk);
+	}
+
 	constexpr void XteaBlockDecrypt(std::uint8_t * block, const std::uint32_t tk[4]) noexcept
 	{
-		std::uint32_t v0 = static_cast<std::uint32_t>(block[0])
-			| (static_cast<std::uint32_t>(block[1]) << 8)
-			| (static_cast<std::uint32_t>(block[2]) << 16)
-			| (static_cast<std::uint32_t>(block[3]) << 24);
-		std::uint32_t v1 = static_cast<std::uint32_t>(block[4])
-			| (static_cast<std::uint32_t>(block[5]) << 8)
-			| (static_cast<std::uint32_t>(block[6]) << 16)
-			| (static_cast<std::uint32_t>(block[7]) << 24);
-
-		std::uint32_t sum = kXteaDelta * static_cast<std::uint32_t>(kXteaRounds);
-		for (std::size_t r = 0; r < kXteaRounds; ++r)
-		{
-			v1 -= (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + tk[(sum >> 11) & 3]);
-			sum -= kXteaDelta;
-			v0 -= (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + tk[sum & 3]);
-		}
-
-		block[0] = static_cast<std::uint8_t>(v0);
-		block[1] = static_cast<std::uint8_t>(v0 >> 8);
-		block[2] = static_cast<std::uint8_t>(v0 >> 16);
-		block[3] = static_cast<std::uint8_t>(v0 >> 24);
-		block[4] = static_cast<std::uint8_t>(v1);
-		block[5] = static_cast<std::uint8_t>(v1 >> 8);
-		block[6] = static_cast<std::uint8_t>(v1 >> 16);
-		block[7] = static_cast<std::uint8_t>(v1 >> 24);
+		XteaBlockCrypt<false>(block, tk);
 	}
 
 	constexpr std::uint8_t LayerXorKey(std::uint32_t keyA, std::size_t idx) noexcept

@@ -40,9 +40,6 @@ void AppendStripped(const wchar_t * text)
         clean.reserve(len);
         for (size_t i = 0; text[i]; ++i)
         {
-            
-            
-            
             if (text[i] == L'\x1b' && text[i + 1] == L'[')
             {
                 size_t j = i + 2;
@@ -51,7 +48,6 @@ void AppendStripped(const wchar_t * text)
                 {
                     ++j;
                 }
-                
                 while (text[j] && text[j] >= L' ' && text[j] <= L'/')
                 {
                     ++j;
@@ -64,7 +60,6 @@ void AppendStripped(const wchar_t * text)
             }
             else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
             {
-                
                 if (text[i + 2])
                 {
                     i += 2;
@@ -98,8 +93,6 @@ std::wstring Snapshot()
         return copy;
     }
 
-    
-    
 std::wstring ResultLogPath()
     {
         wchar_t module[MAX_PATH]{};
@@ -127,23 +120,6 @@ void ResetResultLog()
         if (!path.empty())
         {
             DeleteFileW(path.c_str());
-        }
-
-        wchar_t module[MAX_PATH]{};
-        const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
-        if (length && length < MAX_PATH)
-        {
-            std::wstring legacy(module, length);
-            const size_t slash = legacy.find_last_of(L"\\/");
-            if (slash != std::wstring::npos)
-            {
-                legacy.resize(slash + 1);
-                legacy += L"Result.log";
-                if (_wcsicmp(legacy.c_str(), path.c_str()) != 0)
-                {
-                    DeleteFileW(legacy.c_str());
-                }
-            }
         }
     }
 
@@ -193,80 +169,7 @@ void Clear()
 
 
 
-int UiWprintf(const wchar_t * format, ...)
-{
-    if (!format)
-    {
-        return -1;
-    }
-    va_list args;
-    va_start(args, format);
-    int needed = _vscwprintf(format, args);
-    va_end(args);
-    if (needed <= 0)
-    {
-        return needed;
-    }
-    std::vector<wchar_t> buffer(static_cast<size_t>(needed) + 1);
-    va_start(args, format);
-    const int written = vswprintf_s(buffer.data(), buffer.size(), format, args);
-    va_end(args);
-    if (written > 0)
-    {
-        ameger_ui_log::AppendStripped(buffer.data());
-        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
-        DWORD mode = 0;
-        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
-        {
-            va_start(args, format);
-            const int forwarded = vwprintf_s(format, args);
-            va_end(args);
-            return forwarded;
-        }
-    }
-    return written;
-}
 
-int UiFwprintf(FILE * stream, const wchar_t * format, ...)
-{
-    if (!format)
-    {
-        return -1;
-    }
-    va_list args;
-    va_start(args, format);
-    int needed = _vscwprintf(format, args);
-    va_end(args);
-    if (needed <= 0)
-    {
-        return needed;
-    }
-    std::vector<wchar_t> buffer(static_cast<size_t>(needed) + 1);
-    va_start(args, format);
-    const int written = vswprintf_s(buffer.data(), buffer.size(), format, args);
-    va_end(args);
-    if (written > 0)
-    {
-        ameger_ui_log::AppendStripped(buffer.data());
-        const HANDLE handle = (stream == stderr)
-            ? GetStdHandle(STD_ERROR_HANDLE)
-            : GetStdHandle(STD_OUTPUT_HANDLE);
-        DWORD mode = 0;
-        if (handle && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode))
-        {
-            va_start(args, format);
-            const int forwarded = vfwprintf_s(stream, format, args);
-            va_end(args);
-            return forwarded;
-        }
-    }
-    return written;
-}
-
-    
-    
-    
-    
 int UiLog(int indent, const wchar_t * format, ...)
 {
     if (!format)

@@ -55,9 +55,6 @@ namespace stealth
         return false;
     }
 
-    
-    
-    
     enum StealthVerifyStep
     {
         kStealthAcquireHandle,
@@ -95,8 +92,6 @@ namespace stealth
         }
     }
 
-    
-    
     void StealthVerifyWxExecution(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers,
         bool * wx_violated, int & step, int total)
@@ -319,11 +314,6 @@ namespace stealth
                 LOG(0, L"      %ls... And %d More RWX Region(s)%s\n", kYellow, wx_rwx - wx_rwx_listed, kReset);
             }
 
-            
-            
-            
-            
-            
             {
                 unsigned long rx_image = 0, rx_private = 0, rx_mapped = 0;
                 unsigned long long rx_private_bytes = 0;
@@ -545,8 +535,6 @@ namespace stealth
         }
     }
 
-    
-    
     size_t StealthRvaToFileOffset(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         StealthVerifierBuffers & buffers, DWORD rva)
     {
@@ -581,8 +569,6 @@ namespace stealth
         return static_cast<size_t>(-1);
     }
 
-    
-    
     size_t RvaToFileOffset(const IMAGE_SECTION_HEADER * sections, WORD section_count, size_t image_size, DWORD rva)
     {
         for (WORD s = 0; s < section_count; ++s)
@@ -602,8 +588,6 @@ namespace stealth
         return static_cast<size_t>(-1);
     }
 
-    
-    
     void StealthAcquireHandle(const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, DWORD flags, int & step, int total)
     {
@@ -622,8 +606,6 @@ namespace stealth
         }
     }
 
-    
-    
     void StealthResolveImports(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -635,7 +617,6 @@ namespace stealth
         int import_count = 0;
         ULONG import_total_thunks = 0;
         const char * import_problem = nullptr;
-        
         char import_trunc_buf[64]{};
 
         if (have_local_nt)
@@ -769,7 +750,6 @@ namespace stealth
         }
     }
 
-    
     void StealthResolveDelayImports(bool have_local_nt, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -790,17 +770,12 @@ namespace stealth
         }
     }
 
-    
     void StealthInitSecurityCookie(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Initialize Security Cookie...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
-        
-        
-        
-        
         bool cookie_reported = false;
         if (process && have_local_nt)
         {
@@ -820,10 +795,6 @@ namespace stealth
                     if (ReadProcessMemory(process, ReCa<LPCVOID>(cookie_va), &cookie_value, sizeof(cookie_value), &cv)
                         && cv == sizeof(cookie_value))
                     {
-                        
-                        
-                        
-                        
                         const unsigned long long image_base_ull =
                             static_cast<unsigned long long>(ReCa<ULONG_PTR>(hRemoteBase));
                         const bool cookie_is_image_base = cookie_value == image_base_ull;
@@ -839,9 +810,6 @@ namespace stealth
             }
         }
 
-        
-        
-        
         if (!cookie_reported && process && have_local_nt)
         {
             auto nt = ReCa<IMAGE_NT_HEADERS *>(buffers.local_headers.data());
@@ -881,16 +849,9 @@ namespace stealth
         }
     }
 
-    
-    
     bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out);
     inline LONG NTAPI VehProbeDummyHandler(EXCEPTION_POINTERS *);
     inline bool ProbeLocalVehPathRoundTrip();
-    
-    
-    
-    
-    
     struct DebugPortSurvey
     {
         bool handleValid = false;
@@ -902,22 +863,15 @@ namespace stealth
         LONG flagsStatus = 0;
     };
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out);
-    
-    
-    
     bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out);
     bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
 
-    
     void StealthEnableExceptions(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         DWORD flags, StealthVerifierBuffers & buffers, int & step, int total)
     {
         const auto exceptions_active = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Enable Exceptions (SEH)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        
-        
-        
         {
             VehFirstChanceSurvey veh{};
             if (!process)
@@ -950,8 +904,6 @@ namespace stealth
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
-        
-        
         {
             const bool local_veh_ok = ProbeLocalVehPathRoundTrip();
             LOG(0, L"  %ls[%ls]%ls Local VEH Path Self-Test.... %ls%s%ls (Add+Remove Round-Trip, Net Entries 0)\n",
@@ -990,15 +942,11 @@ namespace stealth
             }
             else
             {
-                
-                
                 LOG(0, L"  %ls[*]%ls No Exception Directory Present In The Payload (Nothing To Verify).\n", kDim, kReset);
             }
         }
 
         LOG(0, L"\n");
-        
-        
         if (exceptions_active(INJ_MM_ENABLE_EXCEPTIONS))
         {
             LOG(0, L"  %ls[*]%ls Inverted Function Table: %lsRequested%ls Via %ls%s%ls "
@@ -1013,7 +961,6 @@ namespace stealth
         }
     }
 
-    
     void StealthVerifyExceptionHandling(HANDLE process, DWORD flags, bool have_local_nt, const VERIFIABLE_EXEC_TELEMETRY * exec,
         StealthVerifierBuffers & buffers,
         f_GetLastStringStats get_string_stats, int & step, int total)
@@ -1022,11 +969,6 @@ namespace stealth
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify Exception Handling...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
-        
-        
-        
-        
-        
         {
             VehFirstChanceSurvey veh{};
             if (!process)
@@ -1063,10 +1005,6 @@ namespace stealth
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(veh.lastError));
             }
         }
-        
-        
-        
-        
         {
             DebugPortSurvey dbg{};
             if (!process)
@@ -1101,10 +1039,6 @@ namespace stealth
                     kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
-        
-        
-        
-        
         {
             const BOOL local_present = IsDebuggerPresent();
             BOOL self_remote = FALSE;
@@ -1188,8 +1122,6 @@ namespace stealth
             }
             else
             {
-                
-                
                 LOG(0, L"  %ls[*]%ls Structured Exceptions: None Installed (Dynamic = No | Inverted = No) - Payload Exceptions Are Not Covered\n",
                     kDim, kReset);
             }
@@ -1200,8 +1132,6 @@ namespace stealth
         }
     }
 
-    
-    
     void StealthExecuteTls(bool have_local_nt, const BYTE * local_pe, size_t local_pe_size,
         const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -1247,7 +1177,6 @@ namespace stealth
         }
         if (exec)
         {
-            
             const bool tls_ok = exec->TlsCallbacksConfigured == exec->TlsCallbacksExecuted &&
                 exec->TlsCallbacksFailed == 0;
             LOG(0, L"  %ls%s%ls TLS Initialized: %u Configured -> %u Executed, %u Failed (In-Shell Read-Back)\n",
@@ -1273,7 +1202,6 @@ namespace stealth
                 kDim, kReset);
     }
 
-    
     void StealthExecuteDllMain(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
@@ -1289,12 +1217,6 @@ namespace stealth
             return;
         }
         const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
-        
-        
-        
-        
-        
-        
         if (exec->DllMainCyclesDelta == 0)
         {
             LOG(0, L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
@@ -1311,7 +1233,6 @@ namespace stealth
         }
     }
 
-    
     void StealthRunUnderLoaderLock(const VERIFIABLE_EXEC_TELEMETRY * exec, DWORD flags, int & step, int total)
     {
         ++step;
@@ -1326,9 +1247,6 @@ namespace stealth
             LOG(0, L"  %ls[x]%ls Loader-Lock Unverified: No Execution Telemetry.\n", kRed, kReset);
             return;
         }
-        
-        
-        
         if (exec->DllMainCyclesDelta == 0)
         {
             LOG(0, L"  %ls[*]%ls Loader Lock Not Attempted: It Is Taken Inside The DllMain Step And DllMain "
@@ -1347,7 +1265,6 @@ namespace stealth
         }
     }
 
-    
     void StealthCleanDataDirectories(const MAP_STATS * MapStats, bool have_remote_nt, BYTE * nt_data, int & step, int total)
     {
         ++step;
@@ -1375,9 +1292,6 @@ namespace stealth
                 kGreen, MapStats->TlsSize, kReset,
                 kGreen, MapStats->DebugSize, kReset,
                 kGreen, MapStats->ExportSize, kReset);
-            
-            
-            
             struct DirCheck
             {
                 int index;
@@ -1428,8 +1342,6 @@ namespace stealth
             }
             else if (MapStats->ResidualMask)
             {
-                
-                
                 int residual_dirs = 0;
                 for (DWORD bits = MapStats->ResidualMask; bits; bits &= (bits - 1))
                 {
@@ -1479,8 +1391,6 @@ namespace stealth
             {
                 return nt->OptionalHeader.DataDirectory[idx].Size == 0 ? 0 : 1;
             };
-            
-            
             const int surveyed_dirs[] =
             {
                 IMAGE_DIRECTORY_ENTRY_IMPORT,
@@ -1507,8 +1417,6 @@ namespace stealth
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_SECURITY), kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_DEBUG), kReset,
                 kGreen, present(IMAGE_DIRECTORY_ENTRY_GLOBALPTR), kReset);
-            
-            
             LOG(0, L"  %ls[*]%ls %ls%d%ls Of %ls%d%ls Surveyed Directories Non-Zero (Read From The Remote Header "
                     L"Only - No Mapper Telemetry This Run, So No Independent Confirmation).\n",
                 kDim, kReset, non_zero == 0 ? kYellow : kRed, non_zero, kReset,
@@ -1521,13 +1429,11 @@ namespace stealth
         }
     }
 
-    
     void StealthSetPageProtections(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Set Page Protections...\n\n", kGreen, step, kReset, kGreen, total, kReset);
-        
         WORD sec_count = 0;
         const IMAGE_SECTION_HEADER * secs = nullptr;
         if (local_pe && local_pe_size >= sizeof(IMAGE_DOS_HEADER))
@@ -1576,7 +1482,6 @@ namespace stealth
                     match ? L"[Match / [+]]" : L"[Mismatch / [x]]");
             }
         }
-        
         MEMORY_BASIC_INFORMATION mbi{};
         int ro_count = 0, rw_count = 0, rx_count = 0, priv_exec_count = 0;
         SIZE_T total_image_size = 0;
@@ -1600,8 +1505,6 @@ namespace stealth
                 if (next <= current) break;
                 current = next;
             }
-            
-            
             const bool wx_clean = (rwx_count == 0 && mismatch == 0);
             LOG(0, L"  %ls%s%ls RWX = %ls%d%ls | RO = %ls%d%ls | RW = %ls%d%ls | RX = %ls%d%ls | PrivateExec = %ls%d%ls | Mismatch = %ls%d%ls\n",
                 wx_clean ? L"[+]" : L"[x]",
@@ -1626,8 +1529,6 @@ namespace stealth
         }
     }
 
-    
-    
     void StealthVerifyForensicPosture(HANDLE process, HINSTANCE hRemoteBase, const BYTE * local_pe, size_t local_pe_size,
         const WizardConfig & config, StealthVerifierBuffers & buffers, bool & posture_ok,
         int & step, int total)
@@ -1760,7 +1661,6 @@ namespace stealth
 
             if (VerboseOutputEnabled())
             {
-                
                 LOG(0, L"  %ls%s%ls Export Names: %ls%zu%ls Neutral, %ls%zu%ls Foreign\n",
                     export_foreign ? L"[x]" : L"[+]", export_foreign ? kRed : kGreen, kReset,
                     kGreen, export_neutral, kReset,
@@ -1908,11 +1808,6 @@ namespace stealth
             }
         }
 
-        
-        
-        
-        
-        
         {
             std::wstring survey_name;
             ULONG_PTR survey_base = 0;
@@ -1958,7 +1853,6 @@ namespace stealth
                 }
                 else
                 {
-                    
                     unsigned long imp_count = 0;
                     bool imp_done = false;
                     bool imp_ok = false;
@@ -2023,7 +1917,6 @@ namespace stealth
                             kYellow, kReset, static_cast<unsigned>(imp_rva), static_cast<unsigned>(imp_size));
                     }
 
-                    
                     const DWORD exp_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
                     const DWORD exp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
                     if (!exp_rva || !exp_size)
@@ -2052,7 +1945,6 @@ namespace stealth
                         LOG(0, L"  %ls[!]%ls Target Exports.......... Directory Out Of Image/Safepage\n", kYellow, kReset);
                     }
 
-                    
                     const DWORD tls_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress;
                     const DWORD tls_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_TLS].Size;
                     if (!tls_rva || !tls_size)
@@ -2123,7 +2015,6 @@ namespace stealth
         }
     }
 
-    
     void StealthEraseHeader(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * exec, StealthVerifierBuffers & buffers, int & step, int total)
     {
@@ -2137,11 +2028,6 @@ namespace stealth
             declared_headers = nt->OptionalHeader.SizeOfHeaders;
         }
 
-        
-        
-        
-        
-        
         const unsigned long long wiped = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeSize) : 0;
         const unsigned long long wipe_protect = MapStats ? static_cast<unsigned long long>(MapStats->HeaderWipeProtect) : 0;
         const unsigned long long structural = MapStats ? static_cast<unsigned long long>(MapStats->HeaderStructuralSize) : 0;
@@ -2151,10 +2037,6 @@ namespace stealth
         const ULONGLONG retained_base = MapStats ? static_cast<ULONGLONG>(MapStats->RetainedAllocBase) : 0;
         const unsigned long long retained_size = MapStats ? static_cast<unsigned long long>(MapStats->RetainedAllocSize) : 0;
 
-        
-        
-        
-        
         const unsigned long long exec_span = exec ? static_cast<unsigned long long>(exec->PreSectionSpanWiped) : 0;
         const unsigned long long exec_mz = exec ? static_cast<unsigned long long>(exec->MZRemnantsFound) : 0;
         const unsigned long long exec_pe = exec ? static_cast<unsigned long long>(exec->PERemnantsFound) : 0;
@@ -2167,8 +2049,6 @@ namespace stealth
 
         const ULONGLONG base = hRemoteBase ? static_cast<ULONGLONG>(ReCa<ULONG_PTR>(hRemoteBase)) : 0;
 
-        
-        
         auto count_signatures = [](const BYTE * data, size_t size, unsigned long long & mz, unsigned long long & pe)
         {
             mz = 0;
@@ -2195,7 +2075,6 @@ namespace stealth
                 kGreen, kReset, kGreen, base, kReset);
         }
 
-        
         if (process && base)
         {
             MEMORY_BASIC_INFORMATION mbi = { 0 };
@@ -2247,9 +2126,6 @@ namespace stealth
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
 
-                
-                
-                
                 LOG(0, L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
 
@@ -2279,11 +2155,6 @@ namespace stealth
                     kYellow, kReset);
             }
 
-            
-            
-            
-            
-            
             if (retained_base && retained_size)
             {
                 const size_t want = static_cast<size_t>(retained_size < 0x1000 ? retained_size : 0x1000);
@@ -2316,7 +2187,6 @@ namespace stealth
         }
     }
 
-    
     void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -2340,15 +2210,12 @@ namespace stealth
         if (!hRemoteBase)
             return false;
 
-        
-        
 
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
         bool string_gate_ok = true;
         bool posture_ok = true;
 
-        
         const bool step_enabled[kStealthStepCount] =
         {
             isActive(INJ_HANDLE_HIJACKING),
@@ -2559,21 +2426,25 @@ namespace stealth
         return found;
     }
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     static_assert(offsetof(PEB, CrossProcessFlags) == 80);
     static_assert(offsetof(PEB, Mutant) == 8);
+
+    namespace
+    {
+        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+        NtQueryInformationProcessFn ResolveNtQueryInformationProcess()
+        {
+            auto mod_name = XOR_STR_W(L"ntdll.dll");
+            HMODULE mod = GetModuleHandleW(mod_name.get());
+            if (!mod)
+            {
+                return nullptr;
+            }
+            auto api_name = XOR_STR_A("NtQueryInformationProcess");
+            return ReCa<NtQueryInformationProcessFn>(GetProcAddress(mod, api_name.get()));
+        }
+    }
 
     bool QueryRemoteVehFirstChance(HANDLE process, VehFirstChanceSurvey & out)
     {
@@ -2584,17 +2455,7 @@ namespace stealth
         }
         out.handleValid = true;
 
-        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-        NtQueryInformationProcessFn query = nullptr;
-        {
-            auto mod_name = XOR_STR_W(L"ntdll.dll");
-            HMODULE mod = GetModuleHandleW(mod_name.get());
-            if (mod)
-            {
-                auto api_name = XOR_STR_A("NtQueryInformationProcess");
-                query = ReCa<NtQueryInformationProcessFn>(GetProcAddress(mod, api_name.get()));
-            }
-        }
+        NtQueryInformationProcessFn query = ResolveNtQueryInformationProcess();
         if (!query)
         {
             out.lastError = GetLastError();
@@ -2664,9 +2525,6 @@ namespace stealth
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    
-    
-    
     inline bool ProbeLocalVehPathRoundTrip()
     {
         void * handle = AddVectoredExceptionHandler(1, VehProbeDummyHandler);
@@ -2678,9 +2536,6 @@ namespace stealth
         return removed != 0;
     }
 
-    
-    
-    
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out)
     {
         out = DebugPortSurvey{};
@@ -2690,17 +2545,7 @@ namespace stealth
         }
         out.handleValid = true;
 
-        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-        NtQueryInformationProcessFn query = nullptr;
-        {
-            auto mod_name = XOR_STR_W(L"ntdll.dll");
-            HMODULE mod = GetModuleHandleW(mod_name.get());
-            if (mod)
-            {
-                auto api_name = XOR_STR_A("NtQueryInformationProcess");
-                query = ReCa<NtQueryInformationProcessFn>(GetProcAddress(mod, api_name.get()));
-            }
-        }
+        NtQueryInformationProcessFn query = ResolveNtQueryInformationProcess();
         if (!query)
         {
             return false;
@@ -3042,14 +2887,8 @@ namespace stealth
                 }
             }
 
-            
-            
-            
             const size_t cc_pct = sample_bytes ? (cc_bytes * 100) / sample_bytes : 0;
 
-            
-            
-            
             const wchar_t * Verdict = guarded ? L"Guarded" : L"No Guard Pages";
             wchar_t VerdictNote[192]{};
             if (guarded == 0)

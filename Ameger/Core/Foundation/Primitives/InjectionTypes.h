@@ -7,8 +7,6 @@
 inline constexpr DWORD INJ_THREAD_HIJACK_ACCESS =
 	THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
 	THREAD_QUERY_LIMITED_INFORMATION |
-	
-	
 	SYNCHRONIZE;
 
 enum class HijackSource : DWORD
@@ -54,12 +52,10 @@ struct THREAD_EXEC_STATS
 	DWORD HijackedTid = 0;
 	DWORD FailCode = 0;
 	DWORD DonorRounds = 0;
-	
 	DWORD64 RoutineCyclesDelta = 0;
 	ULONG_PTR StackScrubbedBytes = 0;
 	DWORD PollIterations = 0;
 	DWORD ExecMs = 0;
-	
 	DWORD RoutineRet = 0;
 	ULONG_PTR OldRip = 0;
 	ULONG_PTR OldRsp = 0;
@@ -123,29 +119,24 @@ static_assert(sizeof(STRING_STATS) == 24);
 
 struct VERIFIABLE_EXEC_TELEMETRY
 {
-	
 	NTSTATUS LdrLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
 	ULONG LoaderLockState = 0;
 	ULONG_PTR LoaderLockCookie = 0;
 	NTSTATUS LdrUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
 
-	
 	BOOL DllMainResult = FALSE;
 	DWORD DllMainLastWin32Error = 0;
 	unsigned __int64 DllMainCyclesDelta = 0;
 
-	
 	DWORD TlsCallbacksConfigured = 0;
 	DWORD TlsCallbacksExecuted = 0;
 	DWORD TlsCallbacksFailed = 0;
 	PVOID TlsLastExecutedAddress = nullptr;
 
-	
 	BOOL InvertedTableInstalled = FALSE;
 	BOOL DynamicTableInstalled = FALSE;
 	PVOID InvertedTableEntryBase = nullptr;
 
-	
 	SIZE_T PreSectionSpanWiped = 0;
 	DWORD MZRemnantsFound = 0;
 	DWORD PERemnantsFound = 0;

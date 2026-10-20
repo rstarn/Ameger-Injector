@@ -434,7 +434,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		payload_seed0 = Entropy ^ MMI_KeyBlock(ReCa<DWORD64>(pAllocBase), ReCa<DWORD64>(table_local.get()), 0x5EED);
 		payload_seed1 = MMI_KeyBlock(payload_seed0, static_cast<DWORD64>(GetCurrentProcessId()) << 48, 0x0BADF00D) ^ MMI_RotateRight64(Entropy, 29);
 
-		
 		if (!payload_seed0)
 		{
 			payload_seed0 = 0x9E3779B97F4A7C15ULL;
@@ -636,7 +635,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
 	}
 
-	
 	if (data.ExecTelemetry.LdrLockStatus == 0 && data.ExecTelemetry.LdrUnlockStatus == 0)
 	{
 		LOG(1, "[ManualMap] [+] LoaderLock: Lock = 0x%08X | State = %u | Cookie = 0x%llX | Unlock = 0x%08X\n",
@@ -667,7 +665,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		data.ExecTelemetry.InvertedTableEntryBase,
 		seh_ok ? "" : " (None Installed - Payload Exceptions Not Covered)");
 
-	
 	if (data.ExecTelemetry.PreSectionSpanWiped == 0)
 	{
 		LOG(1, "[HeaderCloak] [*] Wipe: Not Executed (Shell Aborted Before Cloak)\n");
@@ -919,7 +916,6 @@ bool __declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPP
 	const LIST_ENTRY * head = &pLdr->InLoadOrderModuleListHead;
 	LIST_ENTRY * current = head->Flink;
 
-	
 	for (ULONG depth = 0; current && current != head && depth < 4096; ++depth)
 	{
 		const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
@@ -1430,7 +1426,6 @@ DWORD __declspec(code_seg(".code$02")) __stdcall MMI_MapSections(MANUAL_MAPPING_
 	pData->pOptionalHeader	= &pData->pNtHeaders->OptionalHeader;
 	pData->pFileHeader		= &pData->pNtHeaders->FileHeader;
 
-	
 	if (pData->PayloadEncoded && f->NtProtectVirtualMemory)
 	{
 		SecureZeroMemory(pData->pRawData, static_cast<size_t>(pData->RawSize));
@@ -2030,7 +2025,6 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 			}
 		}
 
-		
 		pData->SectionProtCount = i + 1;
 
 		if (NT_FAIL(prot_status))
@@ -2058,7 +2052,6 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 
 	auto f = pData->FunctionTable;
 
-	
 	{
 		const DWORD ProtRet = MMI_SetExecProtections(pData, MM_EXEC_STATE_EXECUTE);
 		if (ProtRet != INJ_ERR_SUCCESS)
@@ -2917,7 +2910,6 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 
 					auto * pDataEntry = ReCa<IMAGE_RESOURCE_DATA_ENTRY *>(pResRoot + target);
 
-					
 					if (pEntry[e].Id == 16 && pDataEntry->Size && MMI_InImage(pData, pResRoot + pDataEntry->OffsetToData, pDataEntry->Size))
 					{
 						f->RtlZeroMemory(pResRoot + pDataEntry->OffsetToData, pDataEntry->Size);
@@ -2935,7 +2927,6 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size = 0;
 	}
 
-	
 	if (MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size ||
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IAT].Size)
 	{
@@ -3036,14 +3027,12 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		return INJ_ERR_SUCCESS;
 	}
 
-	
 	DWORD dos_bytes = 0x40;
 	if (dos_bytes > limit)
 	{
 		dos_bytes = limit;
 	}
 
-	
 	DWORD nt_bytes = 0;
 	if (e_lfanew < limit)
 	{
@@ -3064,7 +3053,6 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		sec_bytes = num_sections * section_size;
 	}
 
-	
 	DWORD structural_size = dos_bytes;
 	if (nt_bytes && e_lfanew + nt_bytes > structural_size)
 	{
@@ -3092,7 +3080,6 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	SIZE_T region = wipe_size;
 	ULONG old_access = NULL;
 
-	
 	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &region, PAGE_READWRITE, &old_access);
 	if (NT_FAIL(pData->ntRet))
 	{

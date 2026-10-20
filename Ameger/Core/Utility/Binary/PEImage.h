@@ -111,39 +111,12 @@ namespace PE_IMAGE
 		return false;
 	}
 
+	__forceinline bool MeasureThunkTable(const VIEW & view, DWORD rva, size_t & count_out);
+
 	__forceinline bool ValidateThunkTable(const VIEW & view, DWORD rva)
 	{
-		const MAPPING mapping = MapRva(view, rva);
-		if (!mapping.Data || mapping.Available < sizeof(IMAGE_THUNK_DATA64))
-		{
-			return false;
-		}
-
-		const size_t maximum_entries = mapping.Available / sizeof(IMAGE_THUNK_DATA64);
-		for (size_t index = 0; index < maximum_entries; ++index)
-		{
-			const IMAGE_THUNK_DATA64 & thunk = *reinterpret_cast<const IMAGE_THUNK_DATA64 *>(mapping.Data + index * sizeof(IMAGE_THUNK_DATA64));
-			if (!thunk.u1.AddressOfData)
-			{
-				return true;
-			}
-
-			if (!IMAGE_SNAP_BY_ORDINAL(thunk.u1.Ordinal))
-			{
-
-				if ((thunk.u1.AddressOfData >> 32) != 0)
-				{
-					return false;
-				}
-				const MAPPING name_mapping = MapRva(view, static_cast<DWORD>(thunk.u1.AddressOfData));
-				if (!name_mapping.Data || name_mapping.Available < sizeof(WORD) || !IsZeroTerminated(name_mapping.Data + sizeof(WORD), name_mapping.Available - sizeof(WORD)))
-				{
-					return false;
-				}
-			}
-		}
-
-		return false;
+		size_t count = 0;
+		return MeasureThunkTable(view, rva, count);
 	}
 
 	__forceinline bool MeasureThunkTable(const VIEW & view, DWORD rva, size_t & count_out)

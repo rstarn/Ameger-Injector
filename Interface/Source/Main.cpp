@@ -5,21 +5,8 @@
 namespace
 {
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     constexpr size_t kConfigBlobMagicSize = 8;
 
-    
-    
-    
 #ifndef AMEGER_CONFIG_MAGIC_STR
 #define AMEGER_CONFIG_MAGIC_STR "SYSCFG01"
 #endif
@@ -33,8 +20,6 @@ namespace
 
 
     constexpr int kMaxLaunchAttempts = 3;
-    
-    
     constexpr int kResultRetryable = 3;
     constexpr wchar_t kChildMarker[] = L"--ameger-child";
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
@@ -200,19 +185,11 @@ namespace
         }
     };
 
-    
-    
-    
-    
 
     bool FileExists(const std::wstring & path);
 
     std::wstring GetAmegerWindowClass()
     {
-        
-        
-        
-        
         static const wchar_t kBakedWide[] = AMEGER_WIDEN(AMEGER_WINDOW_CLASS_STR);
         size_t converted = 0;
         for (size_t i = 0; kBakedWide[i] != L'\0' && i + 1 < 64; ++i)
@@ -250,8 +227,6 @@ namespace
     {
         static const wchar_t kLetters[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
         static const wchar_t kAlnum[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        
-        
         unsigned char entropy[16] = {};
         bool haveCrypto = false;
         {
@@ -409,8 +384,6 @@ namespace
         }
         if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
         {
-            
-            
             cached = 1;
             atomOut = cached;
             return true;
@@ -448,7 +421,6 @@ namespace
         }
         SelectObject(state.memDc, state.bitmap);
 
-        
         HBRUSH back = CreateSolidBrush(RGB(16, 19, 28));
         RECT full{ 0, 0, state.width, state.height };
         FillRect(state.memDc, &full, back);
@@ -625,7 +597,6 @@ namespace
             DestroyWindow(state.hwnd);
             state.hwnd = nullptr;
         }
-        
         MSG drain{};
         while (PeekMessageW(&drain, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE))
         {
@@ -676,9 +647,7 @@ namespace
 
     std::wstring BuildForwardedArgs(int nextRetry, const std::wstring & parentPath, bool keepChild)
     {
-        
         std::wstring cmd = GetCommandLineW();
-        
         std::wstring rest;
         if (!cmd.empty())
         {
@@ -708,7 +677,6 @@ namespace
             }
             rest = (i < cmd.size()) ? cmd.substr(i) : std::wstring();
         }
-        
         for (;;)
         {
             bool erased = false;
@@ -878,7 +846,6 @@ namespace
         HANDLE broker = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, brokerPid);
         if (!broker)
         {
-            
             HANDLE token = nullptr;
             if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
             {
@@ -924,8 +891,6 @@ namespace
         }
 
         std::wstring cmdline = L"\"" + exePath + L"\"" + args;
-        
-        
         std::vector<wchar_t> cmdline_mutable(cmdline.begin(), cmdline.end());
         cmdline_mutable.push_back(L'\0');
         STARTUPINFOEXW si{};
@@ -947,10 +912,6 @@ namespace
         return true;
     }
 
-    
-    
-    
-    
     bool IsDeletableSelfCopy(const std::wstring & own_path, const std::wstring & candidate)
     {
         const size_t own_slash = own_path.find_last_of(L"\\/");
@@ -1002,7 +963,6 @@ namespace
         const std::wstring cmd = GetCommandLineW();
         if (HasMarker(cmd, kChildMarker))
         {
-            
             if (!parentHint.empty() && FileExists(parentHint))
             {
                 std::wstring own;
@@ -1045,12 +1005,8 @@ namespace
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                
-                
-                
                 return false;
             }
-            
             (void)DeleteFileW(next.c_str());
         }
         return true;
@@ -1108,9 +1064,6 @@ namespace
             {
                 continue;
             }
-            
-            
-            
             DWORD broker = FindTrustedBroker(currentParent);
             if (!broker || broker == currentParent)
             {
@@ -1119,9 +1072,6 @@ namespace
             const std::wstring args = BuildForwardedArgs(nextRetry, own, true);
             if (broker && SpawnWithSpoofedParent(next, args, broker))
             {
-                
-                
-                
                 return true;
             }
             (void)DeleteFileW(next.c_str());
@@ -1167,10 +1117,6 @@ namespace
         }
     }
 
-    
-    
-    
-    
     void PrintError(const wchar_t * message)
     {
         if (!message)
@@ -1228,18 +1174,9 @@ namespace
     {
     }
 
-    
-    
-    
-    
     std::atomic<const void *> g_RuntimeCategory{ nullptr };
 
-    
 
-    
-    
-    
-    
     void __stdcall VerbosePrint(const char * text)
     {
         if (!text || !*text)
@@ -1247,13 +1184,6 @@ namespace
             return;
         }
 
-        
-        
-        
-        
-        
-        
-        
         if (strstr(text, "Type Not Found") || strstr(text, "Not Found In ") ||
             strstr(text, "Resolved Via") || strstr(text, "size ") == text ||
             strstr(text, "SymbolParser: Size ") ||
@@ -1273,10 +1203,6 @@ namespace
             return;
         }
 
-        
-        
-        
-        
         size_t len = wide.size();
         while (len > 0 && wide[len - 1] == L'\0')
         {
@@ -1291,10 +1217,6 @@ namespace
             return;
         }
 
-        
-        
-        
-        
         std::vector<wchar_t> clean;
         clean.reserve(len);
         for (size_t i = 0; i < len; ++i)
@@ -1333,8 +1255,6 @@ namespace
         }
 
         const std::wstring line(clean.begin(), clean.end());
-        
-        
         std::string plain;
         plain.reserve(line.size());
         for (const wchar_t ch : line)
@@ -1348,10 +1268,6 @@ namespace
             const wchar_t * title;
         };
 
-        
-        
-        
-        
         struct CensusBlock
         {
             std::wstring start;
@@ -1393,15 +1309,11 @@ namespace
                 }
             }
 
-            
-            
             if (!g_census.start.empty())
             {
                 LOG(0, L"       %ls%s%ls\n", kDim, g_census.start.c_str(), kReset);
             }
 
-            
-            
             for (const std::wstring & row : g_census.rows)
             {
                 if (row.find(L"Wait Reason") != std::wstring::npos)
@@ -1420,8 +1332,6 @@ namespace
             }
             else
             {
-                
-                
                 for (const std::wstring * row : selected)
                 {
                     LOG(0, L"       %ls%ls%ls\n", kDim, row->c_str(), kReset);
@@ -1461,25 +1371,13 @@ namespace
 
         if (g_census.open)
         {
-            
             flush_census();
         }
-        
-        
-        
-        
-        
-        
-        
-        
         static const Category kCategories[] =
         {
             { "[Syscall]",          L"Syscall Layer" },
             { "Service Name",       L"Syscall Layer" },
             { "]   [",              L"Syscall Layer" },
-            
-            
-            
             { "Resolving Syscall Service Numbers", L"Syscall Layer" },
             { "ntdll Base:",        L"Syscall Layer" },
             { "Pass 1: Scanned",    L"Syscall Layer" },
@@ -1543,9 +1441,6 @@ namespace
             LOG(0, L"       %ls--- Runtime: %ls ---%ls\n", kCyan, title, kReset);
         }
 
-        
-        
-        
         for (size_t start = 0; start < line.size();)
         {
             size_t end = line.find(L'\n', start);
@@ -1561,8 +1456,6 @@ namespace
         }
     }
 
-    
-    
     void ResetRuntimeCategory()
     {
         g_RuntimeCategory.store(nullptr, std::memory_order_release);
@@ -1570,9 +1463,6 @@ namespace
 
     void DetachInterfaceConsole()
     {
-        
-        
-        
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         const bool hasConsole = output && output != INVALID_HANDLE_VALUE &&
@@ -1657,16 +1547,12 @@ namespace
 
     bool ReadYesNo(const wchar_t * prompt, bool default_value, bool & value)
     {
-        
-        
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
         DWORD console_mode = 0;
         const bool hasConsole = input && input != INVALID_HANDLE_VALUE &&
             GetConsoleMode(input, &console_mode) != FALSE;
         if (!hasConsole)
         {
-            
-            
             if (GetRetryIndex() > 0)
             {
                 value = default_value;
@@ -1717,8 +1603,6 @@ namespace
         {
             return ConfirmationResult::Proceed;
         }
-        
-        
         if (GetRetryIndex() > 0)
         {
             return ConfirmationResult::Proceed;
@@ -1729,8 +1613,6 @@ namespace
             GetConsoleMode(input, &console_mode) != FALSE;
         if (!hasConsole)
         {
-            
-            
             const bool proceed = LayeredConfirm(
                 L"Begin Load? Select OK To Proceed Or Cancel To Quit.");
             return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
@@ -1853,8 +1735,6 @@ wchar_t name[48]{};
             LOG(0, L"====================================================================================================\n");
         }
 
-        
-        
         inline PhaseRecord & Begin(const wchar_t * name)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -1868,16 +1748,11 @@ wchar_t name[48]{};
             wcsncpy_s(rec.name, name, _TRUNCATE);
             rec.start_ms = NowMs() - T0();
             rec.open = true;
-            
-            
             ResetRuntimeCategory();
             LOG(0, L"\n[%02zu] %ls> %ls%s%s\n", count, kDim, name, kReset, kDim);
             return rec;
         }
 
-        
-        
-        
         inline void End(bool ok = true)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -1899,7 +1774,6 @@ wchar_t name[48]{};
                 rec.name, kGreen, rec.elapsed_ms, kReset, rec.start_ms);
         }
 
-        
         inline void Note(const wchar_t * fmt, ...)
         {
             va_list args;
@@ -1917,7 +1791,6 @@ wchar_t name[48]{};
             LOG(0, L"       %ls%s%ls\n", kDim, buffer.data(), kReset);
         }
 
-        
         inline void Summary(const wchar_t * outcome)
         {
             PhaseRecord (& phases)[kMaxPhases] = Phases();
@@ -1942,14 +1815,6 @@ wchar_t name[48]{};
             LOG(0, L"====================================================================================================\n");
         }
     }
-    
-    
-    
-    
-    
-    
-    
-    
     static_assert(sizeof(UNICODE_STRING) == 16);
     static_assert(sizeof(CLIENT_ID) == 16);
     static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ClientId) == 40);
@@ -1959,17 +1824,6 @@ wchar_t name[48]{};
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     DWORD PickHijackThreadTid(DWORD target_pid, DWORD exclude_tid)
     {
         if (!target_pid)
@@ -2059,8 +1913,6 @@ wchar_t name[48]{};
 
                         const unsigned char thread_state = static_cast<unsigned char>(thread->ThreadState);
                         const unsigned char thread_reason = static_cast<unsigned char>(thread->WaitReason);
-                        
-                        
                         if (thread_state != 2 && !(allow_wait && is_safe_wait(thread_state, thread_reason)))
                         {
                             continue;
@@ -2973,8 +2825,6 @@ wchar_t name[48]{};
                     return GetProcAddress(runtime.module, mapped->c_str());
                 };
 
-                
-                
                 auto resolve_optional_export = [&](const char * old_name) -> FARPROC
                 {
                     const std::string * mapped = FindMappedExportName(config.export_map, old_name);
@@ -3009,9 +2859,6 @@ wchar_t name[48]{};
                 auto exp_err = XOR_STR_A("CoreLastError");
                 runtime.get_last_error_info = reinterpret_cast<f_GetLastErrorInfo>(resolve_export(exp_err.get()));
 
-                
-                
-                
                 auto exp_clear_err = XOR_STR_A("CoreClearLastError");
                 runtime.clear_last_error_info = reinterpret_cast<f_ClearLastErrorInfo>(resolve_optional_export(exp_clear_err.get()));
 
@@ -3076,8 +2923,6 @@ wchar_t name[48]{};
         symbol_state = runtime.get_symbol_state();
         ULONGLONG deadline = GetTickCount64() + timeout;
         {
-            
-            
             const ULONGLONG poll_start = GetTickCount64();
             ULONGLONG last_report = poll_start;
             DWORD polls = 0;
@@ -3375,12 +3220,6 @@ wchar_t name[48]{};
 
             if (!hasConsoleForWait)
             {
-                
-                
-                
-                
-                
-                
                 if (GetTickCount64() >= deadline)
                 {
                     wchar_t wait_message[512]{};
@@ -3511,10 +3350,6 @@ wchar_t name[48]{};
         return true;
     }
 
-    
-    
-    
-    
     void ReportPayloadCapabilities(const std::vector<BYTE> & payload, DWORD flags)
     {
         if (payload.size() < sizeof(IMAGE_DOS_HEADER))
@@ -3582,8 +3417,6 @@ wchar_t name[48]{};
         }
     }
 
-    
-    
     void DescribeFlags(DWORD flags)
     {
         struct FlagBit { DWORD bit; const wchar_t * name; };
@@ -3612,8 +3445,6 @@ wchar_t name[48]{};
                 set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
                 fb.bit, fb.name);
         }
-        
-        
         DWORD accounted = 0;
         for (const FlagBit & fb : kBits)
         {
@@ -3949,24 +3780,13 @@ DWORD BuildFlags(const WizardConfig & config)
         PrintError(L"Failed To Initialize The Runtime Or Download Symbols.");
     }
 
-    
-    
-    
-    
-    
     bool InjectionFailureIsRetryable(DWORD result)
     {
-        
-        
-        
         if (result >= 0x00400000u && result < 0x00500000u)
         {
             return false;
         }
 
-        
-        
-        
         if (result >= 0x10200000u && result < 0x10300000u)
         {
             return false;
@@ -3974,8 +3794,6 @@ DWORD BuildFlags(const WizardConfig & config)
 
         switch (result)
         {
-            
-            
         case INJ_ERR_FAILED_TO_LOAD_DLL:
         case INJ_ERR_VERIFY_RESULT_FAIL:
             return false;
@@ -3984,10 +3802,6 @@ DWORD BuildFlags(const WizardConfig & config)
             break;
         }
 
-        
-        
-        
-        
         return true;
     }
 
@@ -4016,8 +3830,6 @@ DWORD BuildFlags(const WizardConfig & config)
             Trace::Note(L"Export Map = %zu Entries", config.export_map.size());
             for (const ExportNameMap & e : config.export_map)
             {
-                
-                
                 const std::wstring old_w = Trace::Widen(e.old_name.c_str());
                 const std::wstring new_w = Trace::Widen(e.new_name.c_str());
                 Trace::Note(L"  %ls -> %ls", old_w.c_str(), new_w.c_str());
@@ -4086,7 +3898,6 @@ DWORD BuildFlags(const WizardConfig & config)
             PrintRuntimeFailure(symbol_state, import_state, init_state);
             Trace::Summary(L"Failed At Runtime Initialisation");
             PauseBeforeExit();
-            
             return kResultRetryable;
         }
         Trace::Note(L"Symbol State = 0x%08lX", static_cast<unsigned long>(symbol_state));
@@ -4182,7 +3993,6 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             PrintError(L"Target Exited Before Loading. Re-Run And Choose Faster.");
             PauseBeforeExit();
-            
             return kResultRetryable;
         }
 
@@ -4198,11 +4008,6 @@ DWORD BuildFlags(const WizardConfig & config)
         Context.TargetName = target.name;
         Context.Verbose = config.verbose_trace && !config.quiet;
 
-        
-        
-        
-        
-        
         HANDLE threadSponsorRaw = nullptr;
         if (config.handle_hijacking)
         {
@@ -4261,8 +4066,6 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         Trace::End();
 
-        
-        
         HANDLE targetHandle = nullptr;
         {
             // The debug-port probes in the verification suite need the broader
@@ -4322,8 +4125,6 @@ DWORD BuildFlags(const WizardConfig & config)
 
         const ULONGLONG inject_begin_ms = GetTickCount64();
 
-        
-        
         if (runtime.clear_last_error_info)
         {
             runtime.clear_last_error_info();
@@ -4378,9 +4179,6 @@ DWORD BuildFlags(const WizardConfig & config)
             threadSponsorGuard.reset();
             Trace::Summary(L"Failed During Injection");
             PauseBeforeExit();
-            
-            
-            
             return InjectionFailureIsRetryable(result) ? kResultRetryable : 1;
         }
 
@@ -4488,15 +4286,9 @@ DWORD BuildFlags(const WizardConfig & config)
         LOG(0, L"\n");
 
         const bool had_target = (targetHandle != nullptr);
-        
-        
-        
         stealth::VehFirstChanceSurvey veh_coverage_probe{};
         const bool veh_coverage_read = had_target &&
             stealth::QueryRemoteVehFirstChance(targetHandle, veh_coverage_probe) && veh_coverage_probe.readOk;
-        
-        
-        
         struct ReleasedHandles
         {
             ULONGLONG values[3] = { 0, 0, 0 };
@@ -4514,18 +4306,12 @@ DWORD BuildFlags(const WizardConfig & config)
         record(static_cast<ULONGLONG>(Context.SponsorThreadValue));
         record(ReCa<ULONGLONG>(targetHandle));
 
-        
-        
-        
-        
         if (had_target && data.hDllOut)
         {
             MEMORY_BASIC_INFORMATION head{};
             const DWORD base_prot =
                 VirtualQueryEx(targetHandle, data.hDllOut, &head, sizeof(head)) ? head.Protect : 0;
 
-            
-            
             int post_rwx = 0, post_rx = 0, post_rw = 0, post_ro = 0, post_noaccess = 0;
             ULONGLONG committed = 0;
             bool walked = false;
@@ -4654,19 +4440,11 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
-        
-        
-        
-        
         {
             const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
             const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
             const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
                 MapStats.Verified != 0;
-            
-            
-            
-            
             stealth::VehFirstChanceSurvey veh_coverage{};
             const bool veh_checked = veh_coverage_read;
             if (veh_checked)
@@ -4679,7 +4457,6 @@ DWORD BuildFlags(const WizardConfig & config)
                 bool checked;
                 const wchar_t * note;
             };
-            
             wchar_t marker_coverage_note[64]{};
             swprintf_s(marker_coverage_note, L"%zu Markers Absent From The Runtime DLL", kStringMarkerCount);
             const Coverage coverage[] =
@@ -4720,14 +4497,9 @@ DWORD BuildFlags(const WizardConfig & config)
             }
         }
 
-        
-        
-        
         LOG(0, L"\n");
         LOG(0, L"Load Result (Every Value Below Was Read Back During This Run):\n");
 
-        
-        
         const auto row = [](const wchar_t * label, bool ok)
         {
             LOG(0, L"  [%ls%s%s] %ls", ok ? L"+" : L"x", ok ? kGreen : kRed, kReset, label);
@@ -4763,9 +4535,6 @@ DWORD BuildFlags(const WizardConfig & config)
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
-        
-        
-        
         const bool lock_attempted = ExecTelemetry.DllMainCyclesDelta != 0;
         const bool lock_ok = !lock_attempted ||
             (ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0);
@@ -4807,8 +4576,6 @@ DWORD BuildFlags(const WizardConfig & config)
         LOG(0, L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,
             wx_violated ? L"Violated" : L"Enforced");
 
-        
-        
         row(L"Verification Gate......... ", stealth_gate_ok);
         LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
         LOG(0, L"====================================================================================================\n");
@@ -4827,12 +4594,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     (void)prevInstance;
     (void)cmdShow;
     (void)showCmd;
-    
-    
     EnableAnsi();
 
-    
-    
     std::wstring parentHint;
     {
         const std::wstring cmd = GetCommandLineW();
@@ -4864,8 +4627,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         }
     }
 
-    
-    
     if (!PolymorphicSelfRename(parentHint))
     {
         return 0;
@@ -4893,8 +4654,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     int result = 1;
     try
     {
-        
-        
         result = RunInteractiveWizard(runtime);
     }
     catch (const std::bad_alloc &)
@@ -4912,11 +4671,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    
-    
-    
-    
-    
     ameger_ui_log::WriteResultLog();
     ameger_ui_log::Clear();
 

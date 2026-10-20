@@ -51,8 +51,6 @@ typedef enum class _PROCESSINFOCLASS
 {
 	ProcessBasicInformation			= 0,
 	ProcessImageFileName			= 27,
-	
-	
 	ProcessImageFileNameWin32		= 43
 } PROCESSINFOCLASS;
 

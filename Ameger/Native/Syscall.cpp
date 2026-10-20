@@ -4,8 +4,6 @@
 
 inline bool SyscallVerbose()
 {
-    
-    
     static const bool verbose = []() -> bool
     {
         wchar_t buffer[8] = {};
@@ -83,7 +81,6 @@ namespace
 		DWORD	Service		= 0;
 	};
 
-	
 	SYSCALL_ENTRY g_SyscallTable[] =
 	{
 		{ SC_NtOpenProcess,					kServiceUnknown, nullptr },
@@ -161,7 +158,6 @@ namespace
 
 	BOOL CALLBACK InitializeLockOnce(PINIT_ONCE, PVOID, PVOID *)
 	{
-		
 		return TRUE;
 	}
 
@@ -183,7 +179,6 @@ namespace
 		return nullptr;
 	}
 
-	
 	constexpr DWORD kStubProbeSize = 0x22;
 
 	// A healthy ntdll stub is "mov r10, rcx" (in one of two encodings), followed by
@@ -651,8 +646,6 @@ DWORD SyscallResolveAll()
 
 		DWORD Hash = 0;
 		{
-			
-			
 			const DWORD NameLimit = ImageSize > NameRva ? ImageSize - NameRva : 0;
 			const char * Name = ReCa<const char *>(Ntdll + NameRva);
 			DWORD h = 0x811C9DC5u;
@@ -721,7 +714,6 @@ DWORD SyscallResolveAll()
 				}
 				catch (...)
 				{
-					
 				}
 			}
 
@@ -731,7 +723,6 @@ DWORD SyscallResolveAll()
 		}
 		else if (Entry && Entry->Service == kServiceUnknown)
 		{
-			
 			Entry->Service = kInvalidService;
 			const size_t idx = static_cast<size_t>(Entry - g_SyscallTable);
 			if (idx < kSyscallTableCount)
@@ -811,7 +802,6 @@ DWORD SyscallResolveAll()
 				break;
 			}
 
-			
 			const HARVESTED_ENTRY * Lower = nullptr;
 			const HARVESTED_ENTRY * Upper = nullptr;
 
@@ -964,8 +954,6 @@ DWORD SyscallResolveAll()
 
 void * SyscallStub(DWORD NameHash)
 {
-	
-	
 	if (!g_SyscallPoolReady.load(std::memory_order_acquire))
 	{
 		if (!SyscallResolveAll())
@@ -997,7 +985,6 @@ DWORD SyscallServiceOfStub(const void * Stub)
 
 	const BYTE * Bytes = ReCa<const BYTE *>(Stub);
 
-	
 	const bool prologue_a = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueA, sizeof(kPrologueA)) == 0;
 	const bool prologue_b = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueB, sizeof(kPrologueB)) == 0;
 	if (!prologue_a && !prologue_b)

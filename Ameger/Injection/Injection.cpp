@@ -442,7 +442,6 @@ DWORD __stdcall GetImportState()
 			return INJ_ERR_IMPORT_HANDLER_NOT_DONE;
 		}
 
-		
 		WaitAsyncWorkerThread(import_handler_ret);
 
 		DWORD imp_ret = import_handler_ret.Result;

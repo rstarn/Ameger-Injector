@@ -768,7 +768,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 								// A running thread is preferred, but a parked one is still
 								// usable: the stub is scheduled onto it either way, and the
 								// context restore path can roll it back.
-								
 								sponsor_usable = true;
 								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d; Accepting Sponsor\n",
 									SponsorTidActual, static_cast<int>(wr));
@@ -1389,8 +1388,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			if (poll > 0)
 			{
-				
-				
 				Sleep(poll < 8 ? 2 : 10);
 			}
 
@@ -1433,8 +1430,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			}
 
 			resumed = ResumeDonorThread("force-restore");
-			
-			
 			if (!resumed)
 			{
 				restored = false;
@@ -1449,10 +1444,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		}
 	};
 
-	
 	// The remote allocation may only be released once the hijacked thread is
 	// provably no longer executing from it.
-	
 	auto StubRegionFreeToRelease = [&]() -> bool
 	{
 		if (WaitForSingleObject(hThread, 0) == WAIT_OBJECT_0)
@@ -1472,10 +1465,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return probe.Rip < code_base || probe.Rip >= code_base + kWxCodePage;
 	};
 
-	
 	// Decide what happens to the trampoline: reclaim it now, or hand it to the
 	// deferred reaper that will try again later.
-	
 	auto ReclaimOrRetainTrampoline = [&](bool context_restored, SR_REMOTE_STATE State) -> void
 	{
 		if (context_restored)
@@ -1523,8 +1514,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	// A stub that never got scheduled is a common failure: the donor thread was
 	// parked on something the OS would not wake for us. A single posted message
 	// nudges it once before the whole attempt is abandoned.
-	
-	
 	bool nudge_sent = false;
 	DWORD nudge_after_ms = 250;
 
@@ -1566,7 +1555,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				}
 				LOG(1, "[ThreadHijack] [*] Polling Execution: State = Finished | Iterations = %u | Elapsed = %u ms | Return Value = 0x%08X\n", poll_iterations, exec_ms, data.Ret);
 
-				
 				if (data.StackScrubbedBytes)
 				{
 					LOG(1, "[ThreadHijack] [+] Stack Sanitization: Scrubbed = %llu Bytes | Cycles = %llu\n",

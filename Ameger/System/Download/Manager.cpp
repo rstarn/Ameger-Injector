@@ -112,11 +112,8 @@ bool Manager::SetTimeout(DWORD milliseconds)
 
     m_ullDeadline.store(GetTickCount64() + milliseconds);
 
-    
     bool was_running = (m_hWatchdog != nullptr);
     StartWatchdog();
-    
-    
     if (was_running && m_hWatchdogWake)
     {
         SetEvent(m_hWatchdogWake);

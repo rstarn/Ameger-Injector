@@ -544,7 +544,6 @@ bool SymbolDownloadDisabled()
 
 namespace
 {
-	
 	constexpr size_t kRandomLeafLength = 10;
 	// The scratch leaf is a fixed length random name. Recognising it by shape
 	// rather than by a stored list is what makes it safe to delete later: a
@@ -613,7 +612,6 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		return false;
 	}
 
-	
 	if (root[1] != L':' || (root[2] != L'\\' && root[2] != L'/'))
 	{
 		return false;
@@ -624,11 +622,9 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 	const size_t drive_end = normalized.find_first_of(L"\\/", 3);
 	if (drive_end == std::wstring::npos)
 	{
-		
 		return false;
 	}
 
-	
 	std::wstring leaf;
 	for (size_t i = normalized.size() - 2; i > 0; --i)
 	{
@@ -694,8 +690,6 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		const bool nested = lower_root.compare(0, lower_own.size(), lower_own) == 0;
 		if (nested)
 		{
-			
-			
 			std::wstring remainder = lower_root.substr(lower_own.size());
 			if (!remainder.empty() && (remainder.front() == L'\\' || remainder.front() == L'/'))
 			{
@@ -911,8 +905,6 @@ std::wstring CharArrayToStdWstring(const char * szString)
 		const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, nullptr, 0);
 		if (required > 1)
 		{
-			
-			
 			out.assign(static_cast<size_t>(required), L'\0');
 
 			if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szString, -1, out.data(), required))

@@ -39,14 +39,7 @@ inline constexpr wchar_t kCyan[] = L"";
 
 #pragma region console output
 
-int UiWprintf(const wchar_t * format, ...);
-int UiFwprintf(FILE * stream, const wchar_t * format, ...);
 int UiLog(int indent, const wchar_t * format, ...);
-
-// The CRT's wide printf entry points are redirected so that everything the
-// launcher prints also lands in the rolling transcript.
-#define wprintf UiWprintf
-#define fwprintf UiFwprintf
 
 #undef LOG
 #define LOG UiLog
@@ -65,7 +58,7 @@ namespace ameger_ui_log
 
 // The name of the transcript file next to the launcher. It is derived from the
 // launcher name so a renamed build does not overwrite an older transcript.
-inline std::wstring g_ResultLogName = L"Result.log";
+inline std::wstring g_ResultLogName;
 
 #pragma endregion
 
