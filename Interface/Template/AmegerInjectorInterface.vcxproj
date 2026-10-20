@@ -53,7 +53,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>None</DebugInformationFormat>
       <PreprocessorDefinitions>AMEGER_RUNTIME_DLL_HASH0=$(AmegerRuntimeHash0);AMEGER_RUNTIME_DLL_HASH1=$(AmegerRuntimeHash1);AMEGER_RUNTIME_DLL_HASH2=$(AmegerRuntimeHash2);AMEGER_RUNTIME_DLL_HASH3=$(AmegerRuntimeHash3);AMEGER_RUNTIME_DLL_HASH4=$(AmegerRuntimeHash4);AMEGER_RUNTIME_DLL_HASH5=$(AmegerRuntimeHash5);AMEGER_RUNTIME_DLL_HASH6=$(AmegerRuntimeHash6);AMEGER_RUNTIME_DLL_HASH7=$(AmegerRuntimeHash7);AMEGER_STRING_SEED=$(AmegerStringSeed);AMEGER_CONFIG_MAGIC_STR=&quot;$(AmegerConfigMagic)&quot;;AMEGER_WINDOW_CLASS_STR=&quot;$(AmegerWindowClass)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..;$(ProjectDir)..\..\Ameger;$(ProjectDir)..\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..;$(ProjectDir)..\..\Ameger;$(ProjectDir)..\Source;$(ProjectDir)..\Source\PCH;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>PCH.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)Interface.pch</PrecompiledHeaderOutputFile>
@@ -69,12 +69,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\Source\Launcher.h" />
-    <ClInclude Include="..\Source\PCH.h" />
-    <ClCompile Include="..\Source\Process.cpp" />
+    <ClInclude Include="..\Source\PCH\PCH.h" />
+    <ClCompile Include="..\Source\Interface\Process.cpp" />
       <ClCompile Include="..\Source\Main.cpp" />
-    <ClCompile Include="..\Source\Stealth.cpp" />
-    <ClCompile Include="..\Source\Ui.cpp" />
-    <ClCompile Include="..\Source\PCH.cpp">
+    <ClCompile Include="..\Source\Interface\Stealth.cpp" />
+    <ClCompile Include="..\Source\Interface\Interface.cpp" />
+    <ClCompile Include="..\Source\PCH\PCH.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PCH.h</PrecompiledHeaderFile>
     </ClCompile>
