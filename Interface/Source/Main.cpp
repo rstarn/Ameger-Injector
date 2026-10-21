@@ -188,6 +188,26 @@ namespace
 
     bool FileExists(const std::wstring & path);
 
+    // Whether the operator asked for the run transcript to be kept even when
+    // the run succeeded. The default is to leave nothing behind. The setting
+    // comes from the configuration file, because the launcher runs elevated
+    // and an elevated process does not inherit its parent's environment.
+    bool g_KeepResultLog = false;
+
+    bool KeepResultLogRequested()
+    {
+        if (g_KeepResultLog)
+        {
+            return true;
+        }
+        wchar_t buffer[8] = {};
+        // The decrypted name is kept as an object, not as a pointer into it:
+        // the temporary's destructor wipes its buffer when it goes away.
+        const auto name = XOR_STR_W(L"AMEGER_KEEP_RESULT_LOG");
+        const DWORD got = GetEnvironmentVariableW(name.get(), buffer, 4);
+        return got == 1 && buffer[0] == L'1';
+    }
+
     std::wstring GetAmegerWindowClass()
     {
         static const wchar_t kBakedWide[] = AMEGER_WIDEN(AMEGER_WINDOW_CLASS_STR);
@@ -912,6 +932,11 @@ namespace
         return true;
     }
 
+    // Whether a file is one of the randomly named copies this tool makes.
+    // The stem is what identifies it: MakeRandomExeFileName produces eight to
+    // twelve letters and digits followed by the extension, and the first
+    // character is always a letter. The length is measured on the stem
+    // because the extension is not part of what makes the name random.
     bool IsDeletableSelfCopy(const std::wstring & own_path, const std::wstring & candidate)
     {
         const size_t own_slash = own_path.find_last_of(L"\\/");
@@ -929,11 +954,13 @@ namespace
         }
 
         const std::wstring name = candidate.substr(cand_slash + 1);
-        if (name.size() < 12 || name.size() > 16)
+        if (name.size() < 4 || _wcsicmp(name.c_str() + name.size() - 4, L".exe") != 0)
         {
             return false;
         }
-        if (_wcsicmp(name.c_str() + name.size() - 4, L".exe") != 0)
+
+        const size_t stem = name.size() - 4;
+        if (stem < 8 || stem > 12)
         {
             return false;
         }
@@ -946,7 +973,6 @@ namespace
             return false;
         }
 
-        const size_t stem = name.size() - 4;
         for (size_t i = 1; i < stem; ++i)
         {
             if (!is_alnum(name[i]))
@@ -956,6 +982,34 @@ namespace
         }
 
         return true;
+    }
+
+    // Removes the randomly named copy this process is running from. Only a
+    // process that was launched with the child marker is a copy this tool
+    // made; the operator's own file is never touched.
+    void DeleteOwnSelfCopyIfChild()
+    {
+        if (!HasMarker(GetCommandLineW(), kChildMarker))
+        {
+            return;
+        }
+
+        std::wstring own;
+        if (!GetOwnExePath(own))
+        {
+            return;
+        }
+        if (!IsDeletableSelfCopy(own, own))
+        {
+            return;
+        }
+
+        // The image file is opened with delete sharing, so this marks the
+        // copy for removal while the process is still running.
+        if (DeleteFileW(own.c_str()))
+        {
+            LOG(0, L"  %ls[+]%ls The Temporary Copy Was Removed.\n", kGreen, kReset);
+        }
     }
 
     bool PolymorphicSelfRename(const std::wstring & parentHint)
@@ -1531,6 +1585,19 @@ namespace
 
         value = parsed;
         return true;
+    }
+
+    // A size that may be zero, which means "no limit". A malformed value
+    // leaves the existing setting alone rather than silently removing a
+    // limit that was there on purpose.
+    size_t ParseConfigSize(const std::wstring & text, size_t current)
+    {
+        unsigned long long parsed = 0;
+        if (!ParseUnsigned(text, parsed) || parsed > (std::numeric_limits<size_t>::max)())
+        {
+            return current;
+        }
+        return static_cast<size_t>(parsed);
     }
 
     bool ParseDword(const std::wstring & text, DWORD & value)
@@ -2522,6 +2589,34 @@ wchar_t name[48]{};
                     config.timeout = static_cast<int>(parsed);
                 }
             }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"KeepResultLog").get()))
+            {
+                config.keep_result_log = ParseConfigBool(value, config.keep_result_log);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"SurveyMaxRegions").get()))
+            {
+                config.survey_max_regions = ParseConfigSize(value, config.survey_max_regions);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"SurveyMaxMb").get()))
+            {
+                config.survey_max_mb = ParseConfigSize(value, config.survey_max_mb);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"SurveyMaxSampleRegions").get()))
+            {
+                config.survey_max_sample_regions = ParseConfigSize(value, config.survey_max_sample_regions);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"DonorOwnerBlocklist").get()))
+            {
+                config.donor_owner_blocklist = value;
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"TestTarget").get()))
+            {
+                const std::wstring trimmed = TrimText(value);
+                if (!trimmed.empty())
+                {
+                    config.test_target = trimmed;
+                }
+            }
             else if (manual && EqualsNoCase(key, XOR_STR_W(L"ExecuteTLS").get()))
             {
                 config.execute_tls = ParseConfigBool(value, config.execute_tls);
@@ -3140,34 +3235,103 @@ wchar_t name[48]{};
         return name;
     }
 
-    DWORD FindProcess(const std::wstring & requested_name)
+    // Every process running under the given image name. The first name match
+    // is not always the one that can be written to: several modern
+    // applications run a helper under the same image name, and a helper that
+    // has not published its loader list cannot be mapped into.
+    std::vector<DWORD> FindProcesses(const std::wstring & requested_name)
     {
+        std::vector<DWORD> found;
         const std::wstring name = NormalizeProcessName(requested_name);
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snapshot == INVALID_HANDLE_VALUE)
         {
-            return 0;
+            return found;
         }
 
         PROCESSENTRY32W entry{};
         entry.dwSize = sizeof(entry);
-        DWORD result = 0;
         if (Process32FirstW(snapshot, &entry))
         {
             do
             {
                 if (_wcsicmp(entry.szExeFile, name.c_str()) == 0)
                 {
-                    result = entry.th32ProcessID;
-                    break;
+                    found.push_back(entry.th32ProcessID);
                 }
             } while (Process32NextW(snapshot, &entry));
         }
 
         CloseHandle(snapshot);
-        return result;
+        return found;
     }
 
+    // The working set of a process, used only to tell a main instance apart
+    // from the helpers that run beside it under the same image name.
+    SIZE_T WorkingSetSize(DWORD pid)
+    {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!process)
+        {
+            return 0;
+        }
+        FileHandleGuard guard(process);
+
+        PROCESS_MEMORY_COUNTERS counters{};
+        counters.cb = sizeof(counters);
+        if (!K32GetProcessMemoryInfo(process, &counters, sizeof(counters)))
+        {
+            return 0;
+        }
+        return static_cast<SIZE_T>(counters.WorkingSetSize);
+    }
+
+    // The process under the given image name that can actually be written to.
+    // A candidate whose loader list has not been published is skipped, so the
+    // launcher does not pick a helper process and fail later with a
+    // confusing error. Among the candidates that qualify, the one with the
+    // largest working set is taken, which is the main instance rather than
+    // one of the helpers that run beside it.
+    DWORD FindProcess(const std::wstring & requested_name)
+    {
+        const std::vector<DWORD> candidates = FindProcesses(requested_name);
+        if (candidates.empty())
+        {
+            return 0;
+        }
+
+        DWORD best = 0;
+        SIZE_T best_working_set = 0;
+        for (DWORD pid : candidates)
+        {
+            ProcessIdentity identity{};
+            if (!QueryProcessIdentity(pid, identity) || !identity.loader_list_published)
+            {
+                continue;
+            }
+            const SIZE_T working_set = WorkingSetSize(pid);
+            if (!best || working_set > best_working_set)
+            {
+                best = pid;
+                best_working_set = working_set;
+            }
+        }
+
+        if (best)
+        {
+            return best;
+        }
+
+        // Nothing published a loader list. The first candidate is returned so
+        // the failure is the injection's own diagnostic and not a silent
+        // "no such process".
+        return candidates.front();
+    }
+
+    // Re-checks that the process the operator confirmed is still the process
+    // that is about to be written to. A name-based target is resolved again
+    // here, and a game that exits and is relaunched between the confirmation
+    // and the load would otherwise be silently swapped for its replacement.
     bool RefreshTarget(TargetSelection & target)
     {
         if (target.by_name)
@@ -3177,11 +3341,62 @@ wchar_t name[48]{};
             {
                 return false;
             }
+            ProcessIdentity current{};
+            if (!QueryProcessIdentity(pid, current))
+            {
+                return false;
+            }
+            if (target.identity.pid == 0)
+            {
+                target.identity = current;
+            }
+            else if (!target.identity.Matches(current))
+            {
+                LOG(0, L"  %ls[!]%ls The Target Was Replaced Between Confirmation And Load "
+                        L"(PID %lu Is Not The Process That Was Confirmed); Refusing To Continue.\n",
+                    kYellow, kReset, static_cast<unsigned long>(pid));
+                return false;
+            }
+            else if (!current.loader_list_published)
+            {
+                LOG(0, L"  %ls[!]%ls The Target Has Not Published Its Loader List; "
+                        L"There Is Nothing To Map Into.\n", kYellow, kReset);
+                return false;
+            }
             target.pid = pid;
-            return QueryProcess(pid, target.name, target.architecture);
+            target.name = current.name;
+            target.architecture = current.architecture;
+            return true;
         }
 
-        return QueryProcess(target.pid, target.name, target.architecture);
+        ProcessIdentity current{};
+        if (!QueryProcessIdentity(target.pid, current))
+        {
+            return false;
+        }
+        if (target.identity.pid == 0)
+        {
+            // A target that was named by its process identifier rather than by
+            // its image name has no earlier observation to compare against.
+            // This one is taken now and is what a later refresh checks.
+            target.identity = current;
+        }
+        else if (!target.identity.Matches(current))
+        {
+            LOG(0, L"  %ls[!]%ls The Target Was Replaced Between Confirmation And Load "
+                    L"(PID %lu Is Not The Process That Was Confirmed); Refusing To Continue.\n",
+                kYellow, kReset, static_cast<unsigned long>(target.pid));
+            return false;
+        }
+        else if (!current.loader_list_published)
+        {
+            LOG(0, L"  %ls[!]%ls The Target Has Not Published Its Loader List; "
+                    L"There Is Nothing To Map Into.\n", kYellow, kReset);
+            return false;
+        }
+        target.name = current.name;
+        target.architecture = current.architecture;
+        return true;
     }
 
     bool SelectTarget(const std::wstring & configured_name, TargetSelection & target, bool & cancelled, int timeout_ms)
@@ -3208,14 +3423,21 @@ wchar_t name[48]{};
         for (;;)
         {
             const DWORD found = FindProcess(target.requested_name);
-            if (found && QueryProcess(found, target.name, target.architecture))
+            if (found)
             {
-                target.pid = found;
-                if (hasConsoleForWait)
+                ProcessIdentity identity{};
+                if (QueryProcessIdentity(found, identity) && identity.loader_list_published)
                 {
-                    LOG(0, L"%ls[+]%ls %ls Detected | PID = %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                    target.pid = found;
+                    target.name = identity.name;
+                    target.architecture = identity.architecture;
+                    target.identity = identity;
+                    if (hasConsoleForWait)
+                    {
+                        LOG(0, L"%ls[+]%ls %ls Detected | PID = %ls%lu%ls\n", kGreen, kReset, target.name.c_str(), kGreen, static_cast<unsigned long>(found), kReset);
+                    }
+                    return true;
                 }
-                return true;
             }
 
             if (!hasConsoleForWait)
@@ -3805,6 +4027,116 @@ DWORD BuildFlags(const WizardConfig & config)
         return true;
     }
 
+    // The scratch target that test mode started, and the family of processes
+    // that came with it.
+    //
+    // Several modern images start a broker that hands off to the real
+    // instance and then exits, so the process that was started is often not
+    // the process that survives. The guard therefore records every instance
+    // of the image that existed before the start, and closes every instance
+    // that appeared after it. An instance the operator already had running is
+    // never touched, and nothing is left behind either way.
+    class ScratchTargetGuard
+    {
+        std::vector<DWORD> m_Preexisting;
+        std::vector<DWORD> m_Started;
+        HANDLE m_Process = nullptr;
+        bool m_Owns = false;
+
+    public:
+        ~ScratchTargetGuard()
+        {
+            if (!m_Owns)
+            {
+                return;
+            }
+
+            if (m_Process)
+            {
+                TerminateProcess(m_Process, 0);
+                WaitForSingleObject(m_Process, 5000);
+                CloseHandle(m_Process);
+                m_Process = nullptr;
+            }
+
+            for (DWORD pid : m_Started)
+            {
+                if (std::find(m_Preexisting.begin(), m_Preexisting.end(), pid) != m_Preexisting.end())
+                {
+                    continue;
+                }
+                HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                if (!process)
+                {
+                    continue;
+                }
+                FileHandleGuard guard(process);
+                TerminateProcess(process, 0);
+            }
+        }
+
+        ScratchTargetGuard() = default;
+        ScratchTargetGuard(const ScratchTargetGuard &) = delete;
+        ScratchTargetGuard & operator=(const ScratchTargetGuard &) = delete;
+
+        // Starts the image when no instance of it is running. Returns false
+        // when one was already there, or when it could not be started.
+        bool StartIfAbsent(const std::wstring & image_name, DWORD & pid_out)
+        {
+            pid_out = 0;
+            if (image_name.empty())
+            {
+                return false;
+            }
+
+            m_Preexisting = FindProcesses(image_name);
+            if (!m_Preexisting.empty())
+            {
+                // The operator already had one open. It is not ours to close.
+                return false;
+            }
+
+            const std::wstring file = image_name.find(L'.') == std::wstring::npos
+                ? image_name + L".exe"
+                : image_name;
+
+            // The image is resolved through the search path rather than
+            // handed to CreateProcess as a bare name, so the process that
+            // starts is the one the operator would have started.
+            wchar_t resolved[MAX_PATH * 2]{};
+            const DWORD found = SearchPathW(nullptr, file.c_str(), nullptr,
+                static_cast<DWORD>(std::size(resolved)), resolved, nullptr);
+            if (!found)
+            {
+                return false;
+            }
+
+            STARTUPINFOW startup{};
+            startup.cb = sizeof(startup);
+
+            PROCESS_INFORMATION info{};
+            // The process is started detached and without a console of its
+            // own. A console of its own leaves the target's loader data
+            // unpublished, which makes it impossible to map into.
+            if (!CreateProcessW(resolved, nullptr, nullptr, nullptr, FALSE,
+                DETACHED_PROCESS, nullptr, nullptr, &startup, &info))
+            {
+                return false;
+            }
+
+            CloseHandle(info.hThread);
+            m_Process = info.hProcess;
+            m_Owns = true;
+            pid_out = info.dwProcessId;
+
+            // The family is collected once the image has had time to settle,
+            // so the instances that came up with the start are known.
+            Sleep(1500);
+            m_Started = FindProcesses(image_name);
+            return true;
+        }
+    };
+
     int RunInteractiveWizard(Runtime & runtime)
     {
         LOG(0, L"[Attempt %d/%d]\n\n", GetRetryIndex() + 1, kMaxLaunchAttempts);
@@ -3880,6 +4212,18 @@ DWORD BuildFlags(const WizardConfig & config)
             PauseBeforeExit();
             return 1;
         }
+        // The payload bytes live in this process's heap for as long as the
+        // attempt lasts. They are wiped on the way out, whatever the outcome,
+        // so a copy of the payload is not left behind in the launcher's
+        // memory.
+        auto payload_scrub = MakeScopeExit([&raw_data]() noexcept
+        {
+            if (!raw_data.empty())
+            {
+                SecureZeroMemory(raw_data.data(), raw_data.size());
+                std::vector<BYTE>().swap(raw_data);
+            }
+        });
         Trace::Note(L"Payload Size = %zu Bytes", raw_data.size());
         Trace::Note(L"Architecture = %ls", ArchitectureName(fileInformation.architecture));
         Trace::Note(L"Managed (.NET) = %ls", fileInformation.dotnet ? L"Yes" : L"No");
@@ -3906,12 +4250,49 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (config.test_mode)
         {
-            config.target_name = L"notepad.exe";
-            config.quiet = true;
-            config.detach_console = true;
-            config.verbose_trace = false;
+            // Test mode changes what the tool is pointed at and makes the run
+            // reliable against a scratch target. It does not change how much
+            // the tool reports: the verbosity and the console are the
+            // operator's settings, and a test that cannot be read is not a
+            // test.
+            config.target_name = config.test_target.empty() ? L"notepad.exe" : config.test_target;
+
+            // The donor scan is the part that cannot be relied on against a
+            // scratch target, so the direct handle is allowed when the scan
+            // finds nothing.
             SetEnvironmentVariableW(L"INJ_ALLOW_DIRECT_FALLBACK", L"1");
+
+            Trace::Begin(L"Test Mode");
+            Trace::Note(L"The Target Is Forced To %ls", config.target_name.c_str());
+            Trace::Note(L"The Donor Scan May Fall Back To A Direct Handle");
+            Trace::Note(L"The Report Is Written To %ls", g_ResultLogName.c_str());
+            Trace::End();
+
+            LOG(0, L"%ls[*]%ls TEST MODE - The Target Is %ls, Not The Configured Process.\n",
+                kYellow, kReset, config.target_name.c_str());
         }
+
+        // The runtime runs inside this process, so a value published here is
+        // what it sees. The block list cannot come from the environment the
+        // launcher was started in, because the launcher runs elevated and an
+        // elevated process does not inherit its parent's environment.
+        if (!config.donor_owner_blocklist.empty())
+        {
+            SetEnvironmentVariableW(L"AMEGER_DONOR_OWNER_BLOCKLIST",
+                config.donor_owner_blocklist.c_str());
+        }
+        g_KeepResultLog = config.keep_result_log;
+        if (config.test_mode)
+        {
+            // The report is the entire point of a test run, so it is always
+            // written.
+            g_KeepResultLog = true;
+        }
+
+        // The scratch target is owned by this guard, so it is closed when the
+        // wizard returns.
+        ScratchTargetGuard scratch_target;
+
         Trace::Begin(L"Operator Confirmation");
         ConfirmationResult confirmation = ConfirmationResult::Proceed;
         if (config.test_mode)
@@ -3940,6 +4321,21 @@ DWORD BuildFlags(const WizardConfig & config)
         Trace::Begin(L"Select Target Process");
         TargetSelection target;
         bool cancelled = false;
+        if (config.test_mode)
+        {
+            // A scratch target is started here when the operator has none
+            // open, so the run does not sit waiting for one to appear.
+            DWORD scratch_pid = 0;
+            if (scratch_target.StartIfAbsent(config.target_name, scratch_pid))
+            {
+                Trace::Note(L"A Scratch %ls Was Started (PID %lu); It And Any Instance That Came With It Are Closed When The Run Ends",
+                    config.target_name.c_str(), static_cast<unsigned long>(scratch_pid));
+            }
+            else
+            {
+                Trace::Note(L"An Existing %ls Was Left Running By The Operator", config.target_name.c_str());
+            }
+        }
         if (!SelectTarget(config.target_name, target, cancelled, config.timeout))
         {
             Trace::End();
@@ -3991,7 +4387,8 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (!RefreshTarget(target))
         {
-            PrintError(L"Target Exited Before Loading. Re-Run And Choose Faster.");
+            PrintError(L"The Target Is No Longer The Process That Was Confirmed (It Exited, Or It Was Replaced). "
+                        L"Re-Run And Choose Faster.");
             PauseBeforeExit();
             return kResultRetryable;
         }
@@ -4239,6 +4636,9 @@ DWORD BuildFlags(const WizardConfig & config)
                 buffers.runtime_path_known = !runtime_path.empty();
                 buffers.runtime_read = buffers.runtime_path_known && ReadFileBytes(runtime_path, buffers.runtime_bytes);
             }
+            buffers.survey_max_regions = config.survey_max_regions;
+            buffers.survey_max_mb = config.survey_max_mb;
+            buffers.survey_max_sample_regions = config.survey_max_sample_regions;
 
             stealth_gate_ok = stealth::SafeDebugAndVerifyStealth(targetHandle, data.hDllOut, flags, raw_data.data(), raw_data.size(),
                 &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
@@ -4578,10 +4978,12 @@ DWORD BuildFlags(const WizardConfig & config)
 
         row(L"Verification Gate......... ", stealth_gate_ok);
         LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
-        LOG(0, L"====================================================================================================\n");
-        LOG(0, L"[Result] [+] Mapped At %p In %ls (PID %lu)\n",
-            data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
-        LOG(0, L"====================================================================================================\n");
+            LOG(0, L"====================================================================================================\n");
+            LOG(0, L"[Result] %ls%ls%ls Mapped At %p In %ls (PID %lu)\n",
+                config.test_mode ? kYellow : kGreen,
+                config.test_mode ? L"[TEST MODE] " : L"[+]",
+                kReset, data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
+            LOG(0, L"====================================================================================================\n");
         Trace::Summary(L"Success");
         PauseBeforeExit();
         return 0;
@@ -4632,6 +5034,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         return 0;
     }
 
+    const int retryIndex = GetRetryIndex();
+
     {
         const std::wstring config_path = ConfigurationPath();
         const size_t slash = config_path.find_last_of(L"\\/");
@@ -4642,14 +5046,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
             const std::wstring stem = config_path.substr(start, dot - start);
             if (!stem.empty())
             {
-                g_ResultLogName = stem + L".log";
+                // Each attempt gets its own transcript, so a failed attempt is
+                // not overwritten by the retry that follows it.
+                if (retryIndex > 0)
+                {
+                    g_ResultLogName = stem + L".attempt" + std::to_wstring(retryIndex) + L".log";
+                }
+                else
+                {
+                    g_ResultLogName = stem + L".log";
+                }
             }
         }
     }
 
     ameger_ui_log::ResetResultLog();
-
-    const int retryIndex = GetRetryIndex();
     Runtime runtime;
     int result = 1;
     try
@@ -4668,10 +5079,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         {
             runtime.shutdown_runtime();
         }
+        // The entry points are dropped before the image is released, so a
+        // later mistake cannot call into a module that is no longer mapped.
+        runtime.memory_inject = nullptr;
+        runtime.get_symbol_state = nullptr;
+        runtime.get_import_state = nullptr;
+        runtime.initialize_runtime = nullptr;
+        runtime.shutdown_runtime = nullptr;
+        runtime.start_download = nullptr;
+        runtime.set_raw_print_callback = nullptr;
+        runtime.get_last_hijack_stats = nullptr;
+        runtime.get_last_map_stats = nullptr;
+        runtime.get_last_string_stats = nullptr;
+        runtime.get_last_thread_exec_stats = nullptr;
+        runtime.get_last_exec_telemetry = nullptr;
+        runtime.get_last_error_info = nullptr;
+        runtime.clear_last_error_info = nullptr;
+        FreeLibrary(runtime.module);
         runtime.module = nullptr;
     }
 
-    ameger_ui_log::WriteResultLog();
+    // The transcript is a record of what was done, and it is only worth
+    // keeping when something went wrong. A clean run leaves nothing behind,
+    // unless the operator asked for it to be kept.
+    if (result == 0 && !g_KeepResultLog && !KeepResultLogRequested())
+    {
+        ameger_ui_log::DiscardResultLog();
+    }
+    else
+    {
+        ameger_ui_log::WriteResultLog();
+    }
     ameger_ui_log::Clear();
 
     if (result == kResultRetryable && retryIndex + 1 < kMaxLaunchAttempts)
@@ -4689,6 +5127,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         LayeredNotify(L"Launcher", message.c_str(), 5000);
         result = 1;
     }
+
+    // The copy this process is running from is removed last, after the retry
+    // has been spawned from it.
+    DeleteOwnSelfCopyIfChild();
 
     return result;
 }

@@ -9,81 +9,102 @@
 //
 // The transcript is kept in memory as it is produced and is written to disk at
 // the end of the run, so a failed attempt can still be inspected afterwards.
+// Removes the ANSI escape sequences from a fragment of console output. The
+// transcript on disk and the stream written to a console that cannot render
+// VT sequences both need the same cleaned text.
+static std::wstring StripAnsiEscapes(const wchar_t * text)
+{
+    if (!text || !*text)
+    {
+        return {};
+    }
+
+    std::wstring clean;
+    size_t len = 0;
+    while (text[len])
+    {
+        ++len;
+    }
+    clean.reserve(len);
+    for (size_t i = 0; text[i]; ++i)
+    {
+        if (text[i] == L'\x1b' && text[i + 1] == L'[')
+        {
+            size_t j = i + 2;
+            while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
+                text[j] == L'<' || text[j] == L'=' || text[j] == L'>' || text[j] == L'?' || text[j] == L'!'))
+            {
+                ++j;
+            }
+            while (text[j] && text[j] >= L' ' && text[j] <= L'/')
+            {
+                ++j;
+            }
+            if (text[j] && text[j] >= L'@' && text[j] <= L'~')
+            {
+                i = j;
+                continue;
+            }
+        }
+        else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
+        {
+            if (text[i + 2])
+            {
+                i += 2;
+                continue;
+            }
+        }
+        clean += text[i];
+    }
+    return clean;
+}
+
 namespace ameger_ui_log
 {
     constexpr size_t kMaxChars = 2097152;
 
 static SRWLOCK & Lock()
-    {
-        static SRWLOCK lock = SRWLOCK_INIT;
-        return lock;
-    }
+{
+    static SRWLOCK lock = SRWLOCK_INIT;
+    return lock;
+}
 
 static std::wstring & Buffer()
+{
+    static std::wstring buffer;
+    return buffer;
+}
+
+void AppendClean(const wchar_t * text)
+{
+    if (!text || !*text)
     {
-        static std::wstring buffer;
-        return buffer;
+        return;
     }
+    AcquireSRWLockExclusive(&Lock());
+    std::wstring & buf = Buffer();
+    if (buf.size() < kMaxChars)
+    {
+        const size_t room = kMaxChars - buf.size();
+        size_t take = wcslen(text);
+        if (take > room)
+        {
+            take = room;
+        }
+        buf.append(text, take);
+    }
+    ReleaseSRWLockExclusive(&Lock());
+}
 
 void AppendStripped(const wchar_t * text)
+{
+    const std::wstring clean = StripAnsiEscapes(text);
+    if (clean.empty())
     {
-        if (!text || !*text)
-        {
-            return;
-        }
-        std::wstring clean;
-        size_t len = 0;
-        while (text[len])
-        {
-            ++len;
-        }
-        clean.reserve(len);
-        for (size_t i = 0; text[i]; ++i)
-        {
-            if (text[i] == L'\x1b' && text[i + 1] == L'[')
-            {
-                size_t j = i + 2;
-                while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
-                    text[j] == L'<' || text[j] == L'=' || text[j] == L'>' || text[j] == L'?' || text[j] == L'!'))
-                {
-                    ++j;
-                }
-                while (text[j] && text[j] >= L' ' && text[j] <= L'/')
-                {
-                    ++j;
-                }
-                if (text[j] && text[j] >= L'@' && text[j] <= L'~')
-                {
-                    i = j;
-                    continue;
-                }
-            }
-            else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
-            {
-                if (text[i + 2])
-                {
-                    i += 2;
-                    continue;
-                }
-            }
-            clean += text[i];
-        }
-        if (clean.empty())
-        {
-            return;
-        }
-        AcquireSRWLockExclusive(&Lock());
-        std::wstring & buf = Buffer();
-        if (buf.size() < kMaxChars)
-        {
-            if (buf.size() + clean.size() > kMaxChars)
-            {
-                clean.resize(kMaxChars - buf.size());
-            }
-            buf += clean;
-        }
-        ReleaseSRWLockExclusive(&Lock());
+        return;
     }
+    AppendClean(clean.c_str());
+}
 
 std::wstring Snapshot()
     {
@@ -115,13 +136,20 @@ std::wstring ResultLogPath()
     }
 
 void ResetResultLog()
+{
+    const std::wstring path = ResultLogPath();
+    if (!path.empty())
     {
-        const std::wstring path = ResultLogPath();
-        if (!path.empty())
-        {
-            DeleteFileW(path.c_str());
-        }
+        DeleteFileW(path.c_str());
     }
+}
+
+// Removes the transcript outright. A clean run should not leave a record of
+// what it did next to the launcher.
+void DiscardResultLog()
+{
+    ResetResultLog();
+}
 
 void WriteResultLog()
     {
@@ -170,6 +198,28 @@ void Clear()
 
 
 
+// Whether the attached console can render the ANSI sequences the tints are
+// made of. A console that cannot is fed the cleaned text instead, so escape
+// bytes never reach the screen.
+static bool ConsoleSupportsColor()
+{
+    static const bool supported = []()
+    {
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (!output || output == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        DWORD mode = 0;
+        if (!GetConsoleMode(output, &mode))
+        {
+            return false;
+        }
+        return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+    }();
+    return supported;
+}
+
 int UiLog(int indent, const wchar_t * format, ...)
 {
     if (!format)
@@ -195,12 +245,20 @@ int UiLog(int indent, const wchar_t * format, ...)
     va_end(args);
     if (written > 0)
     {
-        ameger_ui_log::AppendStripped(buffer.data());
+        const std::wstring clean = StripAnsiEscapes(buffer.data());
+        ameger_ui_log::AppendClean(clean.c_str());
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;
         if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
         {
-            fputws(buffer.data(), stdout);
+            if (ConsoleSupportsColor())
+            {
+                fputws(buffer.data(), stdout);
+            }
+            else
+            {
+                fputws(clean.c_str(), stdout);
+            }
             fflush(stdout);
         }
     }

@@ -13,6 +13,8 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
 | C | Three additional threads not previously covered | Source record |
 | D | Verification: what is wrong, and why (platform-level) | Analysis |
 | E | **RETRACTED** — the `0xCC` demand-paging theory, killed by our own measurement | See E0 before reading |
+| D6a | **2026-10-21 scope + handle correction** — our census was per-module; the launcher's environment knobs were dead (elevation) | Analysis |
+| E1a | **2026-10-21 scope correction** — our census was per-module, not process-wide; E1's discriminator was already answered | Analysis |
 | F | Implications for this injector + our live measurements | Analysis |
 | G | Open questions | — |
 | H | Sources + access log | — |
@@ -23,6 +25,28 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
   (PID 10244) measured 1,199,181 `0xCC` bytes at runtime, not 0. OP §1 (1 import), §3.2
   (76 exports) and §1 (3 TLS callbacks) **confirmed** by read-back; OP §3.1
   (`GuardFlags: 0x100`) **contradicted** (CFG policy off). See D13a, D6a, E0.
+- 2026-10-21 (c) — **scope correction (E1a) and handle-policy correction (F1c).** Our own
+  census was described here as "process-wide"; it was bounded to the target's main module
+  image range, and the report line that said otherwise was mislabelled. E1's "is it in-image
+  or in free space" discriminator was therefore already answered (all in-image), and F5
+  items 4, 5, 6 and 11 are now closed in the tooling: the survey reads the exe's own
+  `GuardFlags`, reports the in-image / free-space split, states its range, prints the
+  single import's module and function name, and locates the loader by its encrypted-core
+  section rather than by name. F1c's "the launcher retains only 0x1010" was wrong — it
+  opens `0x0410` first — and the "UNKNOWN, never clean" claim is withdrawn. The region
+  *shape* (894 executable / 895 no-access regions inside one image) is promoted from
+  "unattributed count" to the strongest live lead in the corpus. See E1a, F1a, F1c, F3,
+  F4, F5, G5.
+- 2026-10-21 (d) — **three findings from an end-to-end verification run of our own
+  tooling**, all of them about us rather than about the target. **F4a:** the launcher runs
+  elevated, and an elevated process gets a fresh environment — so *every* `AMEGER_*`
+  environment knob was dead, including the census bounds and the new donor-owner block
+  list; all of them now live in the configuration file, which is read after the elevation.
+  **F4b:** the exe's own `GuardFlags` is now readable, and on the first system image read
+  back it came to `0x00017500` with a load config of exactly 320 bytes — the OP's
+  "Load Config Size: 320 Bytes" reproduced, and D6a Reading A confirmed. **F4c:** the donor
+  handle owner is screened by name before that owner is opened; 399 owners were skipped in
+  the verification run and the donor came from `svchost.exe` rather than `lsass.exe`.
 
 Every claim below is tagged `[SRC]` (a source says it), `[MY]` (my deduction), or
 `[UNV]` (unverified / disputed). Thread authors are not authoritative; several are
@@ -1190,17 +1214,67 @@ deduction built on top of it is withdrawn.
 
 - **D6 stands (the OP did not justify "CFG"), but the correct answer is now neither CFG nor
   demand-paging** — it is most likely ordinary MSVC inter-function padding. ~3% of sampled
-  executable bytes being `0xCC` is unremarkable for a large x64 image, and 905 executable
-  regions is a lot of modules. The OP's attribution was unsupported; so was my correction.
+  executable bytes being `0xCC` is unremarkable for a large x64 image. The OP's attribution
+  was unsupported; so was my correction.
 - **Part F's posture is unaffected.** We never acted on Part E. `HookRestore=N`,
   query-only, scan-only were already the conservative choice on the strength of §12.7/§F3
   (continuous integrity hashing, overlay surfaces), not on Part E.
 
 **Method note, kept because it is the reusable lesson:** the previous file asserted a
 mechanism from a source's *interpretation* of two numbers, without ever scoping what those
-numbers were measured over. Our census is process-wide (905 exec regions); the OP's was
-scoped to one module. **These are not comparable, and neither was honestly labelled.** Any
-future claim about `0xCC`, `.text` counts, or encryption state must state its region scope.
+numbers were measured over. The OP's was scoped to one module; **our census was scoped to
+one module too** (see E1a — the "process-wide" label on it was wrong). **These are not
+comparable, and neither was honestly labelled.** Any future claim about `0xCC`, `.text`
+counts, or encryption state must state its region scope.
+
+## E1a. CORRECTION (2026-10-21) — the census was per-module, and the label on it lied
+
+**This file, in E0, E1, F1a and F5, repeatedly describes our own census as "process-wide".
+It was not.** The census walks `base → base + modBaseSize` for the target's main module and
+stops there (`Interface/Source/Interface/Stealth.cpp`, the walk bound is the module's own
+image extent). Every region it counted — guard, no-access, executable, INT3 — was therefore
+**inside `Overwatch.exe`'s image range by construction**. The report line that said
+"Process-Wide" was simply mislabelled, and this file inherited the label and reasoned from
+it.
+
+Three consequences, all of which change what is still open:
+
+1. **The E1 discriminator is already answered.** E1 asked "how many of those 906 no-access
+   regions fall inside the image range, versus outside it?" The answer is **all of them** —
+   the walk cannot count a region outside the image. The "filter on data we are already
+   collecting" framing was wrong: the out-of-image count was never collected.
+2. **F5 item 6 ("`0xCC` census scoped per module") was already done.** The census is
+   per-module.
+3. **The numbers that were never examined are the interesting ones.** From the shipped run
+   log (`Build/Release/Ak1ubQ0g.log`, PID 6640), all inside one module's image range:
+
+   | Measurement | Value |
+   |---|---|
+   | Committed regions walked | 1,894 |
+   | Executable regions | **894** |
+   | `PAGE_NOACCESS` regions | **895** (~17,856 KB) |
+   | Guard pages | 0 |
+   | `0xCC` / sampled | 1,197,804 / 31,178,752 (3.8%) |
+
+   **894 separate executable regions inside one shipped x64 image** is not a normal PE
+   layout — an ordinary image has one to three. And the executable count (894) and the
+   no-access count (895) are within one of each other, which is the shape of "every
+   executable page has an inaccessible twin".
+
+   That pairing is *directionally* the C5 / AutoDump demand-paging model: Eidolon guards
+   regions as `PAGE_NOACCESS` and forces decryption through a touch gadget, so the
+   inaccessible half of the pair is the undecrypted half of the image. It is consistent with
+   it; it is not by itself proof of it, and the alternative (a game whose image is
+   deliberately fragmented) is not excluded.
+
+   **This is the observation Part E should have made.** Part E built its demand-paging
+   theory on the `0xCC` count, which was the wrong number, retracted it, and left the
+   region-shape evidence — sitting in the same table — unexamined and labelled "a count
+   with no attribution".
+
+   **Do not** promote the region pairing to a conclusion either. Promote it to a *lead*, and
+   settle it the same way AutoDump settles it: look for the touch gadget and for the
+   `.eid` page in the loader.
 
 ## E1. The live measurement that *is* worth chasing
 
@@ -1218,18 +1292,15 @@ Overwatch.exe........... untrapped (1916 committed region(s) walked)
   Eidolon guarding regions as `PAGE_NOACCESS` specifically (not guard pages) and forcing
   decryption via a touch-gadget. Zero guard pages is therefore *expected* for that model and
   is not evidence against it.
-- But ~18 MB of no-access space is also what a game with a large reserved-but-uncommitted
-  address span looks like. **This is not yet a finding** — it is a count with no attribution,
-  exactly like the `0xCC` census before it.
-- The discriminating question, and it is cheap: **how many of those 906 regions fall inside
-  `Overwatch.exe`'s or `Overwatch_loader.dll`'s image range, versus outside it?** Regions
-  inside an image range and still `PAGE_NOACCESS` while the game is running are the demand-
-  paging signature. Regions in free address space are nothing. Our census already walks
-  every committed region with its address and protection; this is a filter on data we are
-  already collecting, not new collection.
+- As of E1a, the "is it in-image or in free space" ambiguity is **resolved**: the walk was
+  bounded to the module's image range, so all 906 were in-image. What is still missing is
+  *which* module and *which* section, which the 2026-10-21 tooling change now reports
+  directly (per-module, and with the loader located by its encrypted-core section rather
+  than by name).
+- Zero guard pages remains consistent with C5's `PAGE_NOACCESS` model.
 
-**Do not** repeat Part E's mistake and promote this to a conclusion before the filter is
-applied.
+**Do not** repeat Part E's mistake and promote this to a conclusion before the gadget hunt
+is done.
 
 ## E2. What the run *did* settle
 
@@ -1269,23 +1340,25 @@ game-backed pages.
 | Target exports | **94 funcs / 76 names** | **OP §3.2 CONFIRMED to the digit** |
 | Target TLS callbacks | **3 configured** (remote array) | **OP §1 CONFIRMED**; remote walk + out-of-image refusal rule both exercised |
 | Target VEH | **`UsingVEH=YES`**, CrossFlags `0x00000005`, PEB `0x2B3000` read back | A VEH handler **is** registered. Existence only — see D2 for why this is not debugger precedence |
-| Target debug port | **UNKNOWN** (query failed) | Correctly **not** reported as clean — the 0x1010 handle yields `0xC0000022` (F1c) |
+| Target debug port | **UNKNOWN** (query failed) | Correctly **not** reported as clean — see F1c for the handle-rights correction |
 | Target CFG policy | **enable 0, strict 0** | **Contradicts OP §3.1** `Guard Flags: 0x100` — D6a |
-| Trap census | `untrapped`; **1916** committed regions walked | |
+| Trap census | `untrapped`; **1916** committed regions walked | **Scoped to the main module's image range** — see E1a |
 | Guard pages | **0 regions, 0 KB** | No `PAGE_GUARD` anywhere — consistent with C5's `PAGE_NOACCESS` model, but also just a clean process |
-| `PAGE_NOACCESS` | **906 regions, 18,004 KB** | **Unexplained.** ~18 MB no-access in a running game. Lead only — E1 |
-| `0xCC` census | **1,199,181** of 31,457,280 sampled (3%), **905 of 905** exec regions | **Retracts Part E** — the `0xCC` are present at runtime |
+| `PAGE_NOACCESS` | **906 regions, 18,004 KB** | **All inside the main image** (E1a). ~18 MB no-access in a running game's own image. Lead only — E1 |
+| `0xCC` census | **1,199,181** of 31,457,280 sampled (3%), **905 of 905** exec regions | **Retracts Part E** — the `0xCC` are present at runtime. Per-module scope |
 
 **What this run closes:** open questions G5 (imports — 1, OP shape, so the Eidolon loader
 *is* present on this build), G3 partly (structural claims hold), and the D14 staleness
 question for import count / export count / TLS count on *this* build.
 
-**What it opens:** the 906 no-access regions (E1), and the load-config-vs-policy ambiguity
+**What it opens:** the 906 no-access regions (E1/E1a), and the load-config-vs-policy ambiguity
 for CFG (D6a).
 
-**Caveat on scope, and it is the same trap as Part E:** the `0xCC` and no-access censuses
-are **process-wide** (905 exec regions, 1916 committed). The OP's figures were scoped to one
-module. Neither is directly comparable, and neither should be quoted without its scope.
+**Caveat on scope, corrected in E1a:** the `0xCC` and no-access censuses were **not**
+process-wide. They were bounded to the target's main module image range, so they are
+directly comparable in scope to the OP's single-module figures — and, like them, they
+should not be quoted without that scope. The 2026-10-21 tooling change reports the range
+explicitly and adds the free-address-space / in-image split, so the ambiguity cannot recur.
 
 ### F1b. Local baselines — clean Store-notepad, negative control
 
@@ -1304,14 +1377,38 @@ Overwatch run above is the positive case, and the two differ exactly where they 
 | Check | Result | Consequence |
 |-------|--------|-------------|
 | `ProcessDebugPort` / `ProcessDebugFlags` classes | **7** and **31**; class 9 ⇒ `0xC0000003` | **Class is 31, not 9** — 9 is `ProcessAccessToken`. Anyone reusing "9" queries the token class by mistake |
-| Debug reads on the 0x1010 handle | both ⇒ `0xC0000022` | survey reports **UNKNOWN, never clean**, by design |
+| Debug reads on the 0x1010 handle | both ⇒ `0xC0000022` | on a handle with only `QUERY_LIMITED`, both debug reads fail |
+| Debug reads on the 0x0410 handle | **both succeed** | see the correction below |
 | `GetTickCount64` granularity | 2000 samples → 3 distinct values, min step **15–16 ms**; QPC freq 10000000 | **Tick cannot resolve D15's "sub-ms / 2× heuristic."** Use QPC/RDTSC for any timing work; treat Warden timing as coarse-window, not precision |
 | Own-process debugger state | `IsDebuggerPresent`=FALSE, `CheckRemote`=FALSE | the check is live here; TRUE ⇒ operator error, not game state |
 
-The minimal-stealth handle we retain (`QUERY_LIMITED|VM_READ = 0x1010`) makes both debug
-reads fail, so the survey reports **UNKNOWN, never clean**, by design. No escalation added: a
-stronger handle purely for a survey step would trade footprint for a line of output.
-**Decision stands.**
+**CORRECTION (2026-10-21) — the handle policy in this table was wrong.** This file said the
+launcher retains only `QUERY_LIMITED|VM_READ = 0x1010` and that the debug reads therefore
+fail by design ("UNKNOWN, never clean"). **The code does the opposite:** the launcher opens
+`PROCESS_QUERY_INFORMATION | PROCESS_VM_READ = 0x0410` **first**, and falls back to `0x1010`
+only if that fails (`Interface/Source/Main.cpp`, the target handle open).
+
+The shipped run log settles it:
+
+```
+[+] Target Debug Port............ 0000000000000000 (None Attached)
+[+] Target Debug Flags........... 0x00000001 (Read Back)
+```
+
+So on this build the debug port **was** readable, and F1a's "Target debug port | UNKNOWN
+(query failed)" row describes a configuration this tree does not have. That row, and the
+"never clean" claim, are withdrawn.
+
+**What replaces it, and it is a decision rather than an accident:** `0x0410` is a stronger
+footprint than `0x1010` against a Warden that, per C3, probes `NtOpenProcess` and the
+handle table. "Report UNKNOWN rather than clean" was a *better* posture. The fallback order
+should now be an explicit choice — either drop to `0x1010` before the debug probes (and
+report UNKNOWN), or keep `0x0410` and accept the extra right knowingly.
+
+**Also corrected in the same pass:** the suite's "DllMain ms" figure was produced by
+dividing a cycle delta by a hard-coded 3.2 GHz. The divisor is now measured at run time
+against the performance counter, and when the calibration is unavailable the suite reports
+the raw cycle count and claims no duration at all.
 
 ## F2. Live defect found and fixed while surveying
 
@@ -1328,10 +1425,11 @@ only the PowerShell prototype did.
 
 | Priority | Item | Source |
 |----------|------|--------|
+| **HIGH** | **Handle-donor owner** — the process handle is obtained by duplicating a handle out of *another* process, and the shipped run took it from **lsass.exe**. `lsass` handle access is the most heavily monitored process on a Windows box, and C3 has Warden probing `NtOpenProcess` and the handle table. The scan also reads the whole system handle table (4.4 MB / 108k handles) and opens up to 16 foreign owners. **Not previously in this file's risk list at all.** Now mitigated: the donor owner is matched by name against a block list (credential stores, session stores, AV) *before* the owner process is opened, overridable with `AMEGER_DONOR_OWNER_BLOCKLIST`. | C3, run log |
 | **HIGH** | **Overlay/input surfaces** — `EnumWindows` + `DwmGetCompositionTimingInfo` + `GetAsyncKeyState`. Our layered window and clipboard log are directly exposed. Neither the OP nor C3 discusses this against our architecture. | C3 |
 | **HIGH** | **Continuous integrity hashing** — "Eidolon continuously hashes the Object Manager and other critical memory segments." Any write to a game-backed page is the highest-risk operation available to us. | C5 |
-| **MED** | **Loader-side survey** — we have only ever surveyed `Overwatch.exe`. Its import table, TLS array, VEH state, `.eid` size and the `0x4ACxxx` pointer table are all unmeasured by us, and the exe-vs-loader Warden dispute (B1) is exactly where that gap bites. | G4, F5 |
-| **MED** | **906 `PAGE_NOACCESS` regions / 18 MB** — filter by image range. Data already collected. | E1 |
+| **MED** | **Loader-side survey** — the loader is now *located* by its encrypted-core section rather than by name, and its region census is reported alongside the main image. Still unmeasured: its import table, TLS array, VEH state, `.eid` size and the `0x4ACxxx` pointer table. | G4, F5 |
+| **MED** | **906 `PAGE_NOACCESS` regions / 18 MB** — now attributed to the main image (E1a) and reported per module. Still a lead, not a finding: the next step is the C5 touch-gadget hunt. | E1, E1a |
 | MED | Battle.net Identity file (`SOFTWARE\Blizzard Entertainment\Battle.net\Identity\Identity`, reported 56 B / 8 B per line) — ban-state input. Single report; re-verify size. | C3 |
 | MED | Pagefile signal (`GlobalMemoryStatusEx.ullTotalPageFile >> 20`) — VM/RAM-size spoofing now in scope. | C3 |
 | MED | CPUID leaf-0 vendor + leaf-1 ECX/EDX — spoofing checklist item, **heavily hedged** in source. We spoof nothing here. | C3 |
@@ -1349,9 +1447,242 @@ only the PowerShell prototype did.
   artefact** — Warden's handler sees our handler in the list.
 - **Scan-only.** `ScrubRemoteRegion` exists to clean *our own* staging pages, and now
   correctly restores their protection (F2).
-- **`.eid` bytes — skip.**
+- **`.eid` bytes — skip.** The encrypted core is now *identified* structurally (by its
+  section) rather than by name, and its regions are reported as their own category and
+  never read. Identification is not reading.
 - **Crash-callback path — inaction.** A guarded callback is a bad thing to touch.
-- **No handle escalation** for the debug-port survey.
+- **No handle escalation** for the debug-port survey — but see the correction in F1c: the
+  launcher opens `0x0410` before it ever tries `0x1010`, so the escalation is already
+  happening by default and the decision needs to be made explicitly rather than inherited
+  from the order of two `OpenProcess` calls.
+
+**Two states this section did not name, added 2026-10-21:**
+
+- **The runtime does mutate the target's loader state, and always has.** The TLS stage
+  fabricates an `LDR_DATA_TABLE_ENTRY` and an `LDR_DDAG_NODE` out of the target's own
+  loader heap and calls `LdrpHandleTlsData` on them. That is not a game-backed page, but it
+  is a write into the target's loader bookkeeping, and it is on by default
+  (`ExecuteTLS = Y`). "No writes to game-backed pages" is true; "the target is untouched
+  apart from its own mapped image" would not be.
+- **The payload is not exception-covered, on purpose.** `EnableExceptions = N` means
+  `RtlAddFunctionTable` is never called for the payload, so its unwind information is not
+  registered and a fault in the payload lands in **Warden's** VEH handler. That is the
+  right trade for stealth — no new chain entry — and the wrong trade for robustness, and it
+  is a deliberate configuration rather than an oversight. The suite names it ("First-Chance
+  Gap"). The dormant alternative path is not harmless: it inserts the image into the
+  loader's inverted function table and writes into ntdll's `.mrdata` under
+  `LdrProtectMrdata(FALSE)`, which is a write into an ntdll-backed page in the target.
+
+## F4a. NEW (2026-10-21) — the launcher runs elevated, so it never sees the environment it was started in
+
+**This is a defect in our own tooling, found by the end-to-end verification run, and it
+silently disabled every environment-based knob we had.**
+
+The launcher's manifest declares `UACExecutionLevel=RequireAdministrator`. When Windows
+elevates a process through the UAC broker, the elevated process is started with a **fresh
+environment** built from the user's profile, not with the environment its parent had. Every
+variable that was added to the parent after the profile was loaded — which is *every*
+variable an operator sets on the command line — is simply gone.
+
+Measured, not inferred: the launcher's own environment block was dumped at the first line
+of `wWinMain` and compared against the parent shell's. The parent's block had
+`AMEGER_AUTO_CONFIRM` and `AMEGER_KEEP_RESULT_LOG`; the launcher's block had **neither**,
+while everything else (`TEMP`, `Path`, `PROCESSOR_ARCHITECTURE`, …) was identical.
+
+What that silently disabled:
+
+| Knob | Consequence of it being ignored |
+|------|-----------------------------------|
+| `AMEGER_SURVEY_MAX_REGIONS` / `_MAX_MB` / `_MAX_SAMPLE_REGIONS` | **The census bounds did not exist.** The region survey could walk an unbounded number of regions and read an unbounded number of bytes out of the target. That is a stealth problem as much as a stability one. |
+| `AMEGER_VERBOSE` | The runtime's own trace was off regardless of what the operator asked for. |
+| `AMEGER_AUTO_CONFIRM` | The operator confirmation could not be skipped. (Harmless — arguably correct — but it was an accident, not a decision.) |
+| `AMEGER_FULL_CENSUS` | The full thread census could not be requested. |
+| `AMEGER_DONOR_OWNER_BLOCKLIST` | The donor-owner block list (F3, HIGH) **would not have applied at all.** The mitigation would have looked present and done nothing. |
+
+**The fix:** every knob now lives in the configuration file, which is read *after* the
+elevation. `[General]` gained `KeepResultLog`, `SurveyMaxRegions`, `SurveyMaxMb`,
+`SurveyMaxSampleRegions` and `DonorOwnerBlocklist`. The environment variables remain as a
+secondary override for the case where the launcher is run unelevated, and the donor block
+list is published into the launcher's own environment so the runtime — which is loaded
+*into* the launcher process — sees it.
+
+**The general lesson, and it is the same one this file keeps relearning:** a setting that
+is read from a place the process does not control is not a setting. Every knob that matters
+now has a read-back, and the verification run exercises the knobs rather than assuming them.
+
+## F4b. NEW (2026-10-21) — the exe's own control flow guard declaration is now readable
+
+The suite used to read the target's *process* CFG policy (`enable 0 strict 0`) and compare
+it against the OP's claim of `GuardFlags: 0x100`, with no way to tell whether the OP had
+read the right field. It now reads the image's own
+`IMAGE_LOAD_CONFIG_DIRECTORY64.GuardFlags` (x64 offset `0x90`) in the same run and prints
+both side by side.
+
+**First read-back (against a clean x64 system image, not Overwatch):**
+
+```
+Target CFG Policy: Enable 0 | Strict 0.
+Target Load Config: GuardFlags = 0x00017500 | CFG Instrumented = Yes | Load Config Size = 320
+```
+
+Two things follow immediately:
+
+1. **`Load Config Size = 320` matches the OP's "Load Config Size: 320 Bytes" exactly.** A
+   second independent OP detail reproduced.
+2. **`GuardFlags = 0x00017500` has `IMAGE_GUARD_CF_INSTRUMENTED` (`0x100`) set**, and the
+   CFG *policy* is off. That is precisely **D6a Reading A** — the image declares the
+   feature, the process does not enforce it — which is the reading that leaves the OP's
+   §3.1 intact rather than refuted. On the target the same read decides D6a outright.
+
+Note also the x64 layout trap this exposed: the SDK's `IMAGE_LOAD_CONFIG_DIRECTORY` is the
+**32-bit** structure, and its `SecurityCookie` offset (`0x38`) is not the 64-bit one
+(`0x58`). The suite was reading the security cookie out of the wrong field. The 64-bit
+offsets are now stated explicitly.
+
+## F4c. NEW (2026-10-21) — the donor handle is now taken from a screened owner
+
+The shipped run took the target's process handle out of **`lsass.exe`** (F3, HIGH). The
+donor owner is now matched by name against a block list — the credential and session
+stores, and the endpoint processes — **before that owner is ever opened**, and the count of
+skipped owners is reported. In the verification run: `Blocklisted = 399`, and the donor came
+from `svchost.exe`.
+
+The owner image names come from a single process snapshot, so identifying a blocked owner
+costs no additional process opens. The list is configurable through
+`[General] DonorOwnerBlocklist` (see F4a for why it is not an environment variable).
+
+## F4d. NEW (2026-10-21) — a target with no published loader list cannot be mapped into
+
+**Found by the test-mode run, and it applies to any target, not just a scratch one.**
+
+The remote shell's dispatch table holds absolute addresses taken from *this* process's
+ntdll, and the remote syscall stubs jump through a gadget in that same image. Both are only
+meaningful in the target while ntdll sits at the same base in both processes, so the base
+is confirmed by walking the target's PEB loader list before anything is written.
+
+**A process whose PEB carries a null loader pointer has not published its loader list, and
+there is nothing to walk.** Measured, not inferred:
+
+| How the target was started | Target's `PEB->Ldr` |
+|---------------------------|---------------------|
+| `CreateProcessW` + `CREATE_NEW_CONSOLE` + `SW_HIDE` | **null**, persistently |
+| `CreateProcessW`, plain | valid |
+| `CreateProcessW` + `DETACHED_PROCESS` | valid |
+| launched through the shell | valid |
+
+The first row is a genuine Windows state, not a broken read, and it held for the whole
+life of the process. Two things were fixed:
+
+- **The runtime falls back to the loader's own module list.** When the PEB walk cannot
+  produce ntdll's base, the kernel's module list is consulted instead. It is built from the
+  same data and is available in exactly the state where the PEB pointer is not published.
+  The failure mode before this was a hard refusal to load.
+- **The launcher refuses to target a process that cannot be written to.** The candidate
+  list is filtered on the same condition, so a helper process is never picked and the
+  failure is a clear message rather than a late one.
+
+## F4e. NEW (2026-10-21) — modern images run several same-named processes, and one of them is a broker
+
+This is the trap under F4d, and it is worth stating on its own because it applies to
+*selecting* a target, not only to loading into one.
+
+`notepad.exe` on this host is a broker: it starts the real instance and then exits. Six
+processes were running under that one image name after a single shell launch. The
+consequences:
+
+- **The first name match is not the real instance.** The launcher now takes the candidate
+  with the largest working set among those that have published a loader list, which is
+  the main instance rather than a helper beside it.
+- **A broker that has not exited yet is a target that dies mid-load.** The injector
+  detected it correctly ("the target process exited during loading") and refused, but the
+  scratch target is now given time to settle, and the guard closes the whole family of
+  instances that appeared because the launcher started it — not just the one process it
+  spawned.
+
+## F4f. NEW (2026-10-21) — a thread whose handle cannot be opened was never excluded
+
+**A real reliability bug in the donor search, found by the test run.**
+
+The thread donor search records the thread it has chosen so that a failed attempt can be
+excluded from the next round. That record was written *after* the handle was acquired, so
+a thread whose handle could not be opened — because it had exited in the meantime — was
+never excluded. Every round picked the same dead thread, and the search exhausted its
+budget without moving on. The recorded thread is now written as soon as it is chosen.
+
+The symptom in the log is worth recording because it looks like a permissions problem and
+is not:
+
+```
+Opened Thread 00120C No Longer Belongs To The Target Process; Discarding
+OpenThread Failed
+Donor Round 16/16, 3 Candidate(s) Excluded
+```
+
+The thread had exited. The search was not being refused; it was being held on a corpse.
+
+## F4g. NEW (2026-10-21) — test mode, and what it is for
+
+`[General] TestMode` forces the target to a harmless image, allows the handle donor scan
+to fall back to a direct handle, and makes the run write its transcript whatever the
+outcome. `[General] TestTarget` chooses the image.
+
+Three things were wrong with it and are now fixed:
+
+- **It silenced the report.** It forced `Quiet`, `DetachConsole` and `VerboseTrace` off
+  regardless of what the configuration said, so a test could not be read. Those are the
+  operator's settings and the configuration already has keys for them; test mode now
+  changes only what test mode is for.
+- **It left the target behind.** It now starts a scratch target when the operator has
+  none open, and closes it — and any instance that came with it — when the run ends. An
+  instance the operator already had running is never touched.
+- **It could be mistaken for a real run.** The trace carries a `Test Mode` section, the
+  console carries a `TEST MODE` line, and the final result line is marked
+  `[TEST MODE]`.
+
+A test run against a scratch target now passes the verification gate end to end, and the
+scratch target is gone afterwards.
+
+## F4h. NEW (2026-10-21) — the shipped release, built and protected, verified end to end
+
+The full production pipeline was run on this host: `Build\Executors\Create.bat`, then
+`Build\Executors\Protect.bat`. The artefacts that came out of it:
+
+| Artefact | Size | Notes |
+|----------|------|-------|
+| `mXH4RLFhw.exe` | 2.96 MB | Launcher, VMProtect-virtualized, all eleven PE mutations applied, export names shuffled |
+| `IXmzNTMV\hsIm0NF45Tr.dll` | 564 KB | Runtime, deliberately left unvirtualized (it is manual-mapped) |
+| `IXmzNTMV\rPzLQ42OW.dll` | 15.8 MB | The real payload, VMProtect-protected |
+| `SQYDDqI9.ini` | 2.4 KB | Configuration, DPAPI-encrypted under a per-build magic |
+
+Every gate in the pipeline passed: the merged-shell check, the 14-export shuffle, the
+embedded runtime hash, the syscall-stub prologues, the payload keystream mixer, the W^X
+protect sequences, and the per-build config keys.
+
+**The protected launcher was then run against notepad, four times, and passed the
+verification gate every time.** The numbers that matter, all read back during the run:
+
+```
+Return Code............... 0x00000000 (INJ_ERR_SUCCESS)
+DllMain(DLL_PROCESS_ATTACH) Returned True
+TLS Callbacks............. 1 Executed Of 1 Configured (0 Failed)
+Loader Lock Acquire/Release  0x00000000 / 0x00000000
+Thread Hijack............. TID 0x5F7C | Success = 1 | 40 Poll(s) Over 969 ms
+Hijacked Stack Scrubbed... 11128 Bytes In 65185556 Cycles
+Data Directories Wiped.... Cleaned Mask = 0x00000222 | Residual = 0x00000000 | Mapper Re-Read Verified
+W^X....................... RWX Regions Found: 0 (Enforced)
+Verification Gate......... Pass
+```
+
+So the *real* payload, virtualized launcher and all, maps cleanly into a live process,
+initialises, runs its TLS callback, comes back with the thread context restored, and
+leaves no writable-executable page behind. The scratch target was started by the launcher
+and closed by it afterwards; the temporary copy of the launcher removed itself.
+
+**What this does not establish:** the target was notepad, not Overwatch. The structural
+claims that depend on the game — the single import, the 76 exports, the 3 TLS callbacks,
+the 894/895 region pairing — are from the earlier `Overwatch.exe` run and were not
+re-measured here. What this establishes is that the *shipped, protected* build does the
+load correctly, and that the machinery around it is sound.
 
 ## F5. Re-verify per build (expanded)
 
@@ -1363,27 +1694,33 @@ again next patch.
 1. ~~Target import count~~ → **1 descriptor** (F1a)
 2. ~~Target export count~~ → **94 funcs / 76 names** (F1a)
 3. ~~Exe TLS callback count~~ → **3** (F1a)
-4. **Load-config vs CFG policy** — read the exe's own `IMAGE_LOAD_CONFIG_DIRECTORY64`
-   `GuardFlags` in the same run and compare to the `enable 0 strict 0` policy. Resolves
-   D6a reading A vs B. **Not yet done.**
-5. **The 906 `PAGE_NOACCESS` regions (18 MB)** — filter by address range. How many fall
-   inside `Overwatch.exe`'s / `Overwatch_loader.dll`'s image span vs free address space?
-   Data is already collected; this is a filter, not new collection. E1.
-6. `0xCC` census **scoped per module** — process-wide 3% tells us little; per-image would
-   settle D6 properly. Same scope-discipline lesson as Part E.
+4. ~~Load-config vs CFG policy~~ → **CLOSED 2026-10-21.** The suite now reads the exe's own
+   `IMAGE_LOAD_CONFIG_DIRECTORY64.GuardFlags` (x64 offset `0x90`) in the same run and prints
+   it next to the `enable 0 strict 0` policy, so D6a reading A vs B is decidable from one
+   run. **Still to be read off a live build.**
+5. ~~The 906 `PAGE_NOACCESS` regions (18 MB) — filter by address range~~ → **CLOSED 2026-10-21
+   by E1a: they were always inside the main image.** The census now walks the whole address
+   space and reports the in-image / free-space split explicitly, so the scope can no longer
+   be misread.
+6. ~~`0xCC` census scoped per module~~ → **CLOSED 2026-10-21: it was always per-module.**
+   The report now names the range it was measured over.
 7. Loader decoy-import count — 31 / 13 / 41 across the OP's own three statements. Uncounted.
 8. The global pointer table (`0x4ACxxx` family) — present? populated? in which image?
 9. Eidolon XOR entry RVA — expect it to have moved again (C2: moved twice in 2025).
 10. The five unclassified strings — find a **consumer**, or retire them (D11).
-11. **Which DLL and which function** is the single import? The count is 1 but the suite does
-    not print the descriptor's name. The OP says `Overwatch_loader.dll!eidolon_run`;
-    printing the name would make the §1 confirmation total rather than partial.
+11. ~~Which DLL and which function is the single import?~~ → **CLOSED 2026-10-21.** The suite
+    now reads the import descriptor's name and its first named import out of the remote
+    image and prints both, so the §1 confirmation is total rather than partial. **Still to
+    be read off a live build.**
 12. Whether the 3 TLS callbacks are still PEB-guard / VEH-register / thread-setup. Count
     confirmed, roles not.
 13. Crash-callback hash block — single-session observation, not a constant.
 14. Is Eidolon present at all next patch? It was reportedly **removed** once (thread 679641)
     and Blizzard **reverted** to prior encryption in 2024 (C4). The single-import read is the
     cheapest live proxy for this.
+15. **The region-shape lead (E1a)** — 894 executable regions and 895 no-access regions inside
+    one image, paired almost one to one. Settle it the way AutoDump does: find the touch
+    gadget (`48 8B 01 C3`) in the loader and watch a no-access page become readable.
 
 ---
 
@@ -1400,10 +1737,12 @@ again next patch.
 4. **Where does Warden live on the current build?** (B1) `betsit` self-identifies as Blizzard.
    Still unresolved. Survey both images. **We have not yet surveyed the loader's import table,
    TLS, or VEH state** — only the exe's. That is a real gap in our own coverage.
-5. **What are the 906 `PAGE_NOACCESS` regions?** (E1) 18 MB, zero guard pages. Filter by
-   image range. Cheap, and the data already exists.
-6. **Does `GuardFlags: 0x100` reflect the build or was the OP reading the wrong field?**
-   (D6a) One load-config read settles it.
+5. ~~What are the 906 `PAGE_NOACCESS` regions?~~ — **PARTLY CLOSED (E1a).** They are inside
+   the main image, and the census now reports the in-image / free-space split plus a
+   per-module breakdown, with the loader located by its encrypted-core section. The
+   remaining question is what the pairing *means* — see F5 item 15.
+6. ~~Does `GuardFlags: 0x100` reflect the build or was the OP reading the wrong field?~~
+   (D6a) The suite now reads both in the same run. **Still to be read off a live build.**
 7. **Are the five strings Warden modules, settings keys, or SQLite opcode names?** (D11.)
    One `strings`-offset-stride check against SQLite's opcode table would settle it.
 8. **Which `.eid` APIs are live on the current loader vs decoys?** (C3 lists 10; the OP's
@@ -1488,6 +1827,27 @@ present — 1,199,181 of them — and it collapsed. The lesson is the same one t
 did not learn: **a mechanism asserted from someone else's interpretation of two unscoped
 numbers is not a mechanism.** Keep the measurements (D13a), drop the theories they did not
 earn (D1–D11, and E0), and never let a real observation launder a conclusion.
+
+**And then this file got a second one wrong, in the same shape (E1a, 2026-10-21).** It
+described its own census as process-wide because the report line said so, and the report
+line was wrong: the walk was bounded to the main module's image range. That mislabel
+propagated into four separate claims — that the no-access count had no attribution, that
+distinguishing in-image from free space was a cheap filter on data already collected, that
+the `0xCC` census still needed per-module scoping, and that the two figures were not
+comparable to the OP's. All four were wrong, and they were wrong in the direction of
+*over*-claiming a gap, which is the safe direction and still not acceptable.
+
+**The correction is not a retraction of the region shape — it is the promotion of it.** With
+the scope right, the numbers that had been sitting unread in the same table are the most
+interesting thing in the corpus: **894 executable regions and 895 no-access regions inside
+one image**, paired almost one to one, where a normal PE has one to three. Part E
+retracted a theory built on the `0xCC` count — the wrong number — and left the region
+shape, the right number, labelled as a count with no attribution.
+
+**The same failure mode, named once, for the third time:** a claim about *scope* that was
+never checked against the code that produced it. D1–D11 are eleven instances of it in the
+OP's post. E0 was one in our own reasoning. E1a was another. The discipline that catches
+all of them is one line: **before quoting a measurement, read the code that took it.**
 
 The open gap is unchanged and is the one nobody has closed: `str4ever1`'s **"JAM payload
 functions"** — where Warden modules actually come from if not the image. Until someone finds

@@ -10,6 +10,59 @@
 
 namespace
 {
+    // The PEB of an x64 process holds the loader data pointer at a fixed
+    // offset. A process whose pointer is null has not been through the
+    // loader's setup, and there is no module list to walk and nothing that
+    // can be mapped into it.
+    constexpr SIZE_T kPebLoaderOffset = 0x18;
+
+    // Reads the loader data pointer out of a process's PEB. Returns false
+    // when the PEB cannot be read at all, which is not the same as the
+    // loader data being absent.
+    bool LoaderListPublished(HANDLE process)
+    {
+        using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll)
+        {
+            return false;
+        }
+        auto query = reinterpret_cast<NtQueryInformationProcessFn>(
+            GetProcAddress(ntdll, "NtQueryInformationProcess"));
+        if (!query)
+        {
+            return false;
+        }
+
+        struct LocalPbi
+        {
+            LONG ExitStatus;
+            PVOID PebBaseAddress;
+            ULONG_PTR AffinityMask;
+            LONG BasePriority;
+            HANDLE UniqueProcessId;
+            HANDLE InheritedFromUniqueProcessId;
+        };
+
+        LocalPbi pbi{};
+        ULONG length = 0;
+        if (query(process, 0, &pbi, sizeof(pbi), &length) != 0 || !pbi.PebBaseAddress)
+        {
+            return false;
+        }
+
+        ULONG_PTR loader = 0;
+        SIZE_T got = 0;
+        const BYTE * peb = static_cast<BYTE *>(pbi.PebBaseAddress);
+        if (!ReadProcessMemory(process, peb + kPebLoaderOffset, &loader, sizeof(loader), &got) ||
+            got != sizeof(loader))
+        {
+            return false;
+        }
+
+        return loader != 0;
+    }
+
     // Reads the target's architecture through IsWow64Process2 when it is
     // available, falling back to IsWow64Process on builds that predate it.
     Architecture ProcessArchitecture(HANDLE process)
@@ -60,7 +113,25 @@ namespace
 // architecture from the same handle, so the two cannot disagree.
 bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
 {
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    ProcessIdentity identity;
+    if (!QueryProcessIdentity(pid, identity))
+    {
+        return false;
+    }
+
+    name = identity.name;
+    architecture = identity.architecture;
+    return !name.empty();
+}
+
+// The full identity of a process. The creation time is what actually pins an
+// instance down: a name and a path can both be reused by a relaunched
+// process, but a creation time cannot.
+bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
+{
+    out = ProcessIdentity{};
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!process)
     {
         return false;
@@ -69,17 +140,36 @@ bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
     wchar_t path[MAX_PATH * 2]{};
     DWORD length = static_cast<DWORD>(std::size(path));
     const BOOL queried = QueryFullProcessImageNameW(process, 0, path, &length);
-    architecture = ProcessArchitecture(process);
+    out.architecture = ProcessArchitecture(process);
+    out.pid = pid;
+
+    FILETIME creation{};
+    FILETIME exit{};
+    FILETIME kernel{};
+    FILETIME user{};
+    if (GetProcessTimes(process, &creation, &exit, &kernel, &user))
+    {
+        out.creation_time = (static_cast<ULONGLONG>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+    }
+
+    // Whether the process has published its loader list. A process whose PEB
+    // carries no loader pointer has not finished being set up by the loader,
+    // and nothing can be mapped into it. Several modern applications run a
+    // helper process under the same image name, and the first name match is
+    // not always the one that can be written to.
+    out.loader_list_published = LoaderListPublished(process);
+
     CloseHandle(process);
+
     if (!queried)
     {
         return false;
     }
 
-    const std::wstring full_path(path, length);
-    const size_t slash = full_path.find_last_of(L"\\/");
-    name = slash == std::wstring::npos ? full_path : full_path.substr(slash + 1);
-    return !name.empty();
+    out.full_path.assign(path, length);
+    const size_t slash = out.full_path.find_last_of(L"\\/");
+    out.name = (slash == std::wstring::npos) ? out.full_path : out.full_path.substr(slash + 1);
+    return !out.name.empty();
 }
 
 // The fixed-buffer form used where a std::wstring would be wasted work, such as

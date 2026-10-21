@@ -949,6 +949,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		processInformation.SetProcess(hTargetProc);
 	}
 
+	// The chosen thread is recorded before its handle is acquired. A thread
+	// that cannot be opened, or that turns out to belong to another process,
+	// is then excluded from the next round. Without this the same dead
+	// thread is picked again on every round and the search never moves on.
+	StoreThreadExecStat(g_ThreadExecStats.HijackedTid, ThreadID);
+
 	if (!hThread)
 	{
 
@@ -1287,15 +1293,23 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	LOG(3, "pRoutine = %p\n", pRemoteFunc);
 	LOG(3, "pArg     = %p\n", pArg);
 
-	if (!ScWriteProcessMemory(hTargetProc, pMem, staged.data(), staged.size(), nullptr))
 	{
-		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+		// Every byte has to land: the shell is about to be executed in the
+		// target, so a short write is a failure and not a warning.
+		SIZE_T staged_written = 0;
+		const bool staged_ok = ScWriteProcessMemory(hTargetProc, pMem, staged.data(), staged.size(), &staged_written) &&
+			staged_written == staged.size();
+		if (!staged_ok)
+		{
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "WriteProcessMemory Failed\n");
+			LOG(2, "WriteProcessMemory Failed (Wrote %llu Of %llu Bytes)\n",
+				(unsigned long long)staged_written, (unsigned long long)staged.size());
 
-		ResumeDonorThread("write-memory");
+			ResumeDonorThread("write-memory");
 
-		return SR_HT_ERR_WPM_FAIL;
+			return SR_HT_ERR_WPM_FAIL;
+		}
 	}
 
 	{

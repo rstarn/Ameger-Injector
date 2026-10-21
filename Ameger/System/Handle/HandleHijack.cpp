@@ -1,6 +1,13 @@
-﻿#include "Core/Utility/Header/PrecompiledHeader.h"
+#include "Core/Utility/Header/PrecompiledHeader.h"
+
+#include <TlHelp32.h>
+
+#include <unordered_map>
 #include <unordered_set>
+#include <string>
+#include <vector>
 #include "Core/Foundation/Primitives/ResourceGuard.h"
+#include "Core/Foundation/Primitives/KcStrings/Core/XorString.h"
 #include "System/Handle/HandleHijack.h"
 #include "Native/Syscall.h"
 
@@ -464,6 +471,132 @@ namespace
 		return ScGetThreadId(Candidate) == TargetTid && ScGetProcessIdOfThread(Candidate) == TargetPid;
 	}
 
+	// The owners a donor handle can be taken from are visible in the audit
+	// trail of every endpoint that watches handle access, and the credential
+	// and session stores are watched more closely than anything else on the
+	// system. A donor taken from one of them is the loudest signal this scan
+	// can produce, so those owners are passed over.
+	//
+	// The list is built once per scan. It can be replaced at run time with a
+	// comma separated set of image names, so it can be tuned without a
+	// rebuild.
+	class DonorOwnerBlocklist
+	{
+		std::vector<std::wstring> m_Names;
+
+	public:
+		DonorOwnerBlocklist()
+		{
+			wchar_t override_buffer[1024] = { 0 };
+			const auto override_name = XOR_STR_W(L"AMEGER_DONOR_OWNER_BLOCKLIST");
+			const DWORD override_length = GetEnvironmentVariableW(override_name.get(),
+				override_buffer, static_cast<DWORD>(std::size(override_buffer)));
+			if (override_length && override_length < std::size(override_buffer))
+			{
+				std::wstring current;
+				for (DWORD i = 0; i <= override_length; ++i)
+				{
+					const wchar_t c = override_buffer[i];
+					if (c == L',' || c == L'\0')
+					{
+						if (!current.empty())
+						{
+							m_Names.push_back(current);
+						}
+						current.clear();
+					}
+					else
+					{
+						current.push_back(c);
+					}
+				}
+			}
+			else
+			{
+				static const wchar_t * const kDefaultExcluded[] =
+				{
+					L"lsass.exe",
+					L"csrss.exe",
+					L"winlogon.exe",
+					L"services.exe",
+					L"smss.exe",
+					L"SecurityHealthService.exe",
+					L"MsMpEng.exe",
+					L"dwm.exe",
+					L"conhost.exe",
+					L"fontdrvhost.exe",
+					L"spoolsv.exe",
+					L"wmiprvse.exe",
+				};
+				for (const wchar_t * candidate : kDefaultExcluded)
+				{
+					m_Names.emplace_back(candidate);
+				}
+			}
+		}
+
+		bool Excludes(const wchar_t * image_name) const
+		{
+			if (!image_name || !*image_name)
+			{
+				return false;
+			}
+			for (const std::wstring & candidate : m_Names)
+			{
+				if (_wcsicmp(image_name, candidate.c_str()) == 0)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+	};
+
+	// The image name of every running process, taken once from a single
+	// snapshot. It lets a donor owner be recognised by name without opening
+	// it for anything, which is the whole point of the block list.
+	class ProcessImageIndex
+	{
+		std::unordered_map<DWORD, std::wstring> m_Names;
+
+	public:
+		void Build()
+		{
+			m_Names.clear();
+
+			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (snapshot == INVALID_HANDLE_VALUE)
+			{
+				return;
+			}
+
+			PROCESSENTRY32W entry{};
+			entry.dwSize = sizeof(entry);
+			if (Process32FirstW(snapshot, &entry))
+			{
+				do
+				{
+					if (entry.th32ProcessID)
+					{
+						m_Names[entry.th32ProcessID] = entry.szExeFile;
+					}
+				} while (Process32NextW(snapshot, &entry));
+			}
+
+			CloseHandle(snapshot);
+		}
+
+		const wchar_t * Find(DWORD pid) const
+		{
+			const auto it = m_Names.find(pid);
+			if (it == m_Names.end())
+			{
+				return nullptr;
+			}
+			return it->second.c_str();
+		}
+	};
+
 	HANDLE OpenOwnerCached(std::vector<std::pair<DWORD, UniqueHandle>> & Owners, DWORD OwnerPid)
 	{
 		for (auto & Owner : Owners)
@@ -523,6 +656,14 @@ namespace
 		Detail.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 
 		std::vector<std::pair<DWORD, UniqueHandle>> Owners;
+
+		// The image names are collected once, before anything is opened. A
+		// donor owner that is on the block list is passed over before that
+		// owner process is ever opened.
+		ProcessImageIndex ImageIndex;
+		ImageIndex.Build();
+		const DonorOwnerBlocklist Blocklist;
+		size_t BlocklistedOwners = 0;
 
 		std::unordered_set<ULONG_PTR> WrongObjects;
 		size_t Examined = 0;
@@ -603,6 +744,20 @@ namespace
 			{
 				if (OwnerPid != TargetPid)
 				{
+					// A donor from a process that watches handle access is
+					// skipped before that process is opened. A skipped owner
+					// was never verified, so it is not counted as a
+					// verification failure.
+					if (OwnerPid != SelfPid)
+					{
+						const wchar_t * owner_name = ImageIndex.Find(OwnerPid);
+						if (Blocklist.Excludes(owner_name))
+						{
+							++BlocklistedOwners;
+							return false;
+						}
+					}
+
 					bool known = false;
 					size_t foreign_opened = 0;
 					for (auto & CachedOwner : Owners)
@@ -784,8 +939,8 @@ namespace
 					Detail.ProbeMethod = 1;
 					LOG(1, "[Handle] [+] Donor Handle Acquired: Donor PID = %u | Donor Handle = 0x%08X\n", FoundDonorPid, FoundDonorHandle);
 					LOG(1, "[Handle] [+] Duplicated Handle: Local = 0x%08X | Granted = 0x%08X\n", FoundNewHandle, FoundGranted);
-					LOG(1, "[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu\n",
-						Detail.TotalHandles, (unsigned long long)Examined, (unsigned long long)DupDenied, (unsigned long long)VerifyRejected, (unsigned long long)Owners.size(), (unsigned long long)BudgetSkipped);
+					LOG(1, "[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu | Blocklisted = %llu\n",
+						Detail.TotalHandles, (unsigned long long)Examined, (unsigned long long)DupDenied, (unsigned long long)VerifyRejected, (unsigned long long)Owners.size(), (unsigned long long)BudgetSkipped, (unsigned long long)BlocklistedOwners);
 					return INJ_ERR_SUCCESS;
 				}
 
@@ -796,11 +951,12 @@ namespace
 			}
 		}
 
-		LOG(1, XOR_STR_A("HandleAcq: No Donor (Examined %llu, Duplicated %llu, Filtered %d, Budget Hit %d)\n").get(),
+		LOG(1, XOR_STR_A("HandleAcq: No Donor (Examined %llu, Duplicated %llu, Filtered %d, Budget Hit %d, Blocklisted %llu)\n").get(),
 			static_cast<unsigned long long>(Examined),
 			static_cast<unsigned long long>(Duplicated),
 			HaveType ? 1 : 0,
-			BudgetHit ? 1 : 0);
+			BudgetHit ? 1 : 0,
+			static_cast<unsigned long long>(BlocklistedOwners));
 
 		Detail.Examined = static_cast<DWORD>(Examined);
 		Detail.OwnersOpened = static_cast<DWORD>(Owners.size());

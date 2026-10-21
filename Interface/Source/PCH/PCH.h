@@ -9,6 +9,7 @@
 #include <bcrypt.h>
 #include <wincrypt.h>
 #include <conio.h>
+#include <psapi.h>
 
 #include <algorithm>
 #include <atomic>

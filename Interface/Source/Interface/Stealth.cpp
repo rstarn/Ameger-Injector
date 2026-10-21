@@ -2,6 +2,8 @@
 
 #include "Launcher.h"
 
+#include <intrin.h>
+
 // The post-injection verification suite.
 //
 // Every check runs against the live target process after the payload has been
@@ -12,6 +14,87 @@
 namespace stealth
 {
     void ReportGameTraps(HANDLE process, DWORD target_pid, StealthVerifierBuffers & buffers);
+
+    // The x64 load-configuration layout. The SDK's IMAGE_LOAD_CONFIG_DIRECTORY
+    // is the 32-bit structure, so the offsets of the fields this suite reads
+    // out of a 64-bit image have to be stated explicitly. Reading the 32-bit
+    // offsets out of a 64-bit image silently returns the wrong field.
+    namespace LoadConfig64
+    {
+        constexpr SIZE_T kSecurityCookie = 0x58;
+        constexpr SIZE_T kGuardFlags = 0x90;
+        constexpr SIZE_T kMinimumSizeForGuardFlags = kGuardFlags + sizeof(DWORD);
+
+        constexpr DWORD kGuardCfInstrumented = 0x00000100;
+        constexpr DWORD kGuardCfFunctionTablePresent = 0x00000400;
+        constexpr DWORD kGuardSecurityCookieUnused = 0x00000800;
+        constexpr DWORD kGuardCfInstrumentedAndImportsInstrumented = 0x00001000;
+    }
+
+    // The time-stamp counter runs at the core's nominal frequency, which is
+    // not 3.2 GHz on any current part and is not fixed across parts at all.
+    // The frequency is measured once against the performance counter, so the
+    // cycle deltas the remote shell reports can be turned into a real
+    // duration. Returns 0 when the calibration could not be performed.
+    double MeasureTscHz()
+    {
+        static const double hz = []()
+        {
+            LARGE_INTEGER freq{};
+            LARGE_INTEGER start{};
+            LARGE_INTEGER end{};
+            if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0)
+            {
+                return 0.0;
+            }
+
+            // The first reading is taken after a short warm-up so the caches
+            // and the branch predictor are not part of the measurement.
+            ULONGLONG tsc_warm = __rdtsc();
+            QueryPerformanceCounter(&start);
+            Sleep(60);
+            ULONGLONG tsc_end = __rdtsc();
+            QueryPerformanceCounter(&end);
+
+            const LONGLONG ticks = end.QuadPart - start.QuadPart;
+            if (ticks <= 0 || tsc_end <= tsc_warm)
+            {
+                return 0.0;
+            }
+
+            const double seconds = static_cast<double>(ticks) / static_cast<double>(freq.QuadPart);
+            if (seconds <= 0.0)
+            {
+                return 0.0;
+            }
+
+            const double measured = static_cast<double>(tsc_end - tsc_warm) / seconds;
+            // A plausible TSC runs somewhere between 100 MHz and 10 GHz. A
+            // measurement outside that band means the calibration was not
+            // trustworthy, and the caller is told so rather than being given
+            // a number it would print as a fact.
+            if (measured < 1.0e8 || measured > 1.0e10)
+            {
+                return 0.0;
+            }
+            return measured;
+        }();
+        return hz;
+    }
+
+    // Turns a cycle delta into milliseconds using the measured counter
+    // frequency. Returns false when no usable frequency is available, in which
+    // case the caller reports the raw cycle count and nothing else.
+    bool CyclesToMilliseconds(ULONGLONG cycles, double & milliseconds)
+    {
+        const double hz = MeasureTscHz();
+        if (!hz || !cycles)
+        {
+            return false;
+        }
+        milliseconds = (static_cast<double>(cycles) / hz) * 1000.0;
+        return true;
+    }
 
     bool BufferContainsMarker(const std::vector<BYTE> & hay, const char * marker, bool wide)
     {
@@ -863,6 +946,145 @@ namespace stealth
         LONG flagsStatus = 0;
     };
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out);
+    bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
+    // Reads the name of a string that lives inside the target's image. The
+    // read is bounded by the image extent and by the length of the buffer, so
+    // a malformed image cannot make this run past the end of anything.
+    bool ReadRemoteImageString(HANDLE process, ULONG_PTR image_base, SIZE_T image_size, DWORD rva,
+        char * out, size_t out_size)
+    {
+        if (!out || out_size == 0)
+        {
+            return false;
+        }
+        out[0] = '\0';
+        if (!rva || rva >= image_size)
+        {
+            return false;
+        }
+
+        const ULONG_PTR address = image_base + rva;
+        if (address < image_base || address >= image_base + image_size)
+        {
+            return false;
+        }
+
+        const SIZE_T available = image_size - rva;
+        const SIZE_T want = available < (out_size - 1) ? available : (out_size - 1);
+
+        SIZE_T got = 0;
+        if (!ReadProcessMemory(process, ReCa<LPCVOID>(address), out, want, &got) || got == 0)
+        {
+            out[0] = '\0';
+            return false;
+        }
+
+        // The string ends at the first terminator inside what was read. The
+        // bytes after it belong to something else in the image and are not
+        // part of the name.
+        SIZE_T length = 0;
+        while (length < got && out[length] != '\0')
+        {
+            ++length;
+        }
+        out[length] = '\0';
+
+        if (length == 0)
+        {
+            return false;
+        }
+
+        // Only printable characters are accepted, so a name that is really
+        // binary data does not end up in the report.
+        for (SIZE_T i = 0; i < length; ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(out[i]);
+            if (c < 0x20 || c > 0x7E)
+            {
+                out[0] = '\0';
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Reads the module name and the first imported function name of one
+    // import descriptor. A count on its own does not say which module a
+    // target depends on, and the name is what turns the shape into an
+    // answer.
+    void ReadRemoteImportNames(HANDLE process, ULONG_PTR image_base, SIZE_T image_size,
+        const IMAGE_IMPORT_DESCRIPTOR & entry, std::wstring & dll_out, std::wstring & function_out)
+    {
+        dll_out.clear();
+        function_out.clear();
+
+        char dll_name[256] = { 0 };
+        if (ReadRemoteImageString(process, image_base, image_size, entry.Name, dll_name, sizeof(dll_name)))
+        {
+            dll_out.clear();
+            for (const char * c = dll_name; *c; ++c)
+            {
+                dll_out.push_back(static_cast<wchar_t>(*c));
+            }
+        }
+
+        // The import name table holds the original entries; the address table
+        // holds the bound ones. Either can be used, and the original table is
+        // preferred because it is the one that still carries the names.
+        const DWORD thunk_rva = entry.OriginalFirstThunk ? entry.OriginalFirstThunk : entry.FirstThunk;
+        if (!thunk_rva || thunk_rva >= image_size)
+        {
+            return;
+        }
+
+        for (unsigned long i = 0; i < 4096; ++i)
+        {
+            const ULONG_PTR slot = image_base + thunk_rva + static_cast<ULONG_PTR>(i) * sizeof(ULONG_PTR);
+            if (slot + sizeof(ULONG_PTR) > image_base + image_size ||
+                !IsSafeCodePage(process, slot, sizeof(ULONG_PTR)))
+            {
+                return;
+            }
+
+            ULONG_PTR thunk = 0;
+            SIZE_T got = 0;
+            if (!ReadProcessMemory(process, ReCa<LPCVOID>(slot), &thunk, sizeof(thunk), &got) ||
+                got != sizeof(thunk))
+            {
+                return;
+            }
+            if (!thunk)
+            {
+                return;
+            }
+            // A high bit set means the entry is an ordinal, not a name.
+            if (thunk & (static_cast<ULONG_PTR>(1) << 63))
+            {
+                function_out = L"Ordinal " + std::to_wstring(thunk & 0xFFFF);
+                return;
+            }
+
+            const DWORD name_rva = static_cast<DWORD>(thunk & 0x7FFFFFFFULL);
+            if (!name_rva || name_rva + sizeof(WORD) >= image_size)
+            {
+                return;
+            }
+
+            // The hint precedes the name, so the string starts two bytes in.
+            char function_name[256] = { 0 };
+            if (ReadRemoteImageString(process, image_base, image_size, name_rva + sizeof(WORD),
+                function_name, sizeof(function_name)))
+            {
+                function_out.clear();
+                for (const char * c = function_name; *c; ++c)
+                {
+                    function_out.push_back(static_cast<wchar_t>(*c));
+                }
+            }
+            return;
+        }
+    }
+
     bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out);
     bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
 
@@ -1216,7 +1438,8 @@ namespace stealth
             LOG(0, L"  %ls[x]%ls DllMain Unverified: No Execution Telemetry (Host Read-Back Failed).\n", kRed, kReset);
             return;
         }
-        const double ms = static_cast<double>(exec->DllMainCyclesDelta) / 3200000.0;
+        double ms = 0.0;
+        const bool have_ms = CyclesToMilliseconds(exec->DllMainCyclesDelta, ms);
         if (exec->DllMainCyclesDelta == 0)
         {
             LOG(0, L"  %ls[*]%ls DllMain Not Entered: Cycle Counter Is 0, So The Shell Never Called The "
@@ -1224,9 +1447,19 @@ namespace stealth
                     L"No Pass/Fail Is Claimed.\n", kDim, kReset);
             return;
         }
-        LOG(0, L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu (~%.2f ms)\n",
-            kGreen, kReset, kGreen, exec->DllMainResult ? L"True" : L"False", kReset,
-            exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms);
+        if (have_ms)
+        {
+            LOG(0, L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu (%.2f ms At A Measured %.2f GHz)\n",
+                kGreen, kReset, kGreen, exec->DllMainResult ? L"True" : L"False", kReset,
+                exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta, ms, MeasureTscHz() / 1.0e9);
+        }
+        else
+        {
+            LOG(0, L"  %ls[+]%ls DllMain Execution: Return = %ls%s%ls | LastError = 0x%08X | Cycles = %llu "
+                    L"(No Counter Frequency Calibration Available; No Duration Is Claimed)\n",
+                kGreen, kReset, kGreen, exec->DllMainResult ? L"True" : L"False", kReset,
+                exec->DllMainLastWin32Error, (unsigned long long)exec->DllMainCyclesDelta);
+        }
         if (!exec->DllMainResult)
         {
             LOG(0, L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
@@ -1792,21 +2025,12 @@ namespace stealth
             }
         }
 
-        {
-            PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
-            bool cfg_read = process &&
-                GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
-            if (cfg_read)
-            {
-                LOG(0, L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
-                    kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
-                    kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
-            }
-            else
-            {
-                LOG(0, L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
-            }
-        }
+        PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
+        const bool cfg_read = process &&
+            GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE;
+        DWORD load_config_guard_flags = 0;
+        DWORD load_config_size = 0;
+        bool guard_flags_read = false;
 
         {
             std::wstring survey_name;
@@ -1817,6 +2041,16 @@ namespace stealth
             {
                 LOG(0, L"  %ls[*]%ls Target Image Survey...... %lsSkipped%ls (Main Module Not Enumerable; Nothing Read)\n",
                     kDim, kReset, kYellow, kReset);
+                if (cfg_read)
+                {
+                    LOG(0, L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
+                        kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
+                        kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
+                }
+                else
+                {
+                    LOG(0, L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
+                }
             }
             else
             {
@@ -1853,14 +2087,36 @@ namespace stealth
                 }
                 else
                 {
+                    // The load configuration carries the image's own control
+                    // flow guard declaration. It is a different field from the
+                    // process policy: an image can declare the feature and
+                    // still run with the policy turned off, and only reading
+                    // both tells the two apart.
+                    if (survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress &&
+                        survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size >= LoadConfig64::kMinimumSizeForGuardFlags)
+                    {
+                        DWORD guard_flags = 0;
+                        SIZE_T gf_got = 0;
+                        const ULONG_PTR lc_va = survey_base + survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress;
+                        if (ReadProcessMemory(process, ReCa<LPCVOID>(lc_va + LoadConfig64::kGuardFlags),
+                            &guard_flags, sizeof(guard_flags), &gf_got) && gf_got == sizeof(guard_flags))
+                        {
+                            load_config_guard_flags = guard_flags;
+                            load_config_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size;
+                            guard_flags_read = true;
+                        }
+                    }
+
                     unsigned long imp_count = 0;
                     bool imp_done = false;
                     bool imp_ok = false;
+                    std::wstring imp_first_dll;
+                    std::wstring imp_first_function;
                     const DWORD imp_rva = survey_dirs[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
                     const DWORD imp_size = survey_dirs[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
                     if (!imp_rva || !imp_size)
                     {
-                        imp_ok = true; 
+                        imp_ok = true;
                         imp_done = true;
                     }
                     else if (imp_rva < survey_size)
@@ -1889,6 +2145,11 @@ namespace stealth
                                 imp_done = true;
                                 break;
                             }
+                            if (imp_count == 0)
+                            {
+                                ReadRemoteImportNames(process, survey_base, survey_size, entry,
+                                    imp_first_dll, imp_first_function);
+                            }
                             ++imp_count;
                         }
                     }
@@ -1896,19 +2157,23 @@ namespace stealth
                     {
                         LOG(0, L"  %ls[+]%ls Target Imports.......... %ls%lu%ls Descriptor(s) In %ls%ls%ls (Read Back)\n",
                             kGreen, kReset, kGreen, imp_count, kReset, kGreen, survey_name.c_str(), kReset);
+                        if (!imp_first_dll.empty())
+                        {
+                            LOG(0, L"      %ls%ls%ls!%ls%ls%ls\n", kDim, imp_first_dll.c_str(), kReset,
+                                kGreen, imp_first_function.empty() ? L"<no named import>" : imp_first_function.c_str(), kReset);
+                        }
                         if (imp_count == 1)
                         {
-                            LOG(0, L"      %ls[*]%ls Single-Import Shape Holds On This Build (Matches OP sec 1 / sec 4.5 model)\n", kDim, kReset);
+                            LOG(0, L"      %ls[*]%ls Single-Import Shape: Every Call This Image Makes Leaves Through One Imported Module.\n", kDim, kReset);
                         }
                         else if (imp_count == 0)
                         {
-                            LOG(0, L"      %ls[!]%ls Zero Imports: Packed/Demand-Loaded Shape (sec 12.7 heap-trampoline model?) - Re-Fingerprint\n",
-                                kYellow, kReset);
+                            LOG(0, L"      %ls[!]%ls Zero Import Descriptors: Nothing Is Resolved Statically; "
+                                    L"The Image Is Packed Or Demand-Loaded.\n", kYellow, kReset);
                         }
                         else
                         {
-                            LOG(0, L"      %ls[*]%ls Multi-Import Shape (%lu): Eidolon May Be Reverted/Absent On This Build (sec 12.2)\n",
-                                kDim, kReset, imp_count);
+                            LOG(0, L"      %ls[*]%ls Multi-Import Shape: %lu Descriptor(s).\n", kDim, kReset, imp_count);
                         }
                     }
                     else
@@ -1930,7 +2195,7 @@ namespace stealth
                         if (ReadProcessMemory(process, ReCa<LPCVOID>(survey_base + exp_rva),
                             &exp_dir, sizeof(exp_dir), &exp_got) && exp_got == sizeof(exp_dir))
                         {
-                            LOG(0, L"  %ls[+]%ls Target Exports.......... %ls%lu%ls Funcs / %ls%lu%ls Names (OP Claimed 76 Symbols; This Build Read Back)\n",
+                            LOG(0, L"  %ls[+]%ls Target Exports.......... %ls%lu%ls Funcs / %ls%lu%ls Names (Read Back From The Export Directory)\n",
                                 kGreen, kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfFunctions), kReset,
                                 kGreen, static_cast<unsigned long>(exp_dir.NumberOfNames), kReset);
@@ -1989,7 +2254,7 @@ namespace stealth
                             }
                             if (cb_ok && cb_done)
                             {
-                                LOG(0, L"  %ls[+]%ls Target TLS Callbacks.... %ls%lu%ls Configured (Remote Array Read; OP Claimed 3 In EXE)\n",
+                                LOG(0, L"  %ls[+]%ls Target TLS Callbacks.... %ls%lu%ls Configured (Remote Array Read)\n",
                                     kGreen, kReset, kGreen, cb_count, kReset);
                             }
                             else
@@ -2009,6 +2274,34 @@ namespace stealth
                     else
                     {
                         LOG(0, L"  %ls[!]%ls Target TLS Directory.... Out Of Image/Safepage\n", kYellow, kReset);
+                    }
+
+                    // The process policy and the image's own declaration, side
+                    // by side. One of them is what the process is running
+                    // under, the other is what the image was built with.
+                    if (cfg_read)
+                    {
+                        LOG(0, L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
+                            kGreen, static_cast<unsigned long>(cfg.EnableControlFlowGuard), kReset,
+                            kGreen, static_cast<unsigned long>(cfg.StrictMode), kReset);
+                    }
+                    else
+                    {
+                        LOG(0, L"  %ls[!]%ls Target CFG Policy Unreadable.\n", kYellow, kReset);
+                    }
+                    if (guard_flags_read)
+                    {
+                        const bool instrumented = (load_config_guard_flags & LoadConfig64::kGuardCfInstrumented) != 0;
+                        LOG(0, L"  %ls[=]%ls Target Load Config: GuardFlags = %ls0x%08X%ls | CFG Instrumented = %ls%s%ls | Load Config Size = %lu\n",
+                            kCyan, kReset,
+                            kGreen, load_config_guard_flags, kReset,
+                            instrumented ? kGreen : kYellow, instrumented ? L"Yes" : L"No", kReset,
+                            load_config_size);
+                    }
+                    else
+                    {
+                        LOG(0, L"  %ls[*]%ls Target Load Config: No Guard Flags Field Read (No Load Config Directory, "
+                                L"Or It Is Shorter Than The Field).\n", kDim, kReset);
                     }
                 }
             }
@@ -2394,11 +2687,12 @@ namespace stealth
         }
     }
 
-    bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out)
+    // Every module the target has loaded, ordered by base address. The loader
+    // list is the only complete view of what is mapped; the PEB is what says
+    // which of them is the main image.
+    bool EnumerateRemoteModules(HANDLE process, std::vector<SurveyModule> & out)
     {
-        name_out.clear();
-        base_out = 0;
-        size_out = 0;
+        out.clear();
         if (!process)
         {
             return false;
@@ -2412,18 +2706,84 @@ namespace stealth
 
         MODULEENTRY32W entry{};
         entry.dwSize = sizeof(entry);
-        bool found = false;
         if (Module32FirstW(snapshot, &entry))
         {
-
-            name_out = entry.szModule;
-            base_out = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
-            size_out = static_cast<SIZE_T>(entry.modBaseSize);
-            found = !name_out.empty() && base_out != 0;
+            do
+            {
+                if (!entry.modBaseAddr || !entry.modBaseSize)
+                {
+                    continue;
+                }
+                SurveyModule module{};
+                module.name = entry.szModule;
+                module.base = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
+                module.size = static_cast<SIZE_T>(entry.modBaseSize);
+                out.push_back(module);
+            } while (Module32NextW(snapshot, &entry));
         }
 
         CloseHandle(snapshot);
-        return found;
+
+        std::sort(out.begin(), out.end(), [](const SurveyModule & a, const SurveyModule & b)
+        {
+            return a.base < b.base;
+        });
+
+        return !out.empty();
+    }
+
+    // The main image is the one the PEB points at. The loader list is walked
+    // in load order, so its first entry is only the main image by convention.
+    bool FindModuleByBase(const std::vector<SurveyModule> & modules, ULONG_PTR base, SurveyModule & out)
+    {
+        for (const SurveyModule & module : modules)
+        {
+            if (module.base == base)
+            {
+                out = module;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The main image of the target. The PEB's image base is the authority; the
+    // first entry of the loader list is the fallback for a target whose PEB
+    // could not be read.
+    bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out)
+    {
+        name_out.clear();
+        base_out = 0;
+        size_out = 0;
+        if (!process)
+        {
+            return false;
+        }
+
+        std::vector<SurveyModule> modules;
+        if (!EnumerateRemoteModules(process, modules))
+        {
+            return false;
+        }
+
+        VehFirstChanceSurvey survey{};
+        if (QueryRemoteVehFirstChance(process, survey) && survey.readOk && survey.imageBase)
+        {
+            SurveyModule main{};
+            if (FindModuleByBase(modules, survey.imageBase, main))
+            {
+                name_out = main.name;
+                base_out = main.base;
+                size_out = main.size;
+                return true;
+            }
+        }
+
+        const SurveyModule & first = modules.front();
+        name_out = first.name;
+        base_out = first.base;
+        size_out = first.size;
+        return true;
     }
 
     static_assert(offsetof(PEB, CrossProcessFlags) == 80);
@@ -2485,10 +2845,12 @@ namespace stealth
         const ULONG_PTR cross_addr = peb + offsetof(PEB, CrossProcessFlags);
         const ULONG_PTR debugged_addr = peb + 2;
         const ULONG_PTR global_flag_addr = peb + offsetof(PEB, NtGlobalFlag);
+        const ULONG_PTR image_base_addr = peb + offsetof(PEB, ImageBaseAddress);
 
         ULONG cross = 0;
         BYTE debugged = 0;
         ULONG gflag = 0;
+        ULONG_PTR image_base = 0;
         SIZE_T got = 0;
         if (!ReadProcessMemory(process, ReCa<LPCVOID>(cross_addr), &cross, sizeof(cross), &got) ||
             got != sizeof(cross))
@@ -2509,6 +2871,14 @@ namespace stealth
         {
             out.lastError = GetLastError();
             return false;
+        }
+        got = 0;
+        // The image base is read on its own: a failure here must not fail the
+        // exception-chain survey, which is still worth reporting.
+        if (ReadProcessMemory(process, ReCa<LPCVOID>(image_base_addr), &image_base, sizeof(image_base), &got) &&
+            got == sizeof(image_base))
+        {
+            out.imageBase = image_base;
         }
 
         out.crossFlags = cross;
@@ -2604,17 +2974,55 @@ namespace stealth
         return true;
     }
 
-    bool GetRemoteEidRange(HANDLE process, ULONG_PTR base, ULONG_PTR & start_out, ULONG_PTR & end_out)
+    // The encrypted core of a module: the section a loader keeps its own
+    // obfuscated payload in. It is located by its section name, but it is
+    // reported as a range of its own rather than being folded into the
+    // surrounding counts. A section that has been renamed therefore shows up
+    // as an ordinary in-image region instead of silently vanishing from the
+    // tally.
+    struct EncryptedCoreRange
     {
-        start_out = 0;
-        end_out = 0;
-        if (!process || !base)
+        ULONG_PTR start = 0;
+        ULONG_PTR end = 0;
+        std::wstring module_name;
+        std::wstring section_name;
+    };
+
+    // The name a loader's encrypted core is known by. The comparison is
+    // case-insensitive and ignores the padding a section name may carry.
+    bool IsEncryptedCoreSectionName(const char * name)
+    {
+        if (!name)
+        {
+            return false;
+        }
+        char trimmed[9] = { 0 };
+        size_t length = 0;
+        while (length < 8 && name[length] && name[length] != ' ')
+        {
+            ++length;
+        }
+        if (!length)
+        {
+            return false;
+        }
+        memcpy(trimmed, name, length);
+        return _stricmp(trimmed, ".eid") == 0;
+    }
+
+    // Walks the remote section table of one module looking for the encrypted
+    // core. Returns false when the module has none, or when its headers
+    // cannot be read.
+    bool FindEncryptedCoreRange(HANDLE process, const SurveyModule & module, EncryptedCoreRange & out)
+    {
+        out = EncryptedCoreRange{};
+        if (!process || !module.base)
         {
             return false;
         }
         IMAGE_DOS_HEADER dos{};
         SIZE_T done = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(base), &dos, sizeof(dos), &done) ||
+        if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(module.base), &dos, sizeof(dos), &done) ||
             done != sizeof(dos) || dos.e_magic != IMAGE_DOS_SIGNATURE)
         {
             return false;
@@ -2624,12 +3032,12 @@ namespace stealth
             return false;
         }
         DWORD sig = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(base + static_cast<ULONG_PTR>(dos.e_lfanew)),
+        if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(module.base + static_cast<ULONG_PTR>(dos.e_lfanew)),
             &sig, sizeof(sig), &done) || done != sizeof(sig) || sig != IMAGE_NT_SIGNATURE)
         {
             return false;
         }
-        const ULONG_PTR file_hdr = base + static_cast<ULONG_PTR>(dos.e_lfanew) + sizeof(DWORD);
+        const ULONG_PTR file_hdr = module.base + static_cast<ULONG_PTR>(dos.e_lfanew) + sizeof(DWORD);
         WORD num_sections = 0;
         WORD opt_size = 0;
         if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(file_hdr + 2),
@@ -2657,17 +3065,24 @@ namespace stealth
             }
             char name[9] = { 0 };
             memcpy(name, sec.Name, 8);
-            if (strcmp(name, ".eid") == 0)
+            if (!IsEncryptedCoreSectionName(name))
             {
-                const DWORD extent = sec.Misc.VirtualSize ? sec.Misc.VirtualSize : sec.SizeOfRawData;
-                if (!extent)
-                {
-                    return false;
-                }
-                start_out = base + sec.VirtualAddress;
-                end_out = start_out + extent;
-                return end_out > start_out;
+                continue;
             }
+            const DWORD extent = sec.Misc.VirtualSize ? sec.Misc.VirtualSize : sec.SizeOfRawData;
+            if (!extent)
+            {
+                return false;
+            }
+            out.start = module.base + sec.VirtualAddress;
+            out.end = out.start + extent;
+            out.module_name = module.name;
+            out.section_name.clear();
+            for (const char * c = name; *c; ++c)
+            {
+                out.section_name.push_back(static_cast<wchar_t>(*c));
+            }
+            return out.end > out.start;
         }
         return false;
     }
@@ -2691,6 +3106,33 @@ namespace stealth
         return static_cast<SIZE_T>(value);
     }
 
+    // Per-module results of the region census. Only the modules that are
+    // actually read are sampled for byte patterns; every module is counted.
+    struct ModuleCensus
+    {
+        const SurveyModule * module = nullptr;
+        bool is_main = false;
+        bool has_encrypted_core = false;
+        bool sampled = false;
+
+        size_t committed_regions = 0;
+        size_t exec_regions = 0;
+        size_t noaccess_regions = 0;
+        size_t guard_regions = 0;
+        size_t core_regions = 0;
+
+        size_t cc_bytes = 0;
+        size_t sample_bytes = 0;
+        size_t exec_regions_sampled = 0;
+        size_t exec_regions_not_sampled = 0;
+    };
+
+    // The census walks the whole address space once and attributes every
+    // committed region to the module image it belongs to, or to free address
+    // space. That distinction is the whole point: a region inside a module's
+    // own image that is still inaccessible while the process is running is a
+    // different observation from a region in free space, and a count that
+    // does not separate them cannot tell the two apart.
     void ReportGameTraps(HANDLE process, DWORD target_pid, StealthVerifierBuffers & buffers)
     {
         if (!process || !target_pid)
@@ -2700,19 +3142,59 @@ namespace stealth
 
         std::vector<SurveyModule> & survey_modules = buffers.survey_modules;
         survey_modules.clear();
+        if (!EnumerateRemoteModules(process, survey_modules))
         {
-            std::wstring main_name;
-            ULONG_PTR main_base = 0;
-            SIZE_T main_size = 0;
-            if (GetRemoteMainModule(process, main_name, main_base, main_size))
+            LOG(0, L"  %ls[!]%ls Target Module List Not Enumerable; Nothing To Survey.\n", kYellow, kReset);
+            return;
+        }
+
+        // The main image, identified through the PEB rather than through the
+        // order the loader list happens to be walked in.
+        ULONG_PTR main_base = 0;
+        SIZE_T main_size = 0;
+        std::wstring main_name;
+        if (!GetRemoteMainModule(process, main_name, main_base, main_size))
+        {
+            LOG(0, L"  %ls[!]%ls Target Main Module Not Identifiable; Nothing To Survey.\n", kYellow, kReset);
+            return;
+        }
+
+        // The encrypted core is located by its section, which is what makes
+        // the module that carries it the loader rather than an ordinary
+        // dependency. The largest modules are probed first, because the
+        // loader is a large image and the probe costs three reads per module.
+        constexpr size_t kMaxCoreProbes = 96;
+        std::vector<EncryptedCoreRange> cores;
+        {
+            std::vector<size_t> order(survey_modules.size());
+            for (size_t i = 0; i < order.size(); ++i)
             {
-                survey_modules.push_back(SurveyModule{ main_name, main_base, main_size });
+                order[i] = i;
+            }
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+            {
+                return survey_modules[a].size > survey_modules[b].size;
+            });
+
+            for (size_t probed = 0; probed < order.size() && probed < kMaxCoreProbes; ++probed)
+            {
+                EncryptedCoreRange core{};
+                if (FindEncryptedCoreRange(process, survey_modules[order[probed]], core))
+                {
+                    cores.push_back(core);
+                }
             }
         }
 
-        const SIZE_T max_walk_regions = ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_REGIONS").get());
-        const SIZE_T max_walk_bytes = ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_MB").get()) * (1u << 20);
-        const SIZE_T max_sample_regions = ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_SAMPLE_REGIONS").get());
+        const SIZE_T max_walk_regions = buffers.survey_max_regions
+            ? buffers.survey_max_regions
+            : ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_REGIONS").get());
+        const SIZE_T max_walk_bytes = (buffers.survey_max_mb
+            ? buffers.survey_max_mb
+            : ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_MB").get())) * (1u << 20);
+        const SIZE_T max_sample_regions = buffers.survey_max_sample_regions
+            ? buffers.survey_max_sample_regions
+            : ReadSurveyBound(XOR_STR_W(L"AMEGER_SURVEY_MAX_SAMPLE_REGIONS").get());
 
         constexpr SIZE_T kSurveyChunkBytes = 0x10000;
 
@@ -2722,316 +3204,376 @@ namespace stealth
             chunk_buf.resize(kSurveyChunkBytes);
             if (chunk_buf.size() != kSurveyChunkBytes)
             {
-
                 LOG(0, L"  %ls[!]%ls Survey Read Window Unavailable; INT3 Scan Skipped.\n", kYellow, kReset);
                 return;
             }
         }
 
-        int found = 0;
-        for (size_t m = 0; m < survey_modules.size(); ++m)
+        // Only the main image and the module that carries the encrypted core
+        // are read byte for byte. Reading every module's code would be a large
+        // amount of traffic against the target for a question that only these
+        // two modules can answer.
+        std::vector<ModuleCensus> census(survey_modules.size());
+        for (size_t i = 0; i < survey_modules.size(); ++i)
         {
-            const std::wstring & mod = survey_modules[m].name;
-            const ULONG_PTR base = survey_modules[m].base;
-            const SIZE_T image_size = survey_modules[m].size;
-            if (!base)
+            census[i].module = &survey_modules[i];
+            census[i].is_main = (survey_modules[i].base == main_base);
+        }
+        for (const EncryptedCoreRange & core : cores)
+        {
+            for (ModuleCensus & entry : census)
+            {
+                if (entry.module && entry.module->base + entry.module->size > core.start &&
+                    core.end > entry.module->base)
+                {
+                    entry.has_encrypted_core = true;
+                    break;
+                }
+            }
+        }
+
+        // Aggregate counters for the whole address space.
+        size_t space_committed = 0;
+        size_t space_exec = 0;
+        size_t space_noaccess = 0;
+        size_t space_guard = 0;
+        size_t image_committed = 0;
+        size_t image_exec = 0;
+        size_t image_noaccess = 0;
+        size_t image_guard = 0;
+        size_t free_committed = 0;
+        size_t free_exec = 0;
+        size_t free_noaccess = 0;
+        size_t free_guard = 0;
+        size_t core_regions = 0;
+        size_t core_bytes = 0;
+        size_t regions_walked = 0;
+        size_t regions_total = 0;
+        bool walk_capped = false;
+        bool walk_aborted = false;
+        std::wstring walk_reason;
+
+        // The top of the address space the process can use. A query past it
+        // is the end of the walk, not a failure of it.
+        ULONG_PTR max_application_address = 0;
+        {
+            SYSTEM_INFO system_info{};
+            GetSystemInfo(&system_info);
+            max_application_address = reinterpret_cast<ULONG_PTR>(system_info.lpMaximumApplicationAddress);
+            if (!max_application_address)
+            {
+                max_application_address = 0x00007FFFFFFF0000ULL;
+            }
+        }
+
+        const auto module_of = [&](ULONG_PTR address) -> ModuleCensus *
+        {
+            for (ModuleCensus & entry : census)
+            {
+                if (entry.module && address >= entry.module->base &&
+                    address - entry.module->base < entry.module->size)
+                {
+                    return &entry;
+                }
+            }
+            return nullptr;
+        };
+
+        const auto in_encrypted_core = [&](ULONG_PTR start, ULONG_PTR end) -> bool
+        {
+            for (const EncryptedCoreRange & core : cores)
+            {
+                if (start < core.end && end > core.start)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        ULONG_PTR cursor = 0;
+        for (;;)
+        {
+            if (max_walk_regions && regions_total >= max_walk_regions)
+            {
+                walk_capped = true;
+                walk_reason = L"Region Cap";
+                break;
+            }
+
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQueryEx(process, reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) || !mbi.RegionSize)
+            {
+                // The query stops answering once the address is past the top
+                // of the address space. That is where the walk ends, not a
+                // failure, and the counts are complete.
+                if (cursor < max_application_address)
+                {
+                    walk_aborted = true;
+                    walk_reason = L"Query Failed";
+                }
+                break;
+            }
+
+            const ULONG_PTR region_start = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
+            const ULONG_PTR region_end = region_start + mbi.RegionSize;
+            if (region_end <= cursor)
+            {
+                walk_aborted = true;
+                walk_reason = L"Query Did Not Advance";
+                break;
+            }
+
+            ++regions_total;
+
+            if (mbi.State == MEM_COMMIT)
+            {
+                ++space_committed;
+                ++regions_walked;
+
+                ModuleCensus * owner = module_of(region_start);
+                const bool in_image = (owner != nullptr);
+                const bool in_core = in_encrypted_core(region_start, region_end);
+
+                if (in_core)
+                {
+                    ++core_regions;
+                    core_bytes += mbi.RegionSize;
+                    if (owner)
+                    {
+                        ++owner->core_regions;
+                    }
+                    cursor = region_end;
+                    continue;
+                }
+
+                size_t * exec_counter = in_image ? &image_exec : &free_exec;
+                size_t * noaccess_counter = in_image ? &image_noaccess : &free_noaccess;
+                size_t * guard_counter = in_image ? &image_guard : &free_guard;
+
+                if (mbi.Protect & PAGE_GUARD)
+                {
+                    ++space_guard;
+                    ++(*guard_counter);
+                    if (owner)
+                    {
+                        ++owner->guard_regions;
+                    }
+                }
+                else if ((mbi.Protect & 0xFF) == PAGE_NOACCESS)
+                {
+                    ++space_noaccess;
+                    ++(*noaccess_counter);
+                    if (owner)
+                    {
+                        ++owner->noaccess_regions;
+                    }
+                }
+                else if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+                {
+                    ++space_exec;
+                    ++(*exec_counter);
+                    if (owner)
+                    {
+                        ++owner->exec_regions;
+                    }
+
+                    // The byte scan runs only over the modules that carry the
+                    // question: the main image and the loader.
+                    const bool worth_reading = owner && (owner->is_main || owner->has_encrypted_core);
+                    if (worth_reading && max_sample_regions &&
+                        owner->exec_regions_sampled >= max_sample_regions)
+                    {
+                        ++owner->exec_regions_not_sampled;
+                    }
+                    else if (worth_reading)
+                    {
+                        SIZE_T remaining = mbi.RegionSize;
+                        BYTE * addr = reinterpret_cast<BYTE *>(mbi.BaseAddress);
+                        size_t region_cc = 0;
+                        size_t region_read = 0;
+                        while (remaining)
+                        {
+                            const SIZE_T want = remaining < kSurveyChunkBytes ? remaining : kSurveyChunkBytes;
+                            SIZE_T got = 0;
+                            if (!ReadProcessMemory(process, addr, chunk_buf.data(), want, &got) || !got)
+                            {
+                                break;
+                            }
+
+                            for (size_t i = 0; i < static_cast<size_t>(got); ++i)
+                            {
+                                if (chunk_buf[i] == 0xCC)
+                                {
+                                    ++region_cc;
+                                }
+                            }
+
+                            region_read += static_cast<size_t>(got);
+                            addr += got;
+                            remaining -= got;
+                            if (got < want)
+                            {
+                                break;
+                            }
+                        }
+
+                        if (region_read)
+                        {
+                            owner->cc_bytes += region_cc;
+                            owner->sample_bytes += region_read;
+                            ++owner->exec_regions_sampled;
+                            owner->sampled = true;
+                        }
+                    }
+                }
+
+                if (owner)
+                {
+                    ++owner->committed_regions;
+                    if (in_image)
+                    {
+                        ++image_committed;
+                    }
+                    else
+                    {
+                        ++free_committed;
+                    }
+                }
+                else
+                {
+                    ++free_committed;
+                }
+            }
+
+            cursor = region_end;
+
+            if (max_walk_bytes && regions_walked * 4096ULL > max_walk_bytes)
+            {
+                walk_capped = true;
+                walk_reason = L"Walk Cap";
+                break;
+            }
+        }
+
+        // The report. Every count states the range it was measured over, so a
+        // reader can tell an in-image measurement from an address-space one.
+        LOG(0, L"  %lsScope%ls  %ls%zu%ls Module(s) Loaded | Main Image = %ls%ls%ls @ %p | %ls%zu%ls KB\n",
+            kDim, kReset,
+            kGreen, survey_modules.size(), kReset,
+            kGreen, main_name.c_str(), kReset, reinterpret_cast<void *>(main_base),
+            kGreen, static_cast<size_t>(main_size / 1024), kReset);
+
+        LOG(0, L"  %lsWalk%ls    %ls%zu%ls Committed Region(s) Walked | %ls%zu%ls Guard | %ls%zu%ls No-Access | %ls%zu%ls Executable\n",
+            kDim, kReset,
+            kGreen, regions_walked, kReset,
+            kGreen, space_guard, kReset,
+            kGreen, space_noaccess, kReset,
+            kGreen, space_exec, kReset);
+
+        LOG(0, L"  %lsBy Range%ls  Inside Module Images.. Guard %ls%zu%ls | No-Access %ls%zu%ls | Executable %ls%zu%ls | Committed %ls%zu%ls\n",
+            kDim, kReset,
+            kGreen, image_guard, kReset,
+            kGreen, image_noaccess, kReset,
+            kGreen, image_exec, kReset,
+            kGreen, image_committed, kReset);
+
+        LOG(0, L"  %lsBy Range%ls  Free Address Space.... Guard %ls%zu%ls | No-Access %ls%zu%ls | Executable %ls%zu%ls | Committed %ls%zu%ls\n",
+            kDim, kReset,
+            kGreen, free_guard, kReset,
+            kGreen, free_noaccess, kReset,
+            kGreen, free_exec, kReset,
+            kGreen, free_committed, kReset);
+
+        if (core_regions)
+        {
+            LOG(0, L"  %lsEncrypted%ls %ls%zu%ls Region(s) / %ls%zu%ls KB Inside A Loader's Encrypted Core - Never Read\n",
+                kDim, kReset,
+                kGreen, core_regions, kReset,
+                kGreen, static_cast<size_t>(core_bytes / 1024), kReset);
+            for (const EncryptedCoreRange & core : cores)
+            {
+                LOG(0, L"           %ls%ls%ls -> %ls%ls%ls @ %p..%p\n",
+                    kDim, core.module_name.c_str(), kReset,
+                    kGreen, core.section_name.c_str(), kReset,
+                    reinterpret_cast<void *>(core.start), reinterpret_cast<void *>(core.end));
+            }
+        }
+
+        LOG(0, L"\n");
+
+        for (const ModuleCensus & entry : census)
+        {
+            if (!entry.module)
             {
                 continue;
             }
 
-            ++found;
-
-            size_t guarded = 0;
-            size_t noaccess = 0;
-            size_t guarded_bytes = 0;
-            size_t noaccess_bytes = 0;
-            size_t sampled = 0;
-            size_t exec_regions = 0;
-            size_t cc_bytes = 0;
-            size_t sample_bytes = 0;
-            size_t walked = 0;
-            size_t eid_skipped = 0;
-
-            size_t sample_capped = 0;
-            bool walk_capped = false;
-            bool walk_aborted = false;
-            const bool unknown_extent = (image_size == 0);
-            ULONG_PTR eid_start = 0;
-            ULONG_PTR eid_end = 0;
-            const bool has_eid = GetRemoteEidRange(process, base, eid_start, eid_end);
-
-            const ULONG_PTR walk_end = unknown_extent ? 0 : (base + image_size);
-
-            BYTE * cursor = reinterpret_cast<BYTE *>(base);
-            size_t regions = 0;
-            for (;;)
+            const bool interesting = entry.is_main || entry.has_encrypted_core;
+            if (!interesting)
             {
-                if (unknown_extent)
-                {
-                    walk_aborted = true;
-                    break;
-                }
-
-                if (max_walk_regions && regions >= max_walk_regions)
-                {
-                    walk_capped = true;
-                    break;
-                }
-
-                if (reinterpret_cast<ULONG_PTR>(cursor) >= walk_end)
-                {
-                    break;
-                }
-
-                MEMORY_BASIC_INFORMATION mbi{};
-                if (!VirtualQueryEx(process, cursor, &mbi, sizeof(mbi)) || !mbi.RegionSize)
-                {
-                    walk_aborted = true;
-                    break;
-                }
-
-                BYTE * next = reinterpret_cast<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
-                if (next <= cursor)
-                {
-                    walk_aborted = true;
-                    break;
-                }
-
-                if (has_eid)
-                {
-                    const ULONG_PTR r_start = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
-                    const ULONG_PTR r_end = reinterpret_cast<ULONG_PTR>(next);
-                    if (r_start < eid_end && r_end > eid_start)
-                    {
-                        ++eid_skipped;
-                        cursor = next;
-                        ++regions;
-                        if (max_walk_bytes && reinterpret_cast<ULONG_PTR>(cursor) - base > max_walk_bytes)
-                        {
-                            walk_capped = true;
-                            break;
-                        }
-                        continue;
-                    }
-                }
-
-                if (mbi.State == MEM_COMMIT)
-                {
-                    ++walked;
-                    if (mbi.Protect & PAGE_GUARD)
-                    {
-                        ++guarded;
-                        guarded_bytes += mbi.RegionSize;
-                    }
-                    else if ((mbi.Protect & 0xFF) == PAGE_NOACCESS)
-                    {
-                        ++noaccess;
-                        noaccess_bytes += mbi.RegionSize;
-                    }
-                    else if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
-                    {
-                        ++exec_regions;
-                        if (max_sample_regions && sampled >= max_sample_regions)
-                        {
-                            ++sample_capped;
-                        }
-                        else
-                        {
-
-                            SIZE_T remaining = mbi.RegionSize;
-                            BYTE * addr = reinterpret_cast<BYTE *>(mbi.BaseAddress);
-                            size_t region_cc = 0;
-                            size_t region_read = 0;
-                            while (remaining)
-                            {
-                                const SIZE_T want = remaining < kSurveyChunkBytes ? remaining : kSurveyChunkBytes;
-                                SIZE_T got = 0;
-                                if (!ReadProcessMemory(process, addr, chunk_buf.data(), want, &got) || !got)
-                                {
-                                    break;
-                                }
-
-                                for (size_t i = 0; i < static_cast<size_t>(got); ++i)
-                                {
-                                    if (chunk_buf[i] == 0xCC)
-                                    {
-                                        ++region_cc;
-                                    }
-                                }
-
-                                region_read += static_cast<size_t>(got);
-                                addr += got;
-                                remaining -= got;
-                                if (got < want)
-                                {
-                                    break;
-                                }
-                            }
-
-                            if (region_read)
-                            {
-                                cc_bytes += region_cc;
-                                sample_bytes += region_read;
-                                ++sampled;
-                            }
-                        }
-                    }
-                }
-
-                cursor = next;
-                ++regions;
-                if (max_walk_bytes && reinterpret_cast<ULONG_PTR>(cursor) - base > max_walk_bytes)
-                {
-                    walk_capped = true;
-                    break;
-                }
+                continue;
             }
 
-            const size_t cc_pct = sample_bytes ? (cc_bytes * 100) / sample_bytes : 0;
+            const wchar_t * role = entry.is_main ? L"Main Image" : L"Encrypted-Core Carrier";
 
-            const wchar_t * Verdict = guarded ? L"Guarded" : L"No Guard Pages";
-            wchar_t VerdictNote[192]{};
-            if (guarded == 0)
+            LOG(0, L"  %ls%ls%ls  (%ls)\n", StageField(entry.module->name, 24).c_str(), kGreen, kReset, role);
+            LOG(0, L"      %ls%ls%zu%ls Committed | %ls%zu%ls Executable | %ls%zu%ls No-Access | %ls%zu%ls Guard | %ls%zu%ls Encrypted-Core\n",
+                StageField(L"Regions:", 12).c_str(),
+                kGreen, entry.committed_regions, kReset,
+                kGreen, entry.exec_regions, kReset,
+                kGreen, entry.noaccess_regions, kReset,
+                kGreen, entry.guard_regions, kReset,
+                kGreen, entry.core_regions, kReset);
+
+            if (entry.sample_bytes)
             {
-                if (sample_bytes == 0)
-                {
-                    swprintf_s(VerdictNote, L"No Executable Region Was Readable");
-                }
-                else if (cc_pct)
-                {
-                    swprintf_s(VerdictNote, L"INT3 %zu%% Of Sampled Exec Bytes (Process-Wide; Not A Per-Module Verdict)",
-                        cc_pct);
-                }
-                else
-                {
-                    swprintf_s(VerdictNote, L"No INT3 In Sampled Exec Bytes");
-                }
-            }
-            LOG(0, L"  %ls%ls%s%s (%ls%zu%s Committed Region(s) Walked, Process-Wide)\n",
-                StageField(mod, 24).c_str(),
-                guarded ? kYellow : L"", Verdict, kReset,
-                kGreen, walked, kReset);
-            if (VerdictNote[0])
-            {
-                LOG(0, L"  %*s%ls%s\n", static_cast<int>(StageField(mod, 24).size()), L"", VerdictNote, kReset);
-            }
-
-            LOG(0, L"\n");
-
-            LOG(0, L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
-                StageField(L"Guard:", 12).c_str(),
-                kGreen, guarded, kReset,
-                kGreen, static_cast<size_t>(guarded_bytes / 1024), kReset);
-
-            LOG(0, L"      %ls%ls%zu%ls Region(s), %ls%zu%ls KB\n",
-                StageField(L"No-Access:", 12).c_str(),
-                kGreen, noaccess, kReset,
-                kGreen, static_cast<size_t>(noaccess_bytes / 1024), kReset);
-
-            if (eid_skipped)
-            {
-                LOG(0, L"      %ls%ls%zu%ls Region(s) Skipped (Encrypted Core, Never Read)\n",
-                    StageField(L"EID:", 12).c_str(),
-                    kGreen, eid_skipped, kReset);
-            }
-
-            if (sample_bytes)
-            {
-                LOG(0, L"      %ls%ls%zu%ls Of %ls%zu%ls Sampled Bytes Are INT3 (%ls0xCC%ls), %ls%zu%s%%, From %ls%zu%ls Of %ls%zu%ls Exec Region(s)\n",
+                const size_t cc_pct = (entry.cc_bytes * 100) / entry.sample_bytes;
+                LOG(0, L"      %ls%ls%zu%ls Of %ls%zu%ls Sampled Bytes Are INT3 (%ls0xCC%ls), %ls%zu%s%%, From %ls%zu%ls Of %ls%zu%ls Executable Region(s)\n",
                     StageField(L"INT3:", 12).c_str(),
-                    kGreen, cc_bytes, kReset,
-                    kGreen, sample_bytes, kReset,
+                    kGreen, entry.cc_bytes, kReset,
+                    kGreen, entry.sample_bytes, kReset,
                     kGreen, kReset,
                     kGreen, cc_pct, kReset,
-                    kGreen, sampled, kReset, kGreen, exec_regions, kReset);
-
-                if (sample_capped)
-                {
-
-                    LOG(0, L"%*s%ls%zu%ls Of %ls%zu%ls Exec Region(s) Not Sampled (Cap %ls%zu%ls), So The INT3 Count Is A Floor, Not A Total\n",
-                        static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
-                        kGreen, sample_capped, kReset,
-                        kGreen, exec_regions, kReset,
-                        kGreen, max_sample_regions, kReset);
-                }
+                    kGreen, entry.exec_regions_sampled, kReset, kGreen, entry.exec_regions, kReset);
+                LOG(0, L"      %ls%lsThis Module's Image Range Only%ls\n",
+                    StageField(L"Scope:", 12).c_str(), kDim, kReset);
             }
             else
             {
-                LOG(0, L"      %lsNo Executable Region Was Readable\n",
+                LOG(0, L"      %lsNo Executable Region Of This Module Was Readable\n",
                     StageField(L"INT3:", 12).c_str());
             }
 
-            if (walk_capped || walk_aborted)
+            if (entry.exec_regions_not_sampled)
             {
-
-                wchar_t reason[192]{};
-                const auto append = [&reason](const wchar_t * part)
-                {
-                    if (!part)
-                    {
-                        return;
-                    }
-                    size_t used = 0;
-                    while (used < _countof(reason) && reason[used])
-                    {
-                        ++used;
-                    }
-                    if (used >= _countof(reason) - 1)
-                    {
-                        return;
-                    }
-                    wchar_t * dst = reason + used;
-                    size_t left = _countof(reason) - 1 - used;
-                    if (used)
-                    {
-                        if (left < 3)
-                        {
-                            return;
-                        }
-                        *dst++ = L' ';
-                        *dst++ = L'/';
-                        *dst++ = L' ';
-                        left -= 3;
-                    }
-                    while (left && *part)
-                    {
-                        *dst++ = *part++;
-                        --left;
-                    }
-                    *dst = L'\0';
-                };
-
-                if (walk_capped)
-                {
-                    if (max_walk_regions)
-                    {
-                        wchar_t part[64] = {};
-                        swprintf_s(part, L"Cap %ls%zu%ls Regions", kGreen, max_walk_regions, kReset);
-                        append(part);
-                    }
-                    if (max_walk_bytes)
-                    {
-                        wchar_t part[64] = {};
-                        swprintf_s(part, L"Cap %ls%zu%ls MB", kGreen, static_cast<size_t>(max_walk_bytes >> 20), kReset);
-                        append(part);
-                    }
-                }
-                if (walk_aborted)
-                {
-                    append(unknown_extent ? L"Module Extent Unknown" : L"Query Failed Before Module End");
-                }
-
-                LOG(0, L"%*sRegion Walk Stopped Early (%ls); Counts Are Partial\n",
-                    static_cast<int>(StageField(L"INT3:", 12).size()) + 6, L"",
-                    reason);
+                LOG(0, L"      %ls%ls%zu%ls Of %ls%zu%ls Executable Region(s) Not Sampled (Cap %ls%zu%ls), So The INT3 Count Is A Floor, Not A Total\n",
+                    StageField(L"INT3:", 12).c_str(),
+                    kGreen, entry.exec_regions_not_sampled, kReset,
+                    kGreen, entry.exec_regions, kReset,
+                    kGreen, max_sample_regions, kReset);
             }
 
             LOG(0, L"\n");
         }
 
-        if (!found)
+        if (walk_capped || walk_aborted)
         {
-            LOG(0, L"  %ls[!]%ls No Target Module Present; Nothing To Survey.\n", kYellow, kReset);
+            wchar_t reason[192]{};
+            if (walk_capped && !walk_reason.empty())
+            {
+                swprintf_s(reason, L"%ls", walk_reason.c_str());
+            }
+            if (walk_aborted)
+            {
+                if (reason[0])
+                {
+                    wcscat_s(reason, L" / ");
+                }
+                wcscat_s(reason, L"Query Failed Before The End Of The Address Space");
+            }
+            LOG(0, L"  %ls[!]%ls Region Walk Stopped Early (%ls); Counts Are Partial\n",
+                kYellow, kReset, reason[0] ? reason : L"Unknown Reason");
         }
     }
 

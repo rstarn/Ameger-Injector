@@ -1,6 +1,7 @@
-﻿
+
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
+#include <TlHelp32.h>
 #include <intrin.h>
 
 #include "Core/Foundation/Primitives/ResourceGuard.h"
@@ -14,6 +15,24 @@ namespace
 
 	MAP_STATS g_LastMapStats{};
 	VERIFIABLE_EXEC_TELEMETRY g_LastExecTelemetry{};
+
+	// Writes into the target and insists that every byte landed. A partial
+	// write that is reported as a success would leave the staging area half
+	// filled, and the shell would run against whatever happened to be there.
+	bool WriteRemoteExact(HANDLE hTargetProc, void * address, const void * buffer, SIZE_T size)
+	{
+		if (!hTargetProc || !address || !buffer || !size)
+		{
+			return false;
+		}
+
+		SIZE_T written = 0;
+		if (!ScWriteProcessMemory(hTargetProc, address, buffer, size, &written))
+		{
+			return false;
+		}
+		return written == size;
+	}
 
 	void StoreMapStats(const MAP_STATS & Src)
 	{
@@ -70,14 +89,54 @@ namespace
 	//
 	// Returns false when the target's loader state cannot be inspected; the caller
 	// treats that as a refusal, never as a pass.
+	//
+	// The PEB walk is the primary route, but it is not the only one: a process
+	// whose loader data has not been published reports a null Ldr pointer, and
+	// that is a real state on modern Windows rather than a broken read. The
+	// loader's own module list is consulted as a fallback, because it is built
+	// from the same data by the kernel and is available in that state.
+	bool ResolveRemoteNtdllBaseFromModuleList(DWORD target_pid, ULONG_PTR & base_out)
+	{
+		base_out = 0;
+
+		HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, target_pid);
+		if (snapshot == INVALID_HANDLE_VALUE)
+		{
+			return false;
+		}
+
+		MODULEENTRY32W entry{};
+		entry.dwSize = sizeof(entry);
+		bool found = false;
+		if (Module32FirstW(snapshot, &entry))
+		{
+			do
+		 {
+				if (_wcsicmp(entry.szModule, L"ntdll.dll") == 0)
+				{
+					base_out = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
+					found = base_out != 0;
+					break;
+				}
+			} while (Module32NextW(snapshot, &entry));
+		}
+
+		CloseHandle(snapshot);
+		return found;
+	}
+
 	bool ResolveRemoteNtdllBase(HANDLE hTargetProc, ULONG_PTR & base_out)
 	{
 		base_out = 0;
 
 		PROCESS_BASIC_INFORMATION basic{ };
-		if (NT_FAIL(ScNtQueryInformationProcess(hTargetProc, PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr)) || !basic.pPEB)
+		const NTSTATUS basic_status = ScNtQueryInformationProcess(hTargetProc,
+			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
+		if (NT_FAIL(basic_status) || !basic.pPEB)
 		{
-			return false;
+			LOG(1, "ResolveRemoteNtdllBase: The Process Basic Information Query Failed (Status = %08X | PEB = %p)\n",
+				static_cast<unsigned>(basic_status), basic.pPEB);
+			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
 		const DYNAMIC_NT_OFFSETS & dyno = g_DynamicOffsets;
@@ -94,28 +153,36 @@ namespace
 		}
 
 		PEB_LDR_DATA * ldr = nullptr;
-		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(ldr), nullptr) || !ldr)
+		// A pointer-sized value is read out of the target, so the size is
+		// spelled out rather than taken from the variable.
+		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
-			return false;
+			LOG(1, "ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
+				basic.pPEB, peb_ldr_offset);
+			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
 		LIST_ENTRY head{ };
 		if (!ScReadProcessMemory(hTargetProc, &ldr->InLoadOrderModuleListHead, &head, sizeof(head), nullptr))
 		{
-			return false;
+			LOG(1, "ResolveRemoteNtdllBase: The Loader List Head Could Not Be Read (Ldr = %p)\n", ldr);
+			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
 		// The list links are addresses inside the target, so the walk compares
 		// target addresses, not the address of the local copy of the head.
 		const LIST_ENTRY * head_address = &ldr->InLoadOrderModuleListHead;
 		LIST_ENTRY * current = head.Flink;
+		ULONG depth = 0;
 
-		for (ULONG depth = 0; current && current != head_address && depth < 4096; ++depth)
+		for (; current && current != head_address && depth < 4096; ++depth)
 		{
 			LIST_ENTRY link{ };
 			if (!ScReadProcessMemory(hTargetProc, current, &link, sizeof(link), nullptr))
 			{
-				return false;
+				LOG(1, "ResolveRemoteNtdllBase: A Loader List Link Could Not Be Read (Depth = %lu | Address = %p)\n",
+					static_cast<unsigned long>(depth), current);
+				return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 			}
 
 			// The list link is embedded in the loader entry; walk back from the
@@ -145,7 +212,9 @@ namespace
 			current = link.Flink;
 		}
 
-		return false;
+		LOG(1, "ResolveRemoteNtdllBase: The Loader List Was Walked Without Finding ntdll (Depth = %lu)\n",
+			static_cast<unsigned long>(depth));
+		return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 	}
 }
 
@@ -401,7 +470,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		// The gadget slot travels with the stubs: it holds the ntdll `syscall ; ret`
 		// address that every remote stub jumps through.
-		if (!ScWriteProcessMemory(hTargetProc, pStubArea, stub_slab, sizeof(stub_slab), nullptr))
+		if (!WriteRemoteExact(hTargetProc, pStubArea, stub_slab, sizeof(stub_slab)))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -472,7 +541,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	LOG(2, "pDispatch      = %p\n", pFunctionTable);
 
-	if (!ScWriteProcessMemory(hTargetProc, pArg, &data, sizeof(MANUAL_MAPPING_DATA), nullptr))
+	if (!WriteRemoteExact(hTargetProc, pArg, &data, sizeof(MANUAL_MAPPING_DATA)))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -483,7 +552,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	LOG(1, "ShellData Written To Memory\n");
 
-	if (!ScWriteProcessMemory(hTargetProc, pShells, mmap_sec_base, ShellSize, nullptr))
+	if (!WriteRemoteExact(hTargetProc, pShells, mmap_sec_base, ShellSize))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -494,7 +563,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	LOG(1, "Shells Written To Memory\n");
 
-	if (!ScWriteProcessMemory(hTargetProc, pFunctionTable, table_local.get(), sizeof(MANUAL_MAPPING_FUNCTION_TABLE), nullptr))
+	if (!WriteRemoteExact(hTargetProc, pFunctionTable, table_local.get(), sizeof(MANUAL_MAPPING_FUNCTION_TABLE)))
 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -508,7 +577,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	if (!transfer_image.empty())
 	{
-		if (!ScWriteProcessMemory(hTargetProc, pRawData, transfer_image.data(), transfer_image.size(), nullptr))
+		if (!WriteRemoteExact(hTargetProc, pRawData, transfer_image.data(), transfer_image.size()))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 

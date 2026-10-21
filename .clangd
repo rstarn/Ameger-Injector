@@ -7,6 +7,9 @@ Diagnostics:
 # Execution/..., Injection/...), and the repository root is needed so that "../../../Injection.h"
 # resolves from Ameger/Core/Utility/Header.
 #
+# The launcher project has its own roots, and they are the ones its precompiled header
+# needs: "Interface/Source" for "Launcher.h" and "Interface/Source/PCH" for "PCH.h".
+#
 # clangd resolves a relative -I against its own working directory, which is not guaranteed to be the
 # repository root or its parent, so the absolute forms are listed first and are what actually resolves.
 # The relative forms are kept afterwards purely as a fallback for a checkout at a different path:
@@ -33,9 +36,25 @@ CompileFlags:
     - -DNTDDI_VERSION=0x0A00000C
     - -D_WIN32_WINNT=0x0A00
     - -DNOMINMAX
+    # The runtime's SHA-256 pin is a per-build value that the build injects as
+    # eight 32-bit words. They are defined here as the project default of zero
+    # so the file parses; the launcher refuses to run a runtime whose pin is
+    # all zeroes, so this cannot be mistaken for a real pin.
+    - -DAMEGER_RUNTIME_DLL_HASH0=0
+    - -DAMEGER_RUNTIME_DLL_HASH1=0
+    - -DAMEGER_RUNTIME_DLL_HASH2=0
+    - -DAMEGER_RUNTIME_DLL_HASH3=0
+    - -DAMEGER_RUNTIME_DLL_HASH4=0
+    - -DAMEGER_RUNTIME_DLL_HASH5=0
+    - -DAMEGER_RUNTIME_DLL_HASH6=0
+    - -DAMEGER_RUNTIME_DLL_HASH7=0
     - -ID:/Ameger/Injector/Ameger
     - -ID:/Ameger/Injector
+    - -ID:/Ameger/Injector/Interface/Source
+    - -ID:/Ameger/Injector/Interface/Source/PCH
     - -IAmeger
     - -I.
     - -IInjector/Ameger
     - -IInjector
+    - -IInterface/Source
+    - -IInterface/Source/PCH

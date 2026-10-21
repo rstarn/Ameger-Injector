@@ -13,6 +13,7 @@
 
 #include "../../Ameger/Injection.h"
 #include "../../Ameger/Core/Foundation/Error.h"
+#include "../../Ameger/Core/Foundation/Primitives/ResourceGuard.h"
 #include "../../Ameger/Core/Foundation/Primitives/KcStrings/Core/XorString.h"
 #include "../../Ameger/Core/Utility/Binary/PEImage.h"
 #include "../../Ameger/NT/NTDefinitions.h"
@@ -28,12 +29,17 @@
 
 #pragma region console colours
 
-inline constexpr wchar_t kReset[] = L"";
-inline constexpr wchar_t kGreen[] = L"";
-inline constexpr wchar_t kRed[] = L"";
-inline constexpr wchar_t kYellow[] = L"";
-inline constexpr wchar_t kDim[] = L"";
-inline constexpr wchar_t kCyan[] = L"";
+// The console tints are real ANSI sequences. They are only ever written to a
+// real console (UiLog checks the console mode before it prints), and the
+// on-disk transcript is written with the escapes stripped. When the host
+// console cannot render VT sequences, UiLog strips them from the stream too,
+// so a redirected or legacy console never shows escape bytes.
+inline constexpr wchar_t kReset[] = L"\x1b[0m";
+inline constexpr wchar_t kGreen[] = L"\x1b[92m";
+inline constexpr wchar_t kRed[] = L"\x1b[91m";
+inline constexpr wchar_t kYellow[] = L"\x1b[93m";
+inline constexpr wchar_t kDim[] = L"\x1b[90m";
+inline constexpr wchar_t kCyan[] = L"\x1b[96m";
 
 #pragma endregion
 
@@ -49,10 +55,12 @@ int UiLog(int indent, const wchar_t * format, ...);
 namespace ameger_ui_log
 {
     void AppendStripped(const wchar_t * text);
+    void AppendClean(const wchar_t * text);
     std::wstring Snapshot();
     std::wstring ResultLogPath();
     void ResetResultLog();
     void WriteResultLog();
+    void DiscardResultLog();
     void Clear();
 }
 
@@ -137,6 +145,40 @@ struct FileInformation
     bool dotnet = false;
 };
 
+// Everything that pins one running process down to one specific instance.
+// A name is not an identity: a game can exit and be relaunched between the
+// moment the operator confirms it and the moment the payload is written.
+struct ProcessIdentity
+{
+    DWORD pid = 0;
+    std::wstring name;        // leaf name
+    std::wstring full_path;   // full image path
+    ULONGLONG creation_time = 0;  // FILETIME, as a 64-bit value
+    Architecture architecture = Architecture::Unknown;
+    // Whether the process has published its loader list. A process that has
+    // not cannot be written to, and several modern applications run a helper
+    // under the same image name as the real one.
+    bool loader_list_published = false;
+
+    bool Matches(const ProcessIdentity & other) const
+    {
+        if (!pid || !other.pid || pid != other.pid)
+        {
+            return false;
+        }
+        if (creation_time && other.creation_time && creation_time != other.creation_time)
+        {
+            return false;
+        }
+        if (!full_path.empty() && !other.full_path.empty() &&
+            _wcsicmp(full_path.c_str(), other.full_path.c_str()) != 0)
+        {
+            return false;
+        }
+        return true;
+    }
+};
+
 struct TargetSelection
 {
     DWORD pid = 0;
@@ -144,6 +186,11 @@ struct TargetSelection
     std::wstring name;
     Architecture architecture = Architecture::Unknown;
     bool by_name = false;
+    // The identity of the process the operator actually confirmed. The
+    // launcher re-resolves a name-based target before the load, and without
+    // this the confirmation would apply to a different process than the one
+    // that ends up being written to.
+    ProcessIdentity identity;
 };
 
 struct ExportNameMap
@@ -174,6 +221,20 @@ struct WizardConfig
     bool clean_data = true;
     bool execute_tls = true;
     int timeout = 60000;
+
+    // The launcher always runs elevated, and an elevated process is started
+    // with a fresh environment rather than the one its parent had. Every
+    // tuning knob therefore lives in the configuration file, which is read
+    // after the elevation, and not in an environment variable.
+    bool keep_result_log = false;
+    size_t survey_max_regions = 0;
+    size_t survey_max_mb = 0;
+    size_t survey_max_sample_regions = 0;
+    std::wstring donor_owner_blocklist;
+    // The image the test run points at. It defaults to notepad, which is
+    // harmless and always present.
+    std::wstring test_target = L"notepad.exe";
+
     std::wstring target_name;
     std::wstring expected_payload_sha256;
 
@@ -290,6 +351,10 @@ inline bool IsOriginalExportName(const std::vector<ExportNameMap> & map, const c
 // Queries the name and the architecture of a running process.
 bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture);
 
+// Reads the full identity of a running process: its name, its image path, its
+// creation time and its architecture, all from the same handle.
+bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out);
+
 // The fixed-buffer form of QueryProcess.
 bool QueryProcessFixed(DWORD pid, wchar_t * name_out, size_t name_count, Architecture & architecture);
 
@@ -324,6 +389,13 @@ struct StealthVerifierBuffers
 
     std::vector<SurveyModule> survey_modules;
     std::vector<BYTE> survey_chunk;
+
+    // The bounds on the region census. They come from the configuration
+    // file, because the launcher runs elevated and an elevated process does
+    // not inherit the environment variables its parent had.
+    size_t survey_max_regions = 0;
+    size_t survey_max_mb = 0;
+    size_t survey_max_sample_regions = 0;
 };
 
 namespace stealth
@@ -354,6 +426,10 @@ namespace stealth
         BYTE beingDebugged = 0;
         ULONG ntGlobalFlag = 0;
         PVOID pebAddress = nullptr;
+        // The image base the target itself is running from. The module list is
+        // walked in load order, so the PEB is the only reliable way to say
+        // which entry is the main image and which is a dependency.
+        ULONG_PTR imageBase = 0;
         DWORD lastError = 0;
     };
 
