@@ -75,6 +75,70 @@ static std::wstring & Buffer()
     return buffer;
 }
 
+// The transcript file, once it has been opened, and the number of characters of
+// the buffer that are already in it. Everything logged after the file is opened
+// is written immediately instead of being held until the end of the run, so a
+// crash still leaves the lines that led up to it. Holding the whole transcript
+// in memory and writing it once at the end means the runs that most need a
+// record, the ones that die, are the ones that leave nothing.
+static HANDLE & File()
+{
+    static HANDLE file = INVALID_HANDLE_VALUE;
+    return file;
+}
+
+static size_t & Written()
+{
+    static size_t written = 0;
+    return written;
+}
+
+static bool WriteUtf8(HANDLE file, const wchar_t * text, size_t chars)
+{
+    if (file == INVALID_HANDLE_VALUE || !text || !chars)
+    {
+        return true;
+    }
+
+    const int needed = WideCharToMultiByte(CP_UTF8, 0, text, static_cast<int>(chars), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0)
+    {
+        return false;
+    }
+
+    std::string utf8(static_cast<size_t>(needed), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, text, static_cast<int>(chars), utf8.data(), needed, nullptr, nullptr) != needed)
+    {
+        return false;
+    }
+
+    size_t offset = 0;
+    while (offset < utf8.size())
+    {
+        const DWORD chunk = static_cast<DWORD>(utf8.size() - offset > 0x100000 ? 0x100000 : utf8.size() - offset);
+        DWORD written = 0;
+        if (!WriteFile(file, utf8.data() + offset, chunk, &written, nullptr) || !written)
+        {
+            return false;
+        }
+        offset += written;
+    }
+
+    return true;
+}
+
+static void CloseFile()
+{
+    HANDLE file = File();
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+    File() = INVALID_HANDLE_VALUE;
+    Written() = 0;
+}
+
 void AppendClean(const wchar_t * text)
 {
     if (!text || !*text)
@@ -93,6 +157,15 @@ void AppendClean(const wchar_t * text)
         }
         buf.append(text, take);
     }
+    // Whatever has not reached the file yet is written now. This also covers
+    // lines that were logged before the file was opened: they are still in the
+    // buffer and are flushed by the first append that follows.
+    size_t & written = Written();
+    if (written < buf.size())
+    {
+        WriteUtf8(File(), buf.data() + written, buf.size() - written);
+        written = buf.size();
+    }
     ReleaseSRWLockExclusive(&Lock());
 }
 
@@ -105,14 +178,6 @@ void AppendStripped(const wchar_t * text)
     }
     AppendClean(clean.c_str());
 }
-
-std::wstring Snapshot()
-    {
-        AcquireSRWLockShared(&Lock());
-        std::wstring copy = Buffer();
-        ReleaseSRWLockShared(&Lock());
-        return copy;
-    }
 
 std::wstring ResultLogPath()
     {
@@ -137,6 +202,7 @@ std::wstring ResultLogPath()
 
 void ResetResultLog()
 {
+    CloseFile();
     const std::wstring path = ResultLogPath();
     if (!path.empty())
     {
@@ -144,53 +210,82 @@ void ResetResultLog()
     }
 }
 
+bool BeginResultLog(const wchar_t * header)
+{
+    const std::wstring path = ResultLogPath();
+    if (path.empty())
+    {
+        return false;
+    }
+
+    CloseFile();
+
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    AcquireSRWLockExclusive(&Lock());
+    File() = file;
+    Written() = 0;
+
+    std::wstring & buf = Buffer();
+    if (header && *header)
+    {
+        buf.append(header);
+    }
+
+    const bool ok = WriteUtf8(file, buf.data(), buf.size());
+    Written() = buf.size();
+    ReleaseSRWLockExclusive(&Lock());
+
+    return ok;
+}
+
 // Removes the transcript outright. A clean run should not leave a record of
 // what it did next to the launcher.
 void DiscardResultLog()
 {
-    ResetResultLog();
+    CloseFile();
+    const std::wstring path = ResultLogPath();
+    if (!path.empty())
+    {
+        DeleteFileW(path.c_str());
+    }
 }
 
+// Writes what has not reached the file yet and leaves it open. Anything logged
+// afterwards is appended to the same file, so a line printed after the wizard
+// returns is still part of the record.
+void FlushResultLog()
+    {
+        AcquireSRWLockExclusive(&Lock());
+        std::wstring & buf = Buffer();
+        size_t & written = Written();
+        if (written <= buf.size())
+        {
+            WriteUtf8(File(), buf.data() + written, buf.size() - written);
+            written = buf.size();
+        }
+        ReleaseSRWLockExclusive(&Lock());
+    }
+
+// Writes what has not reached the file yet and closes it. The file is already
+// open and current from BeginResultLog onward, so this only drains the tail; a
+// second call is a no-op rather than a second copy of the whole transcript.
 void WriteResultLog()
     {
-        std::wstring snapshot = Snapshot();
-        if (snapshot.empty())
-        {
-            return;
-        }
-
-        const std::wstring path = ResultLogPath();
-        if (path.empty())
-        {
-            return;
-        }
-
-        const int chars = static_cast<int>(snapshot.size());
-        const int bytes = WideCharToMultiByte(CP_UTF8, 0, snapshot.c_str(), chars, nullptr, 0, nullptr, nullptr);
-        if (bytes <= 0)
-        {
-            return;
-        }
-
-        std::string utf8(static_cast<size_t>(bytes), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, snapshot.c_str(), chars, utf8.data(), bytes, nullptr, nullptr);
-
-        HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-        {
-            return;
-        }
-
-        DWORD written = 0;
-        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
-        CloseHandle(file);
+        FlushResultLog();
+        CloseFile();
     }
 
 void Clear()
     {
         AcquireSRWLockExclusive(&Lock());
         Buffer().clear();
+        Written() = 0;
         ReleaseSRWLockExclusive(&Lock());
     }
 } 

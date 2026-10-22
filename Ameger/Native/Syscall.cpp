@@ -416,10 +416,23 @@ namespace
 	// process carries a RIP-relative displacement, and that displacement is only
 	// correct when it is computed against the remote layout.
 	//
-	// Returns false when the indirect displacement does not fit in a signed 32-bit
-	// field, in which case no stub is written.
+	// There is exactly one form. The stub jumps through the ntdll gadget slot, so
+	// the `syscall` instruction itself only ever exists inside a legitimate system
+	// module and never in memory this library owns. A direct "syscall ; ret" form
+	// would put the two bytes 0F 05 into the library's own pool, which is exactly
+	// what the gadget indirection exists to avoid, so it is not offered as a
+	// fallback: if the gadget cannot be found the layer is unavailable rather
+	// than emitting a pattern a scanner can key on.
+	//
+	// Returns false when the gadget is missing or the indirect displacement does
+	// not fit in a signed 32-bit field, in which case no stub is written.
 	bool WriteStub(BYTE * Destination, DWORD Service, void * Gadget, ULONG_PTR GadgetSlotAddress, ULONG_PTR StubAddress)
 	{
+		if (!Destination || !Gadget || !GadgetSlotAddress || !StubAddress)
+		{
+			return false;
+		}
+
 		// Prologue diversity: "mov r10, rcx" is encoded two different ways depending
 		// on the service number, so a scanner cannot key on a single byte pattern.
 		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
@@ -430,35 +443,23 @@ namespace
 		Destination[3] = kOpMovEaxImm32;
 		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
 
-		if (Gadget && GadgetSlotAddress)
+		// Indirect form: "jmp qword ptr [rip+disp32]" into the slot that holds the
+		// ntdll gadget address. The displacement is relative to the end of the
+		// instruction, i.e. to SC_STUB_TAIL_INDIRECT.
+		const LONGLONG delta = static_cast<LONGLONG>(GadgetSlotAddress)
+			- static_cast<LONGLONG>(StubAddress + SC_STUB_TAIL_INDIRECT);
+
+		if (delta < INT32_MIN || delta > INT32_MAX)
 		{
-			// Indirect form: "jmp qword ptr [rip+disp32]" into the slot that holds the
-			// ntdll gadget address. The displacement is relative to the end of the
-			// instruction, i.e. to SC_STUB_TAIL_INDIRECT.
-			const LONGLONG delta = static_cast<LONGLONG>(GadgetSlotAddress)
-				- static_cast<LONGLONG>(StubAddress + SC_STUB_TAIL_INDIRECT);
-
-			if (delta < INT32_MIN || delta > INT32_MAX)
-			{
-				return false;
-			}
-
-			Destination[SC_STUB_OFFSET_SYSCALL] = kOpJmpRip0;
-			Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpJmpRip1;
-
-			*ReCa<LONG *>(Destination + SC_STUB_OFFSET_SYSCALL + 2) = static_cast<LONG>(delta);
-
-			FillNoOpTail(Destination + SC_STUB_TAIL_INDIRECT, SC_STUB_SIZE - SC_STUB_TAIL_INDIRECT, Service);
-			return true;
+			return false;
 		}
 
-		// Direct form: "syscall ; ret" inline. Only used for the local pool when no
-		// gadget could be located; remote stubs always take the indirect path.
-		Destination[SC_STUB_OFFSET_SYSCALL] = kOpSyscall0;
-		Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpSyscall1;
-		Destination[SC_STUB_OFFSET_RET] = kOpRet;
+		Destination[SC_STUB_OFFSET_SYSCALL] = kOpJmpRip0;
+		Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpJmpRip1;
 
-		FillNoOpTail(Destination + SC_STUB_TAIL_DIRECT, SC_STUB_SIZE - SC_STUB_TAIL_DIRECT, Service);
+		*ReCa<LONG *>(Destination + SC_STUB_OFFSET_SYSCALL + 2) = static_cast<LONG>(delta);
+
+		FillNoOpTail(Destination + SC_STUB_TAIL_INDIRECT, SC_STUB_SIZE - SC_STUB_TAIL_INDIRECT, Service);
 		return true;
 	}
 
@@ -489,18 +490,20 @@ bool BuildPool()
 	BYTE * const GadgetSlot = Pool + kStubAreaSize;
 
 	// The indirect displacement is a signed 32-bit value relative to the end of
-	// the jump instruction. The pool and its slot are always close enough for that,
-	// but the check keeps the fallback explicit rather than accidental.
+	// the jump instruction. The pool and its slot come from one allocation, so
+	// the delta always fits; the check is here so that a future change to the
+	// layout fails loudly instead of silently producing a bad displacement.
 	const ptrdiff_t slot_delta = GadgetSlot - Pool;
-	bool use_indirect = false;
-	if (slot_delta > 0 && slot_delta < INT32_MAX)
+	if (slot_delta <= 0 || slot_delta >= INT32_MAX || !gadget)
 	{
-		use_indirect = true;
-	}
-	else
-	{
-		SC_LOG_WARN("Gadget Slot Out Of disp32 Range; Falling Back To Direct Syscall Stubs\n");
-		gadget = nullptr;
+		for (size_t i = 0; i < kSyscallTableCount; ++i)
+		{
+			g_SyscallTable[i].Stub = nullptr;
+		}
+
+		VirtualFree(Pool, 0, MEM_RELEASE);
+		SC_LOG_ERR("Stub Pool Layout Invalid Or ntdll Syscall Gadget Unavailable");
+		return false;
 	}
 
 	DWORD Written = 0;
@@ -515,8 +518,7 @@ bool BuildPool()
 
 		BYTE * slot = Pool + (i * SC_STUB_SIZE);
 
-		if (!WriteStub(slot, Entry.Service, use_indirect ? gadget : nullptr,
-			use_indirect ? reinterpret_cast<ULONG_PTR>(GadgetSlot) : 0,
+		if (!WriteStub(slot, Entry.Service, gadget, reinterpret_cast<ULONG_PTR>(GadgetSlot),
 			reinterpret_cast<ULONG_PTR>(slot)))
 		{
 			SC_LOG_ERR("Syscall Stub Displacement Out Of Range For Entry %zu", i);
@@ -535,10 +537,7 @@ bool BuildPool()
 		return false;
 	}
 
-	if (use_indirect)
-	{
-		*ReCa<void **>(GadgetSlot) = gadget;
-	}
+	*ReCa<void **>(GadgetSlot) = gadget;
 
 	DWORD OldProtect = 0;
 	if (!VirtualProtect(Pool, kStubAreaSize + 16, PAGE_EXECUTE_READ, &OldProtect))
@@ -1006,10 +1005,13 @@ DWORD SyscallServiceOfStub(const void * Stub)
 	const BYTE op0 = Bytes[SC_STUB_OFFSET_SYSCALL];
 	const BYTE op1 = Bytes[SC_STUB_OFFSET_SYSCALL + 1];
 
-	const bool direct = (op0 == kOpSyscall0 && op1 == kOpSyscall1 && Bytes[SC_STUB_OFFSET_RET] == kOpRet);
+	// Only the indirect form is ever emitted, so only it is accepted here. A
+	// "syscall ; ret" body would mean either an older build or memory the
+	// library did not write, and neither is a stub this layer should route
+	// through.
 	const bool indirect = (op0 == kOpJmpRip0 && op1 == kOpJmpRip1);
 
-	if (!direct && !indirect)
+	if (!indirect)
 	{
 		return 0;
 	}

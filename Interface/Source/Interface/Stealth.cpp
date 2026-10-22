@@ -1272,7 +1272,7 @@ namespace stealth
                 self_ok ? L"Shape Verified" : L"Unverified Here");
             if (local_present)
             {
-                LOG(0, L"  %ls[!]%ls Launcher Itself Is Debugged: Target PEB/TLS Guards Would Fire On The Game, Not Here Ã¢â‚¬â€ Detach Before A Real Run\n",
+                LOG(0, L"  %ls[!]%ls Launcher Itself Is Debugged: Target PEB/TLS Guards Would Fire On The Game, Not Here; Detach Before A Real Run\n",
                     kYellow, kReset);
             }
         }
@@ -2419,20 +2419,27 @@ namespace stealth
                     kGreen, kReset, kGreen, protected_span, kReset,
                     kGreen, StealthPageDesc(static_cast<DWORD>(wipe_protect)), kReset);
 
-                LOG(0, L"  %ls[+]%ls MZ/PE Scan (Image)     = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Pre-NOACCESS)\n",
+                LOG(0, L"  %ls[+]%ls MZ/PE Scan (Pre-Wipe)  = %ls%llu%ls Hit(s) For MZ (0x4D5A) And %ls%llu%ls Hit(s) For PE\\0\\0 (0x50450000) In The First %ls0x%llX%ls Byte(s) Of The Mapped Image (In-Shell, Before The Wipe)\n",
                     kGreen, kReset, kGreen, scan_mz, kReset, kGreen, scan_pe, kReset, kGreen, scan_bytes, kReset);
 
                 if (exec)
                 {
-                    const bool agree = (exec_span == wiped) && (exec_mz == scan_mz) && (exec_pe == scan_pe) && (exec_prot == wipe_protect);
+                    // The map statistics hold the counts from before the wipe and
+                    // the execution telemetry holds the counts from after it. The
+                    // cross-check is therefore that the post-wipe region holds
+                    // nothing, and that it cannot hold more than it did before.
+                    const bool agree = (exec_span == wiped) &&
+                        (exec_mz == 0) && (exec_pe == 0) &&
+                        (exec_mz <= scan_mz) && (exec_pe <= scan_pe) &&
+                        (exec_prot == wipe_protect);
                     if (agree)
                     {
-                        LOG(0, L"  %ls[+]%ls Exec Telemetry Cross-Check: Span = %llu | MZ = %llu | PE = %llu | Prot = 0x%08llX - Agrees With MapStats\n",
+                        LOG(0, L"  %ls[+]%ls Exec Telemetry Cross-Check: Span = %llu | MZ = %llu | PE = %llu | Prot = 0x%08llX - Post-Wipe Region Holds Nothing\n",
                             kGreen, kReset, exec_span, exec_mz, exec_pe, exec_prot);
                     }
                     else
                     {
-                        LOG(0, L"  %ls[x]%ls Exec Telemetry Mismatch: Span = %llu/0x%llX | MZ = %llu/%llu | PE = %llu/%llu | Prot = 0x%08llX/0x%08llX\n",
+                        LOG(0, L"  %ls[x]%ls Exec Telemetry Mismatch: Span = %llu/0x%llX | MZ = %llu (Post) / %llu (Pre) | PE = %llu (Post) / %llu (Pre) | Prot = 0x%08llX/0x%08llX\n",
                             kRed, kReset,
                             exec_span, wiped, exec_mz, scan_mz, exec_pe, scan_pe, exec_prot, wipe_protect);
                     }

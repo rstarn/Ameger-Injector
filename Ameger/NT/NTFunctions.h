@@ -24,12 +24,12 @@ using f_LdrpLoadDllInternal = VOID (__fastcall *)
 	UNICODE_STRING				*	dll_path,
 	LDRP_PATH_SEARCH_CONTEXT	*	search_path,
 	LDRP_LOAD_CONTEXT_FLAGS			Flags,
-	ULONG32							Unknown0,
+	PVOID						DllHandle,
 	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown1,
 	LDR_DATA_TABLE_ENTRY_WIN11	*	Unknown2,
 	LDR_DATA_TABLE_ENTRY_WIN11	**	ldr_out,
 	NTSTATUS					*	ntRet,
-	ULONG							Unknown4
+	PVOID						LoadContext
 );
 
 using f_LdrGetProcedureAddress = NTSTATUS (__stdcall *)

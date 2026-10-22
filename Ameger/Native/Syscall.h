@@ -49,8 +49,6 @@ constexpr DWORD ScHash(const char * s)
 #define SC_STUB_OFFSET_OPCODE		3
 #define SC_STUB_OFFSET_SERVICE		4
 #define SC_STUB_OFFSET_SYSCALL		8
-#define SC_STUB_OFFSET_RET		10
-#define SC_STUB_TAIL_DIRECT		11
 #define SC_STUB_TAIL_INDIRECT	14
 
 #pragma endregion

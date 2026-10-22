@@ -1234,7 +1234,12 @@ NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPI
 		ReCa<LDRP_PATH_SEARCH_CONTEXT *>(ctx)->OriginalFullDllName = Module->szBuffer;
 	}
 
-	f->LdrpLoadDllInternal(Module, ReCa<LDRP_PATH_SEARCH_CONTEXT *>(ctx), CtxFlag, 4, nullptr, nullptr, ReCa<LDR_DATA_TABLE_ENTRY_WIN11 **>(&entry_out), &ntRet, 0);
+	// The fourth parameter is the loader's optional "reuse this module handle"
+	// slot. It is a pointer, so anything other than null is a bogus handle the
+	// loader would try to dereference; it is passed as null so the loader
+	// resolves the module from the search path like a normal load.
+	f->LdrpLoadDllInternal(Module, ReCa<LDRP_PATH_SEARCH_CONTEXT *>(ctx), CtxFlag, nullptr,
+		nullptr, nullptr, ReCa<LDR_DATA_TABLE_ENTRY_WIN11 **>(&entry_out), &ntRet, nullptr);
 
 	DeleteObject(f, ctx);
 
@@ -1652,16 +1657,35 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 
 	IMAGE_DATA_DIRECTORY	* pImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT]);
 	IMAGE_IMPORT_DESCRIPTOR * pImportDescr	= nullptr;
+
+	// An image with no import directory at all is only a problem when the
+	// caller asked for imports to be resolved; without that request there is
+	// simply nothing to resolve. A directory that is present but empty is
+	// malformed either way: the loader would read it as "no imports", the IAT
+	// would keep the hint values it was given on disk, and the payload's first
+	// call through it would jump into garbage.
+	const bool imports_requested = (pData->Flags & INJ_MM_RESOLVE_IMPORTS) != 0;
+
+	if (!pImportDir->VirtualAddress || pImportDir->Size == 0)
+	{
+		if (imports_requested)
+		{
+			pData->ntRet = STATUS_INVALID_IMAGE_FORMAT;
+
+			return INJ_MM_ERR_IMPORT_FAIL;
+		}
+
+		return INJ_ERR_SUCCESS;
+	}
+
 	IMAGE_IMPORT_DESCRIPTOR * const pImportEnd = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pImportDir->VirtualAddress + pImportDir->Size);
 
-	if (pImportDir->Size)
-	{
-		pImportDescr = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pImportDir->VirtualAddress);
+	pImportDescr = ReCa<IMAGE_IMPORT_DESCRIPTOR *>(pData->pImageBase + pImportDir->VirtualAddress);
 
-		if (!MMI_InImage(pData, pImportDescr, sizeof(*pImportDescr)))
-		{
-			return INJ_MM_ERR_INVALID_PE_IMAGE;
-		}
+	if (!MMI_InImage(pData, pImportDescr, sizeof(*pImportDescr)) ||
+		!MMI_InImage(pData, pImportDescr, pImportDir->Size))
+	{
+		return INJ_MM_ERR_INVALID_PE_IMAGE;
 	}
 
 	bool ErrorBreak = false;
@@ -1849,16 +1873,31 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 	IMAGE_DATA_DIRECTORY		* pDelayImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]);
 	IMAGE_DELAYLOAD_DESCRIPTOR	* pDelayImportDescr = nullptr;
-	IMAGE_DELAYLOAD_DESCRIPTOR	* const pDelayImportEnd = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pDelayImportDir->VirtualAddress + pDelayImportDir->Size);
 
-	if (pDelayImportDir->Size)
+	// The same rule as for the ordinary import directory: a directory that is
+	// present but empty is malformed, and a directory that is absent means
+	// there is nothing to resolve. Most images carry no delay imports at all,
+	// so the absent case is the ordinary one and must not be an error.
+	if (pDelayImportDir->VirtualAddress && pDelayImportDir->Size == 0)
 	{
-		pDelayImportDescr = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pDelayImportDir->VirtualAddress);
+		pData->ntRet = STATUS_INVALID_IMAGE_FORMAT;
 
-		if (!MMI_InImage(pData, pDelayImportDescr, sizeof(*pDelayImportDescr)))
-		{
-			return INJ_MM_ERR_INVALID_PE_IMAGE;
-		}
+		return INJ_MM_ERR_DELAY_IMPORT_FAIL;
+	}
+
+	if (!pDelayImportDir->VirtualAddress)
+	{
+		return INJ_ERR_SUCCESS;
+	}
+
+	IMAGE_DELAYLOAD_DESCRIPTOR * const pDelayImportEnd = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pDelayImportDir->VirtualAddress + pDelayImportDir->Size);
+
+	pDelayImportDescr = ReCa<IMAGE_DELAYLOAD_DESCRIPTOR *>(pData->pImageBase + pDelayImportDir->VirtualAddress);
+
+	if (!MMI_InImage(pData, pDelayImportDescr, sizeof(*pDelayImportDescr)) ||
+		!MMI_InImage(pData, pDelayImportDescr, pDelayImportDir->Size))
+	{
+		return INJ_MM_ERR_INVALID_PE_IMAGE;
 	}
 
 	bool ErrorBreak = false;
@@ -3168,29 +3207,54 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
-	// Every module that was loaded on this module's behalf is unloaded
-	// again. The records are the loader's own dependency chain, walked
-	// from the tail so the list stays consistent while it is unwound.
-	f->RtlZeroMemory(pData->pImageBase, wipe_size);
-	// The dynamic function table is removed from the runtime. When the
-	// inverted table was used instead, the image has to stay mapped, so
-	// the table is left in place.
-	DWORD scan_mz = 0;
-	DWORD scan_pe = 0;
+	// The region is counted twice: once before the wipe, so the report can say
+	// what was there, and once after it, so the report can prove that what was
+	// there is gone. A scan that only ran after the wipe would be reading a
+	// region that had just been zeroed and could therefore never find
+	// anything; it would say "zero remnants" whether the wipe had happened
+	// or not.
+	DWORD scan_mz_before = 0;
+	DWORD scan_pe_before = 0;
+	DWORD scan_mz_after = 0;
+	DWORD scan_pe_after = 0;
+
 	{
 		const BYTE * pScan = ReCa<const BYTE *>(pData->pImageBase);
 		for (DWORD i = 0; i + 2 <= wipe_size; ++i)
 		{
 			if (pScan[i] == 0x4D && pScan[i + 1] == 0x5A)
 			{
-				++scan_mz;
+				++scan_mz_before;
 			}
 		}
 		for (DWORD i = 0; i + 4 <= wipe_size; ++i)
 		{
 			if (pScan[i] == 0x50 && pScan[i + 1] == 0x45 && pScan[i + 2] == 0x00 && pScan[i + 3] == 0x00)
 			{
-				++scan_pe;
+				++scan_pe_before;
+			}
+		}
+	}
+
+	// The pre-section region is destroyed. Everything the loader would have
+	// used to identify the image goes with it: the DOS stub, the NT headers
+	// and the section table.
+	f->RtlZeroMemory(pData->pImageBase, wipe_size);
+
+	{
+		const BYTE * pScan = ReCa<const BYTE *>(pData->pImageBase);
+		for (DWORD i = 0; i + 2 <= wipe_size; ++i)
+		{
+			if (pScan[i] == 0x4D && pScan[i + 1] == 0x5A)
+			{
+				++scan_mz_after;
+			}
+		}
+		for (DWORD i = 0; i + 4 <= wipe_size; ++i)
+		{
+			if (pScan[i] == 0x50 && pScan[i + 1] == 0x45 && pScan[i + 2] == 0x00 && pScan[i + 3] == 0x00)
+			{
+				++scan_pe_after;
 			}
 		}
 	}
@@ -3202,18 +3266,20 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
-	// The wipe is recorded in the map statistics so the launcher can
-	// verify the size that was cleared and the protection it was left
-	// with, and the residual signature counts.
+	// The wipe is recorded in the map statistics so the launcher can verify
+	// the size that was cleared and the protection it was left with. The map
+	// statistics carry the counts from before the wipe, because that is what
+	// the region actually contained; the execution telemetry carries the
+	// counts from after it, because that is what survived.
 	pData->MapStats.HeaderStructuralSize	= structural_size;
 	pData->MapStats.HeaderWipeSize			= wipe_size;
 	pData->MapStats.HeaderWipeProtect		= final_access;
 	pData->MapStats.HeaderScanBytes			= wipe_size;
-	pData->MapStats.HeaderScanMZ			= scan_mz;
-	pData->MapStats.HeaderScanPE			= scan_pe;
+	pData->MapStats.HeaderScanMZ			= scan_mz_before;
+	pData->MapStats.HeaderScanPE			= scan_pe_before;
 	pData->ExecTelemetry.PreSectionSpanWiped = static_cast<SIZE_T>(wipe_size);
-	pData->ExecTelemetry.MZRemnantsFound = scan_mz;
-	pData->ExecTelemetry.PERemnantsFound = scan_pe;
+	pData->ExecTelemetry.MZRemnantsFound = scan_mz_after;
+	pData->ExecTelemetry.PERemnantsFound = scan_pe_after;
 	pData->ExecTelemetry.PostWipeProtection = final_access;
 
 	return INJ_ERR_SUCCESS;

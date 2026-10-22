@@ -37,6 +37,10 @@
 #define STATUS_INVALID_PARAMETER 0xC000000D
 #endif
 
+#ifndef STATUS_INVALID_IMAGE_FORMAT
+#define STATUS_INVALID_IMAGE_FORMAT 0xC000007B
+#endif
+
 typedef LONG KPRIORITY;
 
 #define KUSER_SHARED_DATA (DWORD)0x7FFE0000
@@ -80,8 +84,35 @@ typedef enum class _KTHREAD_STATE : ULONG
 typedef enum class _KWAIT_REASON : ULONG
 {
 	Unknown = 0x00,
-	WrQueue = 0x0F
+	WrQueue = 0x10
 } KWAIT_REASON;
+
+namespace WAIT_REASON_SAFE
+{
+	// The kernel's ThreadWaitReason values a thread can be parked on and still
+	// be expected to run again without help from whoever is looking at it.
+	//
+	// A user-mode wait (a message, a timer, an APC) is released by an
+	// unrelated wakeup or by the timer expiring on its own. A kernel wait is
+	// not: the thread is blocked inside the executive and an unrelated event
+	// will not reach it. And a suspended thread is never released at all until
+	// somebody resumes it, so parking a payload on one means the payload never
+	// runs.
+	//
+	// Suspended (6) and WrPageOut (11) are deliberately not on this list.
+	constexpr unsigned char UserRequest		= 4;
+	constexpr unsigned char UserDelay		= 7;
+	constexpr unsigned char WrUserRequest	= 12;
+	constexpr unsigned char WrUserDelay	= 15;
+	constexpr unsigned char WrUserRequest2	= 22;
+
+	__forceinline bool IsSafe(unsigned char reason)
+	{
+		return reason == UserRequest || reason == UserDelay ||
+			reason == WrUserRequest || reason == WrUserDelay ||
+			reason == WrUserRequest2;
+	}
+}
 
 typedef enum _LDR_DDAG_STATE : int
 {

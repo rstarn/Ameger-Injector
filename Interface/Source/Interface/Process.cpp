@@ -10,28 +10,34 @@
 
 namespace
 {
-    // The PEB of an x64 process holds the loader data pointer at a fixed
-    // offset. A process whose pointer is null has not been through the
-    // loader's setup, and there is no module list to walk and nothing that
-    // can be mapped into it.
-    constexpr SIZE_T kPebLoaderOffset = 0x18;
+    // The PEB's loader data pointer sits after the image base, the process
+    // parameters and the process heap: three pointers in an x64 PEB, two in
+    // a 32-bit one. The offset is derived from the pointer width of the
+    // launcher rather than written out for x64 alone, so a 32-bit build reads
+    // a 32-bit PEB instead of the middle of a pointer-sized field.
+    constexpr SIZE_T kPebLoaderOffset = (sizeof(void *) == 8) ? 0x18 : 0x0C;
 
-    // Reads the loader data pointer out of a process's PEB. Returns false
-    // when the PEB cannot be read at all, which is not the same as the
-    // loader data being absent.
-    bool LoaderListPublished(HANDLE process)
+    // Whether a process's loader list is there to walk.
+    //
+    // The pointer being null is a definite answer: the process has not been
+    // through the loader's setup, and there is nothing to map into. A failed
+    // read is not an answer at all: the PEB may be unreadable because the
+    // process is protected, or because it has just started and the page is
+    // not committed yet, and both are reasons to let the caller probe the
+    // process directly instead of skipping it.
+    LoaderListState ReadLoaderListState(HANDLE process)
     {
         using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
         auto ntdll = GetModuleHandleW(L"ntdll.dll");
         if (!ntdll)
         {
-            return false;
+            return LoaderListState::Unknown;
         }
         auto query = reinterpret_cast<NtQueryInformationProcessFn>(
             GetProcAddress(ntdll, "NtQueryInformationProcess"));
         if (!query)
         {
-            return false;
+            return LoaderListState::Unknown;
         }
 
         struct LocalPbi
@@ -48,7 +54,7 @@ namespace
         ULONG length = 0;
         if (query(process, 0, &pbi, sizeof(pbi), &length) != 0 || !pbi.PebBaseAddress)
         {
-            return false;
+            return LoaderListState::Unknown;
         }
 
         ULONG_PTR loader = 0;
@@ -57,10 +63,10 @@ namespace
         if (!ReadProcessMemory(process, peb + kPebLoaderOffset, &loader, sizeof(loader), &got) ||
             got != sizeof(loader))
         {
-            return false;
+            return LoaderListState::Unknown;
         }
 
-        return loader != 0;
+        return loader ? LoaderListState::Published : LoaderListState::NotPublished;
     }
 
     // Reads the target's architecture through IsWow64Process2 when it is
@@ -131,7 +137,12 @@ bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
 {
     out = ProcessIdentity{};
 
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    // QueryFullProcessImageNameW, GetProcessTimes and IsWow64Process all run
+    // on PROCESS_QUERY_LIMITED_INFORMATION alone. Asking for PROCESS_VM_READ
+    // as well would make this call fail for every protected or medium-integrity
+    // process the launcher is not already allowed to read, and the identity
+    // would be reported as unavailable even though nothing here reads memory.
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process)
     {
         return false;
@@ -157,7 +168,7 @@ bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
     // and nothing can be mapped into it. Several modern applications run a
     // helper process under the same image name, and the first name match is
     // not always the one that can be written to.
-    out.loader_list_published = LoaderListPublished(process);
+    out.loader_list_state = ReadLoaderListState(process);
 
     CloseHandle(process);
 

@@ -51,14 +51,17 @@ int UiLog(int indent, const wchar_t * format, ...);
 #define LOG UiLog
 
 // The result log keeps a rolling transcript of everything the launcher printed,
-// so a run that ended badly can still be inspected afterwards.
+// so a run that ended badly can still be inspected afterwards. The transcript
+// is written as the run goes rather than assembled at the end, so the record
+// exists even when the process does not reach its own exit path.
 namespace ameger_ui_log
 {
     void AppendStripped(const wchar_t * text);
     void AppendClean(const wchar_t * text);
-    std::wstring Snapshot();
     std::wstring ResultLogPath();
     void ResetResultLog();
+    bool BeginResultLog(const wchar_t * header);
+    void FlushResultLog();
     void WriteResultLog();
     void DiscardResultLog();
     void Clear();
@@ -148,6 +151,19 @@ struct FileInformation
 // Everything that pins one running process down to one specific instance.
 // A name is not an identity: a game can exit and be relaunched between the
 // moment the operator confirms it and the moment the payload is written.
+//
+// The loader list is a three-way answer. A process that has one can be
+// mapped into; a process whose PEB reports no list at all has not been set
+// up by the loader and cannot; and a process whose PEB cannot be read might
+// be either, so it is left for the direct write probe to decide rather than
+// being written off.
+enum class LoaderListState
+{
+    Unknown,
+    Published,
+    NotPublished
+};
+
 struct ProcessIdentity
 {
     DWORD pid = 0;
@@ -155,10 +171,13 @@ struct ProcessIdentity
     std::wstring full_path;   // full image path
     ULONGLONG creation_time = 0;  // FILETIME, as a 64-bit value
     Architecture architecture = Architecture::Unknown;
-    // Whether the process has published its loader list. A process that has
-    // not cannot be written to, and several modern applications run a helper
-    // under the same image name as the real one.
-    bool loader_list_published = false;
+    LoaderListState loader_list_state = LoaderListState::Unknown;
+
+    // A process is only ruled out when the loader list is known to be absent.
+    bool LoaderListAvailable() const
+    {
+        return loader_list_state != LoaderListState::NotPublished;
+    }
 
     bool Matches(const ProcessIdentity & other) const
     {

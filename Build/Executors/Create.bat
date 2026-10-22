@@ -750,11 +750,38 @@ echo %C_RED%Error: AMEGER_REFUSE_UNMUTATED=1 Would Ship Unmutated Binaries (Stab
 goto :failure
 
 :maybe_adopt_payload
-if /i "%AMEGER_STRICT_PAYLOAD%"=="1" exit /b 0
+if not exist "%PAYLOAD_ASSET%" exit /b 0
+if not exist "%CONFIG_MASTER%" exit /b 0
+if not exist "%VERIFY_SCRIPT%" exit /b 0
 where powershell.exe >nul 2>&1
 if errorlevel 1 exit /b 0
-if not exist "%REPIN_SCRIPT%" exit /b 0
-if not exist "%PAYLOAD_ASSET%" exit /b 0
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check PayloadHash -Path "%PAYLOAD_ASSET%" -Config "%CONFIG_MASTER%" >nul 2>&1
+if not errorlevel 1 exit /b 0
+
+echo.
+echo   %C_YELLOW%[!]%C_RESET% The Payload Asset Does Not Match The Master PayloadSha256 Pin:
+echo       Asset  = %C_YELLOW%%PAYLOAD_ASSET%%C_RESET%
+echo       Config = %C_YELLOW%%CONFIG_MASTER%%C_RESET%
+if /i not "%AMEGER_AUTO_REPIN%"=="1" (
+  echo.
+  echo   %C_RED%Refusing To Continue With A Payload The Master Config Does Not Describe.%C_RESET%
+  echo   The Deployed Pin Would Describe A DLL That Is Not The One Being Shipped, And
+  echo   The Only Thing That Would Hide The Mismatch Is Rewriting The Master Pin.
+  echo.
+  echo   If The Asset Was Replaced Intentionally, Adopt It Explicitly:
+  echo       Create.bat repin
+  echo   Or Ship A One-Off DLL Without Touching The Master Pin:
+  echo       set AMEGER_PAYLOAD=path\to\dll  and rerun Create.bat
+  echo   To Restore The Previous Behaviour Of Adopting The Asset Automatically:
+  echo       set AMEGER_AUTO_REPIN=1  and rerun Create.bat
+  exit /b 1
+)
+if not exist "%REPIN_SCRIPT%" (
+  echo   %C_RED%Error: AMEGER_AUTO_REPIN=1 But RepinPayload.ps1 Was Not Found.%C_RESET%
+  exit /b 1
+)
+echo   %C_YELLOW%[!]%C_RESET% AMEGER_AUTO_REPIN=1: Re-Pinning The Master Config To The Current Asset.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%REPIN_SCRIPT%" -Config "%CONFIG_MASTER%" -Payload "%PAYLOAD_ASSET%" -Quiet
 if errorlevel 1 (
   echo   %C_RED%Error: Could Not Re-Pin The Master To The Current Payload Asset.%C_RESET%

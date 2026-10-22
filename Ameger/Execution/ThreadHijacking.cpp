@@ -60,8 +60,7 @@ namespace
 
 	bool IsSafeWaitReason(KWAIT_REASON reason)
 	{
-		const auto v = static_cast<unsigned char>(reason);
-		return v == 4 || v == 6 || v == 11 || v == 13 || v == 15;
+		return WAIT_REASON_SAFE::IsSafe(static_cast<unsigned char>(reason));
 	}
 
 	bool ResumeThreadWithRetry(HANDLE hThread)

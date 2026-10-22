@@ -1988,7 +1988,7 @@ wchar_t name[48]{};
                     {
                         return false;
                     }
-                    return reason == 4 || reason == 6 || reason == 11 || reason == 13 || reason == 15;
+                    return WAIT_REASON_SAFE::IsSafe(reason);
                 };
                 auto score_walk = [&](DWORD avoid_tid, bool allow_wait) -> bool
                 {
@@ -2168,7 +2168,12 @@ wchar_t name[48]{};
         return _wcsicmp(value.c_str(), expected) == 0;
     }
 
-    std::wstring ConfigurationPath()
+    // Locates the encrypted configuration beside the executable. The directory
+    // is scanned once per run: the result cannot change while the process is
+    // alive, and every caller reaching the same answer by re-walking the
+    // directory would only widen the window in which the launcher and the
+    // transcript could disagree about which file was used.
+    std::wstring ConfigurationPathUncached()
     {
         const std::wstring directory = ExecutableDirectory();
         if (directory.empty())
@@ -2245,6 +2250,25 @@ wchar_t name[48]{};
             return std::wstring();
         }
         return match;
+    }
+
+    const std::wstring & ConfigurationPath()
+    {
+        struct Cache
+        {
+            std::wstring path;
+            bool resolved = false;
+        };
+
+        static Cache cache;
+
+        if (!cache.resolved)
+        {
+            cache.path = ConfigurationPathUncached();
+            cache.resolved = true;
+        }
+
+        return cache.path;
     }
 
     bool ParseConfigBool(const std::wstring & value, bool default_value)
@@ -3303,9 +3327,19 @@ wchar_t name[48]{};
 
     // The working set of a process, used only to tell a main instance apart
     // from the helpers that run beside it under the same image name.
+    //
+    // K32GetProcessMemoryInfo fails on a handle that carries only
+    // PROCESS_QUERY_LIMITED_INFORMATION; it needs PROCESS_QUERY_INFORMATION
+    // and PROCESS_VM_READ. The read right is asked for here and nowhere else,
+    // and a process that refuses it simply reports a working set of zero
+    // rather than being dropped from the candidate list.
     SIZE_T WorkingSetSize(DWORD pid)
     {
-        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (!process)
+        {
+            process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        }
         if (!process)
         {
             return 0;
@@ -3340,7 +3374,7 @@ wchar_t name[48]{};
         for (DWORD pid : candidates)
         {
             ProcessIdentity identity{};
-            if (!QueryProcessIdentity(pid, identity) || !identity.loader_list_published)
+            if (!QueryProcessIdentity(pid, identity) || !identity.LoaderListAvailable())
             {
                 continue;
             }
@@ -3357,9 +3391,10 @@ wchar_t name[48]{};
             return best;
         }
 
-        // Nothing published a loader list. The first candidate is returned so
-        // the failure is the injection's own diagnostic and not a silent
-        // "no such process".
+        // No candidate could be shown to have a loader list. The first one is
+        // returned anyway so the failure is the injection's own diagnostic and
+        // not a silent "no such process": an unreadable PEB is not evidence
+        // that the process cannot be written to.
         return candidates.front();
     }
 
@@ -3392,7 +3427,7 @@ wchar_t name[48]{};
                     kYellow, kReset, static_cast<unsigned long>(pid));
                 return false;
             }
-            else if (!current.loader_list_published)
+            else if (current.loader_list_state == LoaderListState::NotPublished)
             {
                 LOG(0, L"  %ls[!]%ls The Target Has Not Published Its Loader List; "
                         L"There Is Nothing To Map Into.\n", kYellow, kReset);
@@ -3423,7 +3458,7 @@ wchar_t name[48]{};
                 kYellow, kReset, static_cast<unsigned long>(target.pid));
             return false;
         }
-        else if (!current.loader_list_published)
+        else if (current.loader_list_state == LoaderListState::NotPublished)
         {
             LOG(0, L"  %ls[!]%ls The Target Has Not Published Its Loader List; "
                     L"There Is Nothing To Map Into.\n", kYellow, kReset);
@@ -3461,7 +3496,7 @@ wchar_t name[48]{};
             if (found)
             {
                 ProcessIdentity identity{};
-                if (QueryProcessIdentity(found, identity) && identity.loader_list_published)
+                if (QueryProcessIdentity(found, identity) && identity.LoaderListAvailable())
                 {
                     target.pid = found;
                     target.name = identity.name;
@@ -3692,6 +3727,7 @@ wchar_t name[48]{};
             { INJ_MM_INIT_SECURITY_COOKIE,     L"INJ_MM_INIT_SECURITY_COOKIE" },
             { INJ_MM_RUN_DLL_MAIN,             L"INJ_MM_RUN_DLL_MAIN" },
             { INJ_MM_RUN_UNDER_LDR_LOCK,       L"INJ_MM_RUN_UNDER_LDR_LOCK" },
+            { INJ_MM_MAP_FROM_MEMORY,          L"INJ_MM_MAP_FROM_MEMORY" },
         };
 
         LOG(0, L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
@@ -3712,7 +3748,6 @@ wchar_t name[48]{};
         {
             LOG(0, L"      %ls[!]%ls 0x%08lX  Undecoded Bit(s)\n", kYellow, kReset, static_cast<unsigned long>(unexplained));
         }
-        (void)INJ_MM_MAP_FROM_MEMORY;
     }
 DWORD BuildFlags(const WizardConfig & config)
     {
@@ -4406,14 +4441,13 @@ DWORD BuildFlags(const WizardConfig & config)
         // wizard returns.
         ScratchTargetGuard scratch_target;
 
-        // The transcript is written when the wizard finishes, before the
-        // scratch target is closed. The guard is a local of this function, so
-        // it is destroyed after this scope guard runs, and anything that goes
-        // wrong while the target is being closed would otherwise take the
-        // transcript with it.
+        // The transcript is current from the moment it is opened, so by the
+        // time the wizard finishes it only has to be flushed. It stays open
+        // for anything that is printed after this point, either by this
+        // function as it unwinds or by the fault handler.
         auto transcript_guard = MakeScopeExit([&]() noexcept
         {
-            ameger_ui_log::WriteResultLog();
+            ameger_ui_log::FlushResultLog();
         });
 
         Trace::Begin(L"Operator Confirmation");
@@ -5134,6 +5168,29 @@ DWORD BuildFlags(const WizardConfig & config)
     }
 }
 
+    // A structured exception that escapes the wizard is still a crash of the
+    // launcher, and the transcript has to say so instead of ending in the
+    // middle of a line with no explanation. The handler is a function of its
+    // own because a frame that owns C++ objects cannot contain __try without
+    // asking the whole frame to unwind, and the wizard is full of them.
+    int RunWizardWithFaultReport(Runtime & runtime) noexcept
+    {
+        __try
+        {
+            return RunInteractiveWizard(runtime);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            wchar_t report[320]{};
+            swprintf_s(report,
+                L"\n%ls[x]%ls The Launcher Faulted During The Run: Exception 0x%08lX. "
+                L"Everything Above This Line Is What It Printed Before The Fault.\n",
+                kRed, kReset, static_cast<unsigned long>(GetExceptionCode()));
+            ameger_ui_log::AppendStripped(report);
+            return 1;
+        }
+    }
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, int showCmd)
 {
     (void)instance;
@@ -5180,16 +5237,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     const int retryIndex = GetRetryIndex();
 
+    // The transcript is named after the configuration, so that it sits next to
+    // the file that produced it. When the configuration cannot be found or
+    // read there is no name to take, and the name of the launcher itself is
+    // used instead: a run that failed to find its configuration is exactly the
+    // run that has to be read afterwards, so it must still leave a record.
+    const std::wstring config_path = ConfigurationPath();
     {
-        // The transcript is named after the configuration, so that it sits
-        // next to the file that produced it. When the configuration cannot be
-        // found or read there is no name to take, and the name of the
-        // launcher itself is used instead: a run that failed to find its
-        // configuration is exactly the run that has to be read afterwards,
-        // so it must still leave a record.
         std::wstring stem;
 
-        const std::wstring config_path = ConfigurationPath();
         const size_t slash = config_path.find_last_of(L"\\/");
         const size_t dot = config_path.find_last_of(L'.');
         if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash + 1))
@@ -5229,11 +5285,69 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     }
 
     ameger_ui_log::ResetResultLog();
+
+    // The transcript describes itself before anything else happens in the run.
+    // A normal run repeats this information in the trace header further down,
+    // but that header is produced by code that can fail; this one is written
+    // first, so a run that never gets that far still says what it was.
+    {
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+
+        std::wstring own_path;
+        GetOwnExePath(own_path);
+
+        bool elevated = false;
+        HANDLE token = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        {
+            TOKEN_ELEVATION elevation{};
+            DWORD returned = 0;
+            if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned))
+            {
+                elevated = elevation.TokenIsElevated != 0;
+            }
+            CloseHandle(token);
+        }
+
+        SYSTEM_INFO system_info{};
+        GetNativeSystemInfo(&system_info);
+        const wchar_t * architecture = system_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64
+            ? L"x64" : L"x86";
+
+        wchar_t header[1024]{};
+        swprintf_s(header,
+            L"[Ameger Injector Transcript]\n"
+            L"  Started       = %04u-%02u-%02u %02u:%02u:%02u Local\n"
+            L"  Process ID    = %lu\n"
+            L"  Launcher      = %ls\n"
+            L"  Configuration = %ls\n"
+            L"  Transcript    = %ls\n"
+            L"  Attempt       = %d Of %d\n"
+            L"  Host          = %ls, %ls Integrity\n"
+            L"\n",
+            static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth), static_cast<unsigned>(now.wDay),
+            static_cast<unsigned>(now.wHour), static_cast<unsigned>(now.wMinute), static_cast<unsigned>(now.wSecond),
+            static_cast<unsigned long>(GetCurrentProcessId()),
+            own_path.empty() ? L"(unknown)" : own_path.c_str(),
+            config_path.empty() ? L"(not found)" : config_path.c_str(),
+            g_ResultLogName.c_str(),
+            retryIndex + 1, kMaxLaunchAttempts,
+            architecture, elevated ? L"High" : L"Normal");
+
+        if (!ameger_ui_log::BeginResultLog(header))
+        {
+            // Without a transcript file the run can still proceed; the console
+            // output is unaffected and the failure is reported once, here.
+            LOG(0, L"%ls[!]%ls Unable To Open The Transcript File; The Run Will Not Leave A Log.\n", kYellow, kReset);
+        }
+    }
+
     Runtime runtime;
     int result = 1;
     try
     {
-        result = RunInteractiveWizard(runtime);
+        result = RunWizardWithFaultReport(runtime);
     }
     catch (const std::bad_alloc &)
     {
