@@ -167,7 +167,6 @@ DWORD __stdcall InitializeRuntime()
 
 		const LONG claimed = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_FAILED);
 		owns_state = (claimed == RUNTIME_STATE_FAILED);
-		previous_state = claimed;
 	}
 
 	if (!owns_state)

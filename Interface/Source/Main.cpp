@@ -188,22 +188,40 @@ namespace
 
     bool FileExists(const std::wstring & path);
 
-    // Whether the operator asked for the run transcript to be kept even when
-    // the run succeeded. The default is to leave nothing behind. The setting
-    // comes from the configuration file, because the launcher runs elevated
-    // and an elevated process does not inherit its parent's environment.
-    bool g_KeepResultLog = false;
+    // Whether the run transcript is removed once a run has succeeded. The
+    // default is to keep it: the record of what a successful load did is the
+    // one worth having. The setting comes from the configuration file, because
+    // the launcher runs elevated and an elevated process does not inherit its
+    // parent's environment.
+    bool g_DiscardResultLogOnSuccess = false;
 
-    bool KeepResultLogRequested()
+    // Whether this run was a test run. It is recorded so that the launcher
+    // can mark the run as a test run in the places that are outside the
+    // wizard, such as the final notification.
+    bool g_TestMode = false;
+
+    // Whether the payload was actually mapped into the target. The exit code
+    // is not the same thing: a run that the operator cancelled also exits
+    // with zero, and a cancelled run has nothing to show for itself, so its
+    // transcript must not be treated as the record of a successful load.
+    bool g_LoadCompleted = false;
+
+    // Whether the operator asked for the "begin load?" confirmation to be
+    // answered for them. It comes from the configuration file, because the
+    // launcher runs elevated and an elevated process does not inherit its
+    // parent's environment.
+    bool g_AutoConfirm = false;
+
+    bool DiscardResultLogOnSuccess()
     {
-        if (g_KeepResultLog)
+        if (g_DiscardResultLogOnSuccess)
         {
             return true;
         }
         wchar_t buffer[8] = {};
         // The decrypted name is kept as an object, not as a pointer into it:
         // the temporary's destructor wipes its buffer when it goes away.
-        const auto name = XOR_STR_W(L"AMEGER_KEEP_RESULT_LOG");
+        const auto name = XOR_STR_W(L"AMEGER_DISCARD_RESULT_LOG");
         const DWORD got = GetEnvironmentVariableW(name.get(), buffer, 4);
         return got == 1 && buffer[0] == L'1';
     }
@@ -697,9 +715,14 @@ namespace
             }
             rest = (i < cmd.size()) ? cmd.substr(i) : std::wstring();
         }
+        // Each pass removes the markers this launcher owns from the argument
+        // string, and the pass repeats until a pass changes nothing. The
+        // length is what decides whether anything was removed, so no separate
+        // "did I erase something" flag is needed.
         for (;;)
         {
-            bool erased = false;
+            const size_t before = rest.size();
+
             size_t pos = rest.find(kRetryMarker);
             if (pos != std::wstring::npos)
             {
@@ -709,7 +732,6 @@ namespace
                     ++end;
                 }
                 rest.erase(pos, end - pos);
-                erased = true;
             }
             pos = rest.find(kParentPathMarker);
             if (pos != std::wstring::npos)
@@ -740,20 +762,19 @@ namespace
                     }
                 }
                 rest.erase(start, end - start);
-                erased = true;
             }
-            if (!erased)
+            if (!keepChild)
             {
                 const size_t childPos = rest.find(kChildMarker);
-                if (childPos != std::wstring::npos && !keepChild)
+                if (childPos != std::wstring::npos)
                 {
                     rest.erase(childPos, wcslen(kChildMarker));
-                    erased = true;
                 }
-                else
-                {
-                    break;
-                }
+            }
+
+            if (rest.size() == before)
+            {
+                break;
             }
         }
         std::wstring out;
@@ -1665,8 +1686,17 @@ namespace
 
     ConfirmationResult ConfirmBeforeDetection()
     {
+        // The confirmation is skipped when the operator asked for it to be.
+        // The request comes from the configuration file as well as from the
+        // environment, because the launcher runs elevated and an elevated
+        // process does not inherit its parent's environment: an environment
+        // variable set by the operator would never be seen here.
         wchar_t auto_confirm[8] = {};
         if (GetEnvironmentVariableW(L"AMEGER_AUTO_CONFIRM", auto_confirm, 8) == 1 && auto_confirm[0] == L'1')
+        {
+            return ConfirmationResult::Proceed;
+        }
+        if (g_AutoConfirm)
         {
             return ConfirmationResult::Proceed;
         }
@@ -2111,7 +2141,7 @@ wchar_t name[48]{};
                 break;
             }
 
-            if (!proc->NextEntryOffset || proc->NextEntryOffset < 8)
+            if (proc->NextEntryOffset < 8)
             {
                 break;
             }
@@ -2398,7 +2428,8 @@ wchar_t name[48]{};
             }
 
             const std::streamoff raw_size = raw_file.tellg();
-            if (raw_size < 0 || static_cast<unsigned long long>(raw_size) > 1024 * 1024)
+            constexpr unsigned long long kMaxConfigBytes = 1024ULL * 1024ULL;
+            if (raw_size < 0 || static_cast<unsigned long long>(raw_size) > kMaxConfigBytes)
             {
                 invalid = true;
                 return false;
@@ -2589,9 +2620,13 @@ wchar_t name[48]{};
                     config.timeout = static_cast<int>(parsed);
                 }
             }
-            else if (general && EqualsNoCase(key, XOR_STR_W(L"KeepResultLog").get()))
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"DiscardResultLogOnSuccess").get()))
             {
-                config.keep_result_log = ParseConfigBool(value, config.keep_result_log);
+                config.discard_result_log_on_success = ParseConfigBool(value, config.discard_result_log_on_success);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"AutoConfirm").get()))
+            {
+                config.auto_confirm = ParseConfigBool(value, config.auto_confirm);
             }
             else if (general && EqualsNoCase(key, XOR_STR_W(L"SurveyMaxRegions").get()))
             {
@@ -4027,8 +4062,44 @@ DWORD BuildFlags(const WizardConfig & config)
         return true;
     }
 
-    // The scratch target that test mode started, and the family of processes
-    // that came with it.
+    // The window that is being hidden, and the process that owns it.
+    struct HideWindowContext
+    {
+        DWORD pid = 0;
+    };
+
+    BOOL CALLBACK HideWindowCallback(HWND hwnd, LPARAM param)
+    {
+        const HideWindowContext * ctx = ReCa<const HideWindowContext *>(param);
+        DWORD owner = 0;
+        GetWindowThreadProcessId(hwnd, &owner);
+        if (owner != ctx->pid)
+        {
+            return TRUE;
+        }
+        ShowWindow(hwnd, SW_HIDE);
+        return TRUE;
+    }
+
+    // Hides the top level windows of a process.
+    //
+    // Starting the scratch target hidden is not enough on its own: several
+    // modern images start a broker that hands off to the real instance, and
+    // the real instance puts its own window up. The window belongs to the
+    // process that was actually selected, so that is the one that is hidden.
+    void HideProcessWindows(DWORD pid)
+    {
+        if (!pid)
+        {
+            return;
+        }
+        HideWindowContext context;
+        context.pid = pid;
+        EnumWindows(&HideWindowCallback, reinterpret_cast<LPARAM>(&context));
+    }
+
+    // A scratch target that test mode started itself. It is closed when the
+    // run ends.
     //
     // Several modern images start a broker that hands off to the real
     // instance and then exits, so the process that was started is often not
@@ -4039,8 +4110,8 @@ DWORD BuildFlags(const WizardConfig & config)
     class ScratchTargetGuard
     {
         std::vector<DWORD> m_Preexisting;
-        std::vector<DWORD> m_Started;
         HANDLE m_Process = nullptr;
+        std::wstring m_ImageName;
         bool m_Owns = false;
 
     public:
@@ -4059,7 +4130,11 @@ DWORD BuildFlags(const WizardConfig & config)
                 m_Process = nullptr;
             }
 
-            for (DWORD pid : m_Started)
+            // The family is collected again here rather than at the start.
+            // Several modern images start a broker that hands off to the real
+            // instance afterwards, so the set of processes that belongs to this
+            // run is only known once the run is over.
+            for (DWORD pid : FindProcesses(m_ImageName))
             {
                 if (std::find(m_Preexisting.begin(), m_Preexisting.end(), pid) != m_Preexisting.end())
                 {
@@ -4113,26 +4188,60 @@ DWORD BuildFlags(const WizardConfig & config)
 
             STARTUPINFOW startup{};
             startup.cb = sizeof(startup);
+            // The scratch target is started hidden. A test run is not
+            // something that should put a window on the operator's desktop.
+            // Hiding the window does not affect the target's loader list.
+            startup.dwFlags = STARTF_USESHOWWINDOW;
+            startup.wShowWindow = SW_HIDE;
+
+            // The scratch target is started in the temporary directory rather
+            // than in the launcher's own working directory. A process holds
+            // its working directory open, so a target that inherited the
+            // launcher's directory would keep that directory pinned for as
+            // long as it lived, and a build that has to write into that
+            // directory could not.
+            wchar_t scratch_directory[MAX_PATH]{};
+            const DWORD scratch_length = GetTempPathW(MAX_PATH, scratch_directory);
+            const wchar_t * working_directory = nullptr;
+            if (scratch_length && scratch_length < MAX_PATH)
+            {
+                working_directory = scratch_directory;
+            }
 
             PROCESS_INFORMATION info{};
             // The process is started detached and without a console of its
             // own. A console of its own leaves the target's loader data
             // unpublished, which makes it impossible to map into.
             if (!CreateProcessW(resolved, nullptr, nullptr, nullptr, FALSE,
-                DETACHED_PROCESS, nullptr, nullptr, &startup, &info))
+                DETACHED_PROCESS, nullptr, working_directory, &startup, &info))
             {
                 return false;
             }
 
             CloseHandle(info.hThread);
             m_Process = info.hProcess;
+            m_ImageName = file;
             m_Owns = true;
             pid_out = info.dwProcessId;
 
-            // The family is collected once the image has had time to settle,
-            // so the instances that came up with the start are known.
-            Sleep(1500);
-            m_Started = FindProcesses(image_name);
+            // The image is given time to settle before the target is chosen.
+            // Several modern images start a broker that hands off to the real
+            // instance and then exits, and a target picked while the broker
+            // is still leaving is a target that is about to be gone.
+            {
+                std::vector<DWORD> previous;
+                for (int attempt = 0; attempt < 40; ++attempt)
+                {
+                    const std::vector<DWORD> current = FindProcesses(file);
+                    if (current == previous)
+                    {
+                        break;
+                    }
+                    previous = current;
+                    Sleep(100);
+                }
+            }
+
             return true;
         }
     };
@@ -4281,28 +4390,36 @@ DWORD BuildFlags(const WizardConfig & config)
             SetEnvironmentVariableW(L"AMEGER_DONOR_OWNER_BLOCKLIST",
                 config.donor_owner_blocklist.c_str());
         }
-        g_KeepResultLog = config.keep_result_log;
+        g_DiscardResultLogOnSuccess = config.discard_result_log_on_success;
+        g_TestMode = config.test_mode;
+        g_AutoConfirm = config.auto_confirm;
         if (config.test_mode)
         {
-            // The report is the entire point of a test run, so it is always
-            // written.
-            g_KeepResultLog = true;
+            // A test run's transcript is the whole point of the run, so it is
+            // never removed, and a test run does not stop to ask the operator
+            // whether it may begin.
+            g_DiscardResultLogOnSuccess = false;
+            g_AutoConfirm = true;
         }
 
         // The scratch target is owned by this guard, so it is closed when the
         // wizard returns.
         ScratchTargetGuard scratch_target;
 
+        // The transcript is written when the wizard finishes, before the
+        // scratch target is closed. The guard is a local of this function, so
+        // it is destroyed after this scope guard runs, and anything that goes
+        // wrong while the target is being closed would otherwise take the
+        // transcript with it.
+        auto transcript_guard = MakeScopeExit([&]() noexcept
+        {
+            ameger_ui_log::WriteResultLog();
+        });
+
         Trace::Begin(L"Operator Confirmation");
-        ConfirmationResult confirmation = ConfirmationResult::Proceed;
-        if (config.test_mode)
-        {
-            Sleep(3000);
-        }
-        else
-        {
-            confirmation = ConfirmBeforeDetection();
-        }
+        // The confirmation itself decides whether it is needed. A test run
+        // never waits for an answer, because there is nobody to answer it.
+        const ConfirmationResult confirmation = ConfirmBeforeDetection();
         if (confirmation == ConfirmationResult::Cancelled)
         {
             Trace::End();
@@ -4352,6 +4469,14 @@ DWORD BuildFlags(const WizardConfig & config)
         Trace::Note(L"Name = %ls", target.name.c_str());
         Trace::Note(L"Architecture = %ls", ArchitectureName(target.architecture));
         Trace::End();
+
+        if (config.test_mode)
+        {
+            // A test run puts no window on the operator's desktop. The window
+            // belongs to the process that was actually selected, which is not
+            // necessarily the one that was started.
+            HideProcessWindows(target.pid);
+        }
 
         if (target.architecture == Architecture::X86)
         {
@@ -4538,6 +4663,11 @@ DWORD BuildFlags(const WizardConfig & config)
         if (result != INJ_ERR_SUCCESS)
         {
             LOG(0, L"%ls[x]%ls Operation Failed With Code %08X%ls\n", kRed, kReset, result);
+            if (config.test_mode)
+            {
+                LOG(0, L"%ls[x]%ls TEST MODE - This Was A Test Run Against A Scratch Target, Not The Configured Process.%ls\n",
+                    kYellow, kReset, kReset);
+            }
             PrintFailureHint(result);
 
             if (runtime.get_last_error_info)
@@ -4978,13 +5108,27 @@ DWORD BuildFlags(const WizardConfig & config)
 
         row(L"Verification Gate......... ", stealth_gate_ok);
         LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
+
+        // A test run has to be recognisable as one at a glance, and it has to
+        // be recognisable in the transcript long after the run is over. It is
+        // not a failure, so it is not marked with the pass or fail marker.
+        {
+            const wchar_t * marker = config.test_mode ? L"!" : L"+";
+            const wchar_t * tint = config.test_mode ? kYellow : kGreen;
+            const wchar_t * mode = config.test_mode
+                ? L"TEST MODE - The Target Was Forced To A Scratch Image, Not The Configured Process"
+                : L"Normal - The Target Was The Configured Process";
+            LOG(0, L"  [%ls%s%s] Run Mode.................. %ls\n", tint, marker, kReset, mode);
+        }
+
             LOG(0, L"====================================================================================================\n");
             LOG(0, L"[Result] %ls%ls%ls Mapped At %p In %ls (PID %lu)\n",
                 config.test_mode ? kYellow : kGreen,
                 config.test_mode ? L"[TEST MODE] " : L"[+]",
                 kReset, data.hDllOut, target.name.c_str(), static_cast<unsigned long>(target.pid));
             LOG(0, L"====================================================================================================\n");
-        Trace::Summary(L"Success");
+        Trace::Summary(config.test_mode ? L"Success (Test Mode)" : L"Success");
+        g_LoadCompleted = true;
         PauseBeforeExit();
         return 0;
     }
@@ -5037,25 +5181,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     const int retryIndex = GetRetryIndex();
 
     {
+        // The transcript is named after the configuration, so that it sits
+        // next to the file that produced it. When the configuration cannot be
+        // found or read there is no name to take, and the name of the
+        // launcher itself is used instead: a run that failed to find its
+        // configuration is exactly the run that has to be read afterwards,
+        // so it must still leave a record.
+        std::wstring stem;
+
         const std::wstring config_path = ConfigurationPath();
         const size_t slash = config_path.find_last_of(L"\\/");
         const size_t dot = config_path.find_last_of(L'.');
         if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash + 1))
         {
             const size_t start = (slash == std::wstring::npos) ? 0 : slash + 1;
-            const std::wstring stem = config_path.substr(start, dot - start);
-            if (!stem.empty())
+            stem = config_path.substr(start, dot - start);
+        }
+        else
+        {
+            std::wstring own;
+            if (GetOwnExePath(own))
             {
-                // Each attempt gets its own transcript, so a failed attempt is
-                // not overwritten by the retry that follows it.
-                if (retryIndex > 0)
+                const size_t own_slash = own.find_last_of(L"\\/");
+                std::wstring name = (own_slash == std::wstring::npos) ? own : own.substr(own_slash + 1);
+                const size_t own_dot = name.find_last_of(L'.');
+                if (own_dot != std::wstring::npos)
                 {
-                    g_ResultLogName = stem + L".attempt" + std::to_wstring(retryIndex) + L".log";
+                    name = name.substr(0, own_dot);
                 }
-                else
-                {
-                    g_ResultLogName = stem + L".log";
-                }
+                stem = name;
+            }
+        }
+
+        if (!stem.empty())
+        {
+            // Each attempt gets its own transcript, so a failed attempt is
+            // not overwritten by the retry that follows it.
+            if (retryIndex > 0)
+            {
+                g_ResultLogName = stem + L".attempt" + std::to_wstring(retryIndex) + L".log";
+            }
+            else
+            {
+                g_ResultLogName = stem + L".log";
             }
         }
     }
@@ -5099,16 +5267,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    // The transcript is a record of what was done, and it is only worth
-    // keeping when something went wrong. A clean run leaves nothing behind,
-    // unless the operator asked for it to be kept.
-    if (result == 0 && !g_KeepResultLog && !KeepResultLogRequested())
+    // The transcript of the run.
+    //
+    // It is always written, whether the run succeeded or failed. The record of
+    // a successful load is the one worth having, so removing it is something
+    // that has to be asked for explicitly rather than something that happens
+    // by default.
+    ameger_ui_log::WriteResultLog();
+
+    // A run that mapped the payload may still be asked to leave nothing
+    // behind. A run that did not is never asked: the transcript of a run that
+    // failed, or that was cancelled, is the only evidence of what happened.
+    if (g_LoadCompleted && DiscardResultLogOnSuccess())
     {
         ameger_ui_log::DiscardResultLog();
-    }
-    else
-    {
-        ameger_ui_log::WriteResultLog();
     }
     ameger_ui_log::Clear();
 
@@ -5123,8 +5295,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     if (result == kResultRetryable && retryIndex + 1 >= kMaxLaunchAttempts)
     {
-        const std::wstring message = L"Operation Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L".";
-        LayeredNotify(L"Launcher", message.c_str(), 5000);
+        const std::wstring message = g_TestMode
+            ? L"Test Run Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L"."
+            : L"Operation Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L".";
+        LayeredNotify(g_TestMode ? L"Launcher (Test Mode)" : L"Launcher", message.c_str(), 5000);
         result = 1;
     }
 

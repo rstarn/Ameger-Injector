@@ -1,5 +1,7 @@
 ﻿#include "Core/Utility/Header/PrecompiledHeader.h"
 
+#include <new>
+
 #include "Native/Syscall.h"
 
 inline bool SyscallVerbose()
@@ -712,8 +714,12 @@ DWORD SyscallResolveAll()
 					Harvested = HarvestedStorage.data();
 					++HarvestedCount;
 				}
-				catch (...)
+				catch (const std::bad_alloc &)
 				{
+					// The harvest is best effort: a service that cannot be
+					// recorded is left unresolved rather than aborting the
+					// whole resolution. It is still worth saying so.
+					LOG(2, "Syscall: The Harvest Table Could Not Grow; One Service Was Left Unresolved\n");
 				}
 			}
 

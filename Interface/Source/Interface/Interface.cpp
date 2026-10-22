@@ -36,11 +36,11 @@ static std::wstring StripAnsiEscapes(const wchar_t * text)
             {
                 ++j;
             }
-            while (text[j] && text[j] >= L' ' && text[j] <= L'/')
+            while (text[j] >= L' ' && text[j] <= L'/')
             {
                 ++j;
             }
-            if (text[j] && text[j] >= L'@' && text[j] <= L'~')
+            if (text[j] >= L'@' && text[j] <= L'~')
             {
                 i = j;
                 continue;

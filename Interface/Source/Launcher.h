@@ -226,7 +226,16 @@ struct WizardConfig
     // with a fresh environment rather than the one its parent had. Every
     // tuning knob therefore lives in the configuration file, which is read
     // after the elevation, and not in an environment variable.
-    bool keep_result_log = false;
+    //
+    // The transcript of a run is always written. Removing it is something
+    // that has to be asked for, and it is only ever asked for after a
+    // successful run.
+    bool discard_result_log_on_success = false;
+    // Whether the "begin load?" confirmation is answered for the operator.
+    // It lives here rather than in an environment variable because the
+    // launcher runs elevated, and an elevated process does not inherit its
+    // parent's environment.
+    bool auto_confirm = false;
     size_t survey_max_regions = 0;
     size_t survey_max_mb = 0;
     size_t survey_max_sample_regions = 0;

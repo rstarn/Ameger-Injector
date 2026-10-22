@@ -5,7 +5,6 @@
 #include "System/Import/ImportHandler.h"
 
 #include <bcrypt.h>
-#include <iomanip>
 
 #pragma comment(lib, "bcrypt.lib")
 

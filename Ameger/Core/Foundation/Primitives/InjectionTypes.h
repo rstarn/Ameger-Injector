@@ -117,30 +117,37 @@ static_assert(sizeof(STRING_STATS) == 24);
 
 #define AMEGER_NTSTATUS_UNSUCCESSFUL	((NTSTATUS)0xC0000001L)
 
+// The telemetry block is published to the host a word at a time, so that a
+// reader never sees a half-written value. A word-wise copy also copies the
+// padding bytes of the structure, and padding has no defined value, so the
+// structure is laid out with no padding at all: every byte of it belongs to a
+// named field. The reserved field is what makes the four-byte group an even
+// number of words, which is what leaves no gap at the end.
 struct VERIFIABLE_EXEC_TELEMETRY
 {
-	NTSTATUS LdrLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
-	ULONG LoaderLockState = 0;
 	ULONG_PTR LoaderLockCookie = 0;
-	NTSTATUS LdrUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	unsigned __int64 DllMainCyclesDelta = 0;
+	PVOID TlsLastExecutedAddress = nullptr;
+	PVOID InvertedTableEntryBase = nullptr;
+	SIZE_T PreSectionSpanWiped = 0;
 
+	NTSTATUS LdrLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	NTSTATUS LdrUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	ULONG LoaderLockState = 0;
 	BOOL DllMainResult = FALSE;
 	DWORD DllMainLastWin32Error = 0;
-	unsigned __int64 DllMainCyclesDelta = 0;
-
 	DWORD TlsCallbacksConfigured = 0;
 	DWORD TlsCallbacksExecuted = 0;
 	DWORD TlsCallbacksFailed = 0;
-	PVOID TlsLastExecutedAddress = nullptr;
-
 	BOOL InvertedTableInstalled = FALSE;
 	BOOL DynamicTableInstalled = FALSE;
-	PVOID InvertedTableEntryBase = nullptr;
-
-	SIZE_T PreSectionSpanWiped = 0;
 	DWORD MZRemnantsFound = 0;
 	DWORD PERemnantsFound = 0;
 	DWORD PostWipeProtection = 0;
+	DWORD Reserved = 0;
 };
 
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % 4 == 0);
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 5 * sizeof(ULONG_PTR) + 14 * sizeof(DWORD),
+	"the telemetry block must have no padding, because it is published a word at a time");
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0,
+	"the telemetry block is published a word at a time, so its size must be a whole number of words");

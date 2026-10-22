@@ -23,8 +23,14 @@ namespace
 	{
 		static_assert(sizeof(THREAD_EXEC_STATS) % sizeof(LONG) == 0, "THREAD_EXEC_STATS must be a whole number of LONGs");
 
+		// The block is published a word at a time so that a reader never sees
+		// a half-written value. The copy is taken through a value-initialised
+		// instance first, so every word that is published is a defined value.
+		THREAD_EXEC_STATS copy{};
+		copy = Src;
+
 		volatile LONG * dst = ReCa<volatile LONG *>(&g_ThreadExecStats);
-		const LONG * src = ReCa<const LONG *>(&Src);
+		const LONG * src = ReCa<const LONG *>(&copy);
 		for (size_t i = 0; i < sizeof(THREAD_EXEC_STATS) / sizeof(LONG); ++i)
 		{
 			InterlockedExchange(&dst[i], src[i]);
@@ -418,17 +424,28 @@ namespace
 		HANDLE DupThread	= nullptr;
 		DWORD DupError	= ERROR_SUCCESS;
 
+		// Both handles are duplicated the same way, so the duplication is
+		// done through one helper and the two failures cannot drift apart.
+		const auto duplicate = [](HANDLE source, HANDLE & out) -> DWORD
+		{
+			if (DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &out, 0, FALSE, DUPLICATE_SAME_ACCESS))
+			{
+				return ERROR_SUCCESS;
+			}
+			return GetLastError();
+		};
+
 		if (!Process || Process == INVALID_HANDLE_VALUE || !Thread || Thread == INVALID_HANDLE_VALUE || !Base)
 		{
 			DupError = ERROR_INVALID_HANDLE;
 		}
-		else if (!DuplicateHandle(GetCurrentProcess(), Process, GetCurrentProcess(), &DupProcess, 0, FALSE, DUPLICATE_SAME_ACCESS))
+		else
 		{
-			DupError = GetLastError();
-		}
-		else if (!DuplicateHandle(GetCurrentProcess(), Thread, GetCurrentProcess(), &DupThread, 0, FALSE, DUPLICATE_SAME_ACCESS))
-		{
-			DupError = GetLastError();
+			DupError = duplicate(Process, DupProcess);
+			if (DupError == ERROR_SUCCESS)
+			{
+				DupError = duplicate(Thread, DupThread);
+			}
 		}
 
 		if (DupError != ERROR_SUCCESS)

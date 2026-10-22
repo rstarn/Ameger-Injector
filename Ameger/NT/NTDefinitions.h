@@ -65,14 +65,21 @@ typedef enum class _THREADINFOCLASS
 	ThreadBasicInformation			= 0
 } THREADINFOCLASS;
 
+// These two carry a value that was read out of the kernel, so the zero that
+// a default-constructed instance holds has to be a state the kernel can
+// actually report. "Unknown" is the zero value for that reason: the real
+// meaning of "Running" is resolved from the PDB at run time, and the values
+// here are only the fallbacks.
 typedef enum class _KTHREAD_STATE : ULONG
 {
+	Unknown = 0x00,
 	Running = 0x02,
 	Waiting = 0x05
 } KTHREAD_STATE;
 
 typedef enum class _KWAIT_REASON : ULONG
 {
+	Unknown = 0x00,
 	WrQueue = 0x0F
 } KWAIT_REASON;
 

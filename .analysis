@@ -24,20 +24,38 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
 - 2026-10-15 (b) — **Part E retracted** after our own live census of `Overwatch.exe`
   (PID 10244) measured 1,199,181 `0xCC` bytes at runtime, not 0. OP §1 (1 import), §3.2
   (76 exports) and §1 (3 TLS callbacks) **confirmed** by read-back; OP §3.1
-  (`GuardFlags: 0x100`) **contradicted** (CFG policy off). See D13a, D6a, E0.
-- 2026-10-21 (c) — **scope correction (E1a) and handle-policy correction (F1c).** Our own
+(`GuardFlags: 0x100`) **confirmed exactly** - `0x00000100`, load config 320. See D13a, D6a, E0.
+- 2026-10-21 (c) - **scope correction (E1a) and handle-policy correction (F1c).** Our own
   census was described here as "process-wide"; it was bounded to the target's main module
   image range, and the report line that said otherwise was mislabelled. E1's "is it in-image
   or in free space" discriminator was therefore already answered (all in-image), and F5
   items 4, 5, 6 and 11 are now closed in the tooling: the survey reads the exe's own
   `GuardFlags`, reports the in-image / free-space split, states its range, prints the
   single import's module and function name, and locates the loader by its encrypted-core
-  section rather than by name. F1c's "the launcher retains only 0x1010" was wrong — it
-  opens `0x0410` first — and the "UNKNOWN, never clean" claim is withdrawn. The region
+  section rather than by name. F1c's "the launcher retains only 0x1010" was wrong - it
+  opens `0x0410` first - and the "UNKNOWN, never clean" claim is withdrawn. The region
   *shape* (894 executable / 895 no-access regions inside one image) is promoted from
   "unattributed count" to the strongest live lead in the corpus. See E1a, F1a, F1c, F3,
   F4, F5, G5.
-- 2026-10-21 (d) — **three findings from an end-to-end verification run of our own
+- 2026-10-21 (d) - **the first live read-backs of the real target, and a verdict of ours that
+  was wrong.** The corrected survey ran against `Overwatch.exe` - twice, against two
+  different game processes (PIDs 23184 and 6924) - and the load succeeded with the
+  verification gate passing both times. It produced results that close open questions, and
+  one that overturns a conclusion this file had carried since the first read-back.
+  **The single import is now named: `Overwatch_loader.dll!Ordinal 1`** - the
+  name he resolved separately rather than the import name. **The loader's encrypted core
+  was located structurally**: `Overwatch_loader.dll` -> `.eid`, 4,672 KB, never read,
+  against the OP's "4.2 mb". And **the region shape is now measured rather than
+  argued**: of 14,202 no-access regions, 900 are inside the module images and 13,302 in
+  free space, and `Overwatch.exe` alone has 899 executable regions against 900 no-access
+  regions in its own image. **The verdict that was wrong is D6a.** The target's own load
+  config reads `GuardFlags = 0x00000100` with a 320-byte load config - the OP's two
+  load-config claims, exactly. This file had recorded them as "CONTRADICTED" because it
+  compared the OP's load-config *declaration* against the process CFG *policy* and read the
+  difference between two different fields as a refutation. The OP read the field he said
+  he read, correctly. The corrected verdict is in D6a, and it is propagated through D13a,
+  E2, F1a and the bottom line.
+- 2026-10-21 (e) — **three findings from an end-to-end verification run of our own
   tooling**, all of them about us rather than about the target. **F4a:** the launcher runs
   elevated, and an elevated process gets a fresh environment — so *every* `AMEGER_*`
   environment knob was dead, including the census bounds and the new donor-owner block
@@ -949,27 +967,38 @@ bytes, so no attribution is supportable.
 2. **CFG is not enabled on this build.** Our read-back of the target's CFG policy is
    `enable 0 strict 0`. A CFG-instrumented image with CFG enforcement disabled at process
    level is consistent — but it means CFG cannot be doing meaningful work here either, and
-   the OP's `Guard Flags: 0x100` reading is contradicted (see D15).
+   the OP's `Guard Flags: 0x100` reading is CONFIRMED by the target's own load config (see D6a).
 
 **Verdict: WRONG attribution, and no alternative attribution is supported either.** Most
 likely benign padding. This file previously advanced a demand-paging theory here; that
 theory is **retracted** in Part E on the strength of measurement (1).
 
-## D6a. NEW — `Guard Flags: 0x100` is contradicted by live CFG policy
+## D6a. **RESOLVED — the OP was right, and this file was wrong**
 
-> OP §3.1: *"Guard Flags: 0x100 ( CFG Instrumented )"* → our read-back: `enable 0 strict 0`
+> OP §3.1: *"Guard Flags: 0x100 ( CFG Instrumented )"* and *"Load Config Size: 320 Bytes"*
+> → **our read-back of the target's own load configuration: `GuardFlags = 0x00000100`,
+> load config size 320.**
 
-`IMAGE_GUARD_CF_INSTRUMENTED` (`0x100`) is a **load-config declaration**; the process CFG
-policy is the **runtime enforcement state**. They are separate fields and a build can carry
-the bit while running with enforcement off. Two readings:
+Both of the OP's load-config claims are now reproduced **exactly, bit for bit**, on the
+real target. `0x00000100` is `IMAGE_GUARD_CF_INSTRUMENTED` and nothing else — the OP's
+`0x100` is not an approximation, it is the value.
 
-- **Reading A (favourable to the OP):** the bit is set, the policy is off. The OP read the
-  load config correctly; the policy simply isn't enforced in this session.
-- **Reading B (against the OP):** the bit does not mean what the OP implied. CFG contributes
-  **no** protection on this build, so the "CFG fastfail" idea behind §6.4/§7 collapses.
+**This overturns a verdict this file had carried since the first read-back.** The earlier
+conclusion was "the OP's `GuardFlags: 0x100` is **CONTRADICTED**". That was wrong, and it
+was wrong in the way this file keeps getting things wrong: it compared the OP's **load
+config declaration** against the **process CFG policy** and treated a difference between two
+different fields as a refutation. The OP read the load config correctly all along. The
+policy being off at runtime is a separate fact about enforcement, not a disagreement about
+the image.
 
-We cannot distinguish A from B without reading the exe's own load config in the same run and
-comparing — which is cheap and not yet done (§F5).
+**What survives of the original worry:** CFG still contributes no *enforcement* on this
+build, so the "CFG fastfail" idea behind §6.4/§7 does not hold. That is a statement about
+what the mechanism does, not about whether the OP read the field correctly.
+
+**The method note is the part worth keeping.** This is the third time in this file that a
+verdict was reached by comparing a measurement against a claim that was about something
+else. The discipline that catches it is the same one: **read the field the claim is about,
+from the place the claim says it comes from.**
 
 Either way, **"the 1.2M `0xCC` is CFG" is dead**: CFG is off, and CFG never emitted `0xCC`.
 
@@ -1082,7 +1111,7 @@ These are no longer "consistent with" or "confirmed by other threads" — they a
 | §3.2 — exe exports **76** symbols | **94 funcs / 76 names** | Matches to the digit. Strong signal we're reading the same structure |
 | §1 — exe has **3** TLS callbacks | **3 configured**, remote array read | Confirms the survey's out-of-image refusal rule works against a real target |
 | §6.2 — target registers a VEH handler | **`UsingVEH=YES`**, CrossFlags `0x5` | **Existence only.** Says nothing about what it does or about debugger ordering (D2) |
-| §3.1 — `Guard Flags: 0x100` = CFG instrumented | **CFG policy `enable 0 strict 0`** | **CONTRADICTED** — D6a |
+| §3.1 - `Guard Flags: 0x100` = CFG instrumented | **`GuardFlags = 0x00000100`**, load config 320 | **CONFIRMED** - the OP was right; D6a |
 
 The first three are the strongest result in this file: an author accused of fabricating a
 post (§B4) produced three structural claims that a query-only remote survey confirms
@@ -1311,14 +1340,14 @@ Closed by measurement this run (see D13 and F1 for the full table):
 | §1: exe has exactly **one** import | **1 descriptor** in `Overwatch.exe` | **CONFIRMED** |
 | §3.2: exe exports **76** symbols | **94 funcs / 76 names** | **CONFIRMED** — the number is exact |
 | §1: exe has **3** TLS callbacks | **3 configured** (remote array) | **CONFIRMED** |
-| §3.1: `Guard Flags: 0x100` = CFG instrumented | **CFG policy enable 0, strict 0** | **CONTRADICTED** — see D15 |
+| §3.1: `Guard Flags: 0x100` = CFG instrumented | **`GuardFlags = 0x00000100`**, load config 320 | **CONFIRMED** - the OP was right; see D6a |
 | §6.2/§2: target registers a VEH handler | **`UsingVEH=YES`**, CrossFlags `0x5` | **CONFIRMED** (existence only) |
 
 The single-import and 3-TLS-callback results matter most: they are the OP claims a sceptic
 would attack first, they are cheap to check, and they **hold**. The exports number matching
 to the digit (76) is a strong signal that this run is reading the same structure the OP did.
 
-The CFG contradiction cuts the other way and is the single cleanest refutation in this file.
+**The CFG row of this table was wrong and has been corrected** (D6a): the OP's GuardFlags: 0x100 is exactly what the target's load config says.
 
 ---
 
@@ -1341,7 +1370,7 @@ game-backed pages.
 | Target TLS callbacks | **3 configured** (remote array) | **OP §1 CONFIRMED**; remote walk + out-of-image refusal rule both exercised |
 | Target VEH | **`UsingVEH=YES`**, CrossFlags `0x00000005`, PEB `0x2B3000` read back | A VEH handler **is** registered. Existence only — see D2 for why this is not debugger precedence |
 | Target debug port | **UNKNOWN** (query failed) | Correctly **not** reported as clean — see F1c for the handle-rights correction |
-| Target CFG policy | **enable 0, strict 0** | **Contradicts OP §3.1** `Guard Flags: 0x100` — D6a |
+| Target CFG policy | **enable 0, strict 0** | The *policy* is off. The OP's *declaration* is exactly right - D6a |
 | Trap census | `untrapped`; **1916** committed regions walked | **Scoped to the main module's image range** — see E1a |
 | Guard pages | **0 regions, 0 KB** | No `PAGE_GUARD` anywhere — consistent with C5's `PAGE_NOACCESS` model, but also just a clean process |
 | `PAGE_NOACCESS` | **906 regions, 18,004 KB** | **All inside the main image** (E1a). ~18 MB no-access in a running game's own image. Lead only — E1 |
@@ -1626,21 +1655,71 @@ The thread had exited. The search was not being refused; it was being held on a 
 to fall back to a direct handle, and makes the run write its transcript whatever the
 outcome. `[General] TestTarget` chooses the image.
 
-Three things were wrong with it and are now fixed:
+Four things were wrong with it and are now fixed:
 
 - **It silenced the report.** It forced `Quiet`, `DetachConsole` and `VerboseTrace` off
   regardless of what the configuration said, so a test could not be read. Those are the
   operator's settings and the configuration already has keys for them; test mode now
-  changes only what test mode is for.
+  changes only what test mode is *for*.
 - **It left the target behind.** It now starts a scratch target when the operator has
-  none open, and closes it — and any instance that came with it — when the run ends. An
+  none open, and closes it - and any instance that came with it - when the run ends. An
   instance the operator already had running is never touched.
 - **It could be mistaken for a real run.** The trace carries a `Test Mode` section, the
-  console carries a `TEST MODE` line, and the final result line is marked
-  `[TEST MODE]`.
+  console carries a `TEST MODE` line, the load-result block carries a `Run Mode` row, the
+  final line is `[Result] [TEST MODE] Mapped At ...`, and the phase summary reads
+  `Success (Test Mode)`.
+- **It put a window on the operator's desktop.** The scratch target is started hidden,
+  and the window of the process that was *actually selected* is hidden as well - several
+  modern images start a broker that hands off to the real instance, and the real instance
+  puts its own window up regardless of how the broker was started.
 
-A test run against a scratch target now passes the verification gate end to end, and the
-scratch target is gone afterwards.
+### The modern-notepad problem, which is worth recording
+
+`notepad.exe` on current Windows is a **broker**: it starts the real instance and exits.
+That produced three distinct failures, all of which looked like something else:
+
+1. **The target exited during the load.** The injector picked the broker, which was about
+   to leave. The scratch target is now given time to settle - the launcher waits until
+   the set of processes under that image name stops changing - before the target is
+   chosen.
+2. **A target with no published loader list.** A process whose PEB carries a null loader
+   pointer cannot be mapped into. The launcher now filters candidates on that condition
+   and prefers the one with the largest working set, which is the main instance rather
+   than a helper beside it.
+3. **A stale target pinned the build directory.** A process holds its working directory
+   open, so a scratch target that inherited the launcher's directory kept that directory
+   locked, and the next `Create.bat` could not write into it. The scratch target is now
+   started in the temporary directory, and the family is collected at close time rather
+   than at start time.
+
+**And the underlying measurement was wrong.** An earlier revision of this file concluded
+that `CREATE_NEW_CONSOLE` leaves the target's loader data unpublished, on the strength of
+one reading. A re-measurement with the same flags showed a valid loader list every time:
+the reading was a timing artefact of the *first* notepad launched in a session, which is
+the broker mid-handshake. The "avoid `CREATE_NEW_CONSOLE`" advice was based on a bad
+measurement. The fallback that was added in response to it - reading ntdll's base from the
+kernel's module list when the PEB walk cannot produce it - is still correct and is still
+worth having, but it was not fixing what it was meant to fix.
+
+### The transcript, and how a run records itself
+
+- **The transcript is always written**, whether the run succeeded or failed. The record of
+  a successful load is the one worth having. `[General] DiscardResultLogOnSuccess` removes
+  it, and only after a load that actually completed - a run that failed *or was cancelled*
+  always keeps its transcript, because the exit code is zero for a cancelled run and that
+  is not the same thing as a successful load.
+- **The transcript is written before the scratch target is closed.** The scratch target is
+  closed by a guard that is a local of the wizard, so it is destroyed after the wizard
+  returns. Writing the transcript at the end of the wizard means a failure while the target
+  is being closed can no longer take the record of the run with it.
+- **The log's name no longer depends on the configuration being readable.** When the
+  configuration cannot be found or decrypted there is no configuration to take a name
+  from, and the name of the launcher itself is used instead - a run that failed to find its
+  configuration is exactly the run that has to be read afterwards.
+- **Auto-confirm survives elevation.** The confirmation is answered from the
+  configuration file, not from an environment variable, because the launcher runs elevated
+  and an elevated process does not inherit its parent's environment. An environment
+  variable set on the command line was never seen by the launcher at all.
 
 ## F4h. NEW (2026-10-21) — the shipped release, built and protected, verified end to end
 
@@ -1724,6 +1803,123 @@ again next patch.
 
 ---
 
+# PART F2 - The real census of `Overwatch.exe` (2026-10-21, two runs: PIDs 23184 and 6924)
+
+This is the first run of the corrected survey against the actual target, and it closes most
+of what was open. The figures below are read back from a successful load, not inferred. The
+census was then run again against a second game process, and reproduced - see F2c-2.
+## F2a. The single import, named
+
+```
+[+] Target Imports.......... 1 Descriptor(s) In Overwatch.exe (Read Back)
+    Overwatch_loader.dll!Ordinal 1
+    [*] Single-Import Shape: Every Call This Image Makes Leaves Through One Imported Module.
+```
+
+**The module name is confirmed exactly: `Overwatch_loader.dll`.** The function is imported
+**by ordinal 1**, not by name - so the OP's `eidolon_run` is a name he resolved separately,
+not the import name. That is consistent with C4, which reported the game calling the
+ordinal-1 export through an internal `Overwatch_loader_1()` wrapper.
+
+## F2b. The encrypted core, located structurally
+
+```
+Encrypted 1 Region(s) / 4672 KB Inside A Loader's Encrypted Core - Never Read
+         Overwatch_loader.dll -> .eid @ 00007FFB64280000..00007FFB64710000
+
+Overwatch_loader.dll....   (Encrypted-Core Carrier)
+    Regions:.... 11 Committed | 1 Executable | 0 No-Access | 0 Guard | 1 Encrypted-Core
+    INT3:....... 86833 Of 30801920 Sampled Bytes Are INT3 (0xCC), 0%, From 1 Of 1 Executable Region(s)
+```
+
+The `.eid` section was found **by structure, not by name**, and its extent is **4,672 KB**.
+The OP said ".eid ... 4.2 mb" and "4.25 mb"; the measured virtual extent is 4.56 MB, which is
+the same thing within the difference between a raw size and a virtual size. The section was
+**never read** - it is counted and located, and left alone.
+
+**This closes the loader-side survey gap** (G4, F3 MED): the loader is now identified as the
+encrypted-core carrier, its module range is censused, and its single executable region is
+30.8 MB of code.
+
+## F2c. E1 answered, with the in-image / free-space split
+
+```
+Scope  146 Module(s) Loaded | Main Image = Overwatch.exe @ 00007FF686A20000 | 73952 KB
+Walk    33636 Committed Region(s) Walked | 170 Guard | 14202 No-Access | 1164 Executable
+By Range  Inside Module Images.. Guard 0 | No-Access 900 | Executable 1045 | Committed 2890
+By Range  Free Address Space.... Guard 170 | No-Access 13302 | Executable 119 | Committed 30745
+
+Overwatch.exe...........   (Main Image)
+    Regions:.... 1904 Committed | 899 Executable | 900 No-Access | 0 Guard | 0 Encrypted-Core
+    INT3:....... 1195525 Of 31084544 Sampled Bytes Are INT3 (0xCC), 3%, From 899 Of 899 Executable Region(s)
+```
+
+**E1's question is answered, and the answer is the interesting one.** Of the **14,202**
+no-access regions in the process, **900 are inside the module images** and **13,302 are in
+free address space**. The count that matters is the 900.
+
+`Overwatch.exe` alone has **899 executable regions and 900 no-access regions inside its own
+image** - the near one-to-one pairing that Part E predicted and then failed to find. A
+normal image has one to three executable regions. This is the demand-paging shape, and it is
+now measured on the real target rather than argued from a mislabelled count.
+
+### F2c-2. Reproduced on a second game process
+
+A second run, against a different `Overwatch.exe` process, reproduced every structural
+figure and the shape with it:
+
+| Measurement | Run 1 (PID 23184) | Run 2 (PID 6924) |
+|-------------|-------------------|-------------------|
+| import descriptor | 1, `Overwatch_loader.dll!Ordinal 1` | **1, `Overwatch_loader.dll!Ordinal 1`** |
+| exports | 94 funcs / 76 names | **94 / 76** |
+| TLS callbacks | 3 | **3** |
+| `GuardFlags` | `0x00000100`, load config 320 | **`0x00000100`, load config 320** |
+| CFG policy | `enable 0, strict 0` | **`enable 0, strict 0`** |
+| modules loaded | 146 | **146** |
+| main image size | 73,952 KB | **73,952 KB** |
+| `.eid` extent | 4,672 KB | **4,672 KB** |
+| loader executable region | 1, 30,801,920 bytes | **1, 30,801,920 bytes** |
+| `Overwatch.exe` executable regions | 899 | **884** |
+| `Overwatch.exe` no-access regions | 900 | **885** |
+| `Overwatch.exe` `0xCC` bytes | 1,195,525 / 31,084,544 | **1,246,267 / 32,051,200** |
+
+**The absolute counts move and the shape does not.** The region counts and the `0xCC`
+total are a function of how much the game has paged in, and they differ between two
+processes. The *ratio* does not: executable regions and no-access regions inside
+`Overwatch.exe`'s own image are 899/900 and 884/885. Both are one apart. And every
+figure that describes the image rather than the session - the import, the export count, the
+TLS count, the load config, the `.eid` extent, the loader's code size - is identical to the
+byte.
+
+**That is the difference between a sample and a measurement.** A single run could have been
+a coincidence of one process's state. Two runs against different processes, with the same
+image reproduced exactly and the ratio reproduced to within one, is a property of the
+binary.
+
+**It is still a lead, not a conclusion.** The pairing is what C5's model predicts, and the
+gadget hunt is still what would settle it. What has changed is that the discriminator is no
+longer hypothetical: the in-image count is ~900, it is not a rounding error in the free
+space, and it does not go away when the process changes.
+
+## F2d. What else the run re-confirmed
+
+| OP claim | Measurement | Verdict |
+|----------|-------------|---------|
+| one import | `Overwatch_loader.dll!Ordinal 1` | **CONFIRMED, and now named** |
+| 76 exports | 94 funcs / 76 names | **CONFIRMED** |
+| 3 TLS callbacks | 3 configured (remote array read) | **CONFIRMED** |
+| `GuardFlags: 0x100` | `0x00000100`, load config 320 | **CONFIRMED exactly** - D6a |
+| a VEH handler | `UsingVEH=YES`, CrossFlags `0x5` | **CONFIRMED** (existence only) |
+| `.eid` encrypted core, ~4.2 MB | `Overwatch_loader.dll` `.eid`, 4,672 KB | **CONFIRMED, and located** |
+
+**And the load itself was clean:** the payload mapped at `0x29A290000`, its `DllMain`
+returned true, one TLS callback executed, the loader lock was taken and released, the data
+directories were wiped with a zero residual mask, the header was cloaked with zero `MZ` and
+zero `PE` remnants, and the verification gate passed with zero RWX regions.
+
+
+---
+
 # PART G — Open questions
 
 1. ~~Is Part E true?~~ — **NO. Retracted** (E0). Our runtime census measured 1,199,181 `0xCC`
@@ -1735,26 +1931,34 @@ again next patch.
    (D13a). The mechanistic half is still badly wrong. A reasonable position: real
    observations, largely wrong explanations, and a disputed provenance.
 4. **Where does Warden live on the current build?** (B1) `betsit` self-identifies as Blizzard.
-   Still unresolved. Survey both images. **We have not yet surveyed the loader's import table,
-   TLS, or VEH state** — only the exe's. That is a real gap in our own coverage.
-5. ~~What are the 906 `PAGE_NOACCESS` regions?~~ — **PARTLY CLOSED (E1a).** They are inside
-   the main image, and the census now reports the in-image / free-space split plus a
-   per-module breakdown, with the loader located by its encrypted-core section. The
-   remaining question is what the pairing *means* — see F5 item 15.
+   Still unresolved, but our coverage is much better than it was: the loader is now
+   identified, censused and located by its encrypted core (F2b). What is still missing is
+   the loader's *import table, TLS array and VEH state* - we have censused its regions and
+   measured its single executable region, but not its loader state.
+5. ~~What are the 906 `PAGE_NOACCESS` regions?~~ - **CLOSED (E1a, F2c).** They are inside the
+   main image: 900 of them, against 899 executable regions in the same image, with
+   13,302 more in free address space. The census now reports the split, and the
+   loader is located by its encrypted-core section. What the pairing *means* is still the
+   open question - see F5 item 15.
 6. ~~Does `GuardFlags: 0x100` reflect the build or was the OP reading the wrong field?~~
-   (D6a) The suite now reads both in the same run. **Still to be read off a live build.**
-7. **Are the five strings Warden modules, settings keys, or SQLite opcode names?** (D11.)
+   **CLOSED (D6a, F2d).** The target's own load config says `0x00000100` and 320 bytes.
+   The OP read it correctly; this file's earlier "CONTRADICTED" verdict was wrong.
+7. **Are the five strings Warden modules, settings keys, or SQLite opcode names?** (D11).
    One `strings`-offset-stride check against SQLite's opcode table would settle it.
 8. **Which `.eid` APIs are live on the current loader vs decoys?** (C3 lists 10; the OP's
-   import table lists 13 DLLs; §5.4 lists 41.) Loader-side survey not yet done.
-9. **Current `.eid` size, trampoline base, loader TLS count?** Re-fingerprint. Not measured.
+   import table lists 13 DLLs; §5.4 lists 41.) The loader's `.eid` is now located and
+   measured, but its contents are not read.
+9. ~~Current `.eid` size, trampoline base, loader TLS count?~~ - **`.eid` size: DONE,**
+   4,672 KB in `Overwatch_loader.dll` (F2b). The trampoline base and the loader's TLS
+   count are still not measured.
 10. **Is the Battle.net Identity file still 56 bytes?** Where are CPUID leaves read now? Is
     kdmapper still undetected? All single-source, all stale. **HWID family excluded by
-    instruction (F4)** — listed for completeness only, no work proposed.
+    instruction (F4)** - listed for completeness only, no work proposed.
 
 ---
 
-# PART H — Sources and access log
+# PART H - Sources and access log
+
 
 Retrieved **2026-10-15**. `unknowncheats.me` returns **HTTP 403 (Cloudflare)** to direct
 `WebFetch`. Playwright MCP unusable on this host (**no Chrome/Chromium**; `npx`/node absent).
@@ -1805,20 +2009,23 @@ in-image `.eid`-scale module.
 
 ---
 
-**Bottom line, after our own first live read-back (2026-10-15).**
+**Bottom line, after a live read-back of the real target (2026-10-21, `Overwatch.exe` PID 23184).**
 
-The OP's *architectural instinct* — no useful static imports, everything resolved at runtime
-through a loader-side obfuscated layer — **holds, and now has independent measurement behind
-it**: one import descriptor, 76 named exports, 3 TLS callbacks, a registered VEH handler, all
+The OP's *architectural instinct* - no useful static imports, everything resolved at runtime
+through a loader-side obfuscated layer - **holds, and now has independent measurement behind
+it**: one import descriptor, 76 named exports, 3 TLS callbacks, a registered VEH handler, and
+now the import *named* (`Overwatch_loader.dll!Ordinal 1`) and the load configuration *read*
+(`GuardFlags = 0x00000100`, load config 320 bytes - the OP's exact numbers). All of it was
 read back from a live `Overwatch.exe` by a query-only survey that did not need a debugger, an
 injection, or a single write to a game-backed page. The fabrication allegation (§B4) does not
 survive that.
 
 The OP's *explanations* mostly do not. A non-canonical value called a pointer; a
 first-chance field called debugger ordering; an x86 SafeSEH field called proof of VEH-only
-exception handling; CFG called 1.2M bytes of `0xCC` padding **on a build where CFG is
-provably off**; and five unclassified strings called a module system with no consumer. Its
-magnitudes are all build-pinned, and C2 proves the constants move within weeks.
+exception handling; CFG called 1.2M bytes of `0xCC` padding **on a build where the CFG
+declaration is exact but the CFG policy is off**; and five unclassified strings called a
+module system with no consumer. Its magnitudes are all build-pinned, and C2 proves the
+constants move within weeks.
 
 **And this file got one wrong too.** An earlier revision confidently deduced demand-paged
 `.text` decryption from the OP's own numbers, built a downstream argument on it, and called

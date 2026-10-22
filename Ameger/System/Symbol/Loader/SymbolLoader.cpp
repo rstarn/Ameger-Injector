@@ -271,7 +271,9 @@ bool SYMBOL_LOADER::VerifyExistingPdb(const GUID & guid, DWORD age)
 
 	auto * pPDBHeader = ReCa<PDBHeader7*>(pdb_raw);
 
-	if (memcmp(pPDBHeader->signature, "Microsoft C/C++ MSF 7.00\r\n\x1A""DS\0\0\0", sizeof(PDBHeader7::signature)))
+	// The comparison is written as "not zero" so that it reads as "the
+	// signature differs" rather than as a bare truth value.
+	if (memcmp(pPDBHeader->signature, "Microsoft C/C++ MSF 7.00\r\n\x1A""DS\0\0\0", sizeof(PDBHeader7::signature)) != 0)
 	{
 		delete[] pdb_raw;
 

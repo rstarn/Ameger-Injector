@@ -39,10 +39,19 @@
     <AmegerStringSeed Condition="'$(AmegerStringSeed)' == ''"></AmegerStringSeed>
 
     <AmegerStubSeed Condition="'$(AmegerStubSeed)' == ''">0</AmegerStubSeed>
+    <!-- The stub seed is handed to the assembler as a preprocessor define, and
+         the assembler has no hexadecimal literal syntax. A seed written in hex
+         therefore fails deep inside the stub with a "missing operator in
+         expression" error that says nothing about the cause, so it is
+         converted to decimal here instead. -->
+    <AmegerStubSeed Condition="'$(AmegerStubSeed)' != '' and $(AmegerStubSeed.StartsWith('0x'))">$([System.Convert]::ToInt64('$(AmegerStubSeed)', 16))</AmegerStubSeed>
+    <AmegerStubSeed Condition="'$(AmegerStubSeed)' != '' and $(AmegerStubSeed.StartsWith('0X'))">$([System.Convert]::ToInt64('$(AmegerStubSeed)', 16))</AmegerStubSeed>
+    <AmegerStubSeed Condition="'$(AmegerStubSeed)' != ''">$([System.Convert]::ToInt64('$(AmegerStubSeed)'))</AmegerStubSeed>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>AMEGER_MMAP_SENTINEL=$(AmegerMmapSentinel);AMEGER_STRING_SEED=$(AmegerStringSeed);AMEGER_KEEP_RUNTIME_LOGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>AMEGER_MMAP_SENTINEL=$(AmegerMmapSentinel);AMEGER_KEEP_RUNTIME_LOGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(AmegerStringSeed)' != ''">AMEGER_STRING_SEED=$(AmegerStringSeed);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level4</WarningLevel>
       <ConformanceMode>true</ConformanceMode>
       <DebugInformationFormat>None</DebugInformationFormat>
@@ -59,7 +68,16 @@
     </ClCompile>
     <MASM>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\Ameger\Execution\Stub\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>AMEGER_STUB_SEED=$(AmegerStubSeed)</PreprocessorDefinitions>
+      <!-- The stub seed reaches the assembler as a preprocessor define, and the
+           assembler has no hexadecimal literal syntax. A seed written in hex
+           would otherwise be taken for an external symbol and only fail much
+           later, inside the stub, with an error that says nothing about the
+           cause, so it is normalised to decimal here. The conversion lives in
+           the item metadata because a seed passed on the command line is a
+           global property, and a global property cannot be rewritten by the
+           project. -->
+      <PreprocessorDefinitions Condition="$(AmegerStubSeed.StartsWith('0x')) or $(AmegerStubSeed.StartsWith('0X'))">AMEGER_STUB_SEED=$([System.Convert]::ToInt64('$(AmegerStubSeed)', 16))</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="!($(AmegerStubSeed.StartsWith('0x')) or $(AmegerStubSeed.StartsWith('0X')))">AMEGER_STUB_SEED=$([System.Convert]::ToInt64('$(AmegerStubSeed)'))</PreprocessorDefinitions>
     </MASM>
     <Link>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -80,6 +98,7 @@
     <ClInclude Include="..\..\Ameger\Core\Utility\Binary\PEImage.h" />
     <ClInclude Include="..\..\Ameger\Core\Utility\Binary\DynamicAPI.h" />
     <ClInclude Include="..\..\Ameger\Core\Utility\Tools\Tools.h" />
+    <ClInclude Include="..\..\Ameger\Injection.h" />
     <ClInclude Include="..\..\Ameger\Injection\Injection.h" />
     <ClInclude Include="..\..\Ameger\NT\Windows11.h" />
     <ClInclude Include="..\..\Ameger\NT\NTFunctions.h" />

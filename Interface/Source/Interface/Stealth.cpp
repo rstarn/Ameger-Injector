@@ -88,7 +88,7 @@ namespace stealth
     bool CyclesToMilliseconds(ULONGLONG cycles, double & milliseconds)
     {
         const double hz = MeasureTscHz();
-        if (!hz || !cycles)
+        if (hz <= 0.0 || cycles == 0)
         {
             return false;
         }

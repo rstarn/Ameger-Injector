@@ -35,7 +35,7 @@ set "VERIFY_SCRIPT=%SCRIPTS_DIR%\VerifyEmbedMagic.ps1"
 set "VERIFY_SYSCALL_SCRIPT=%SCRIPTS_DIR%\VerifySyscallsLayer.ps1"
 set "NAMES_SCRIPT=%SCRIPTS_DIR%\ShuffleNaming.ps1"
 set "RENAME_SCRIPT=%SCRIPTS_DIR%\ShuffleExports.ps1"
-set "EXPORTS_SCRIPT=%SCRIPTS_DIR%\VerifyExports.ps1"
+set "EXPORTS_SCRIPT=%SCRIPTS_DIR%\VerifyExportsName.ps1"
 set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinPayload.ps1"
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
@@ -241,7 +241,7 @@ call :verify_syscall_payload
 if errorlevel 1 goto :verify_content_error
 call :verify_syscall_stealth
 if errorlevel 1 goto :verify_content_error
-call :verify_exports "%RUNTIME_DLL%"
+call :verify_export_names "%RUNTIME_DLL%"
 if errorlevel 1 goto :verify_content_error
 echo.
 echo   %C_GREEN%[+]%C_RESET% SyscallStub         = %C_GREEN%OK%C_RESET%
@@ -487,7 +487,7 @@ exit /b %ERRORLEVEL%
 
 REM Refuses to ship a runtime whose export table still carries a stable, greppable entrypoint
 REM name. ShuffleExports.ps1 renames them per build; this is the gate that proves it happened.
-:verify_exports
+:verify_export_names
 if not exist "%EXPORTS_SCRIPT%" exit /b 1
 where powershell.exe >nul 2>&1
 if errorlevel 1 exit /b 1

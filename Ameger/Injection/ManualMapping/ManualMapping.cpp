@@ -38,8 +38,15 @@ namespace
 	{
 		static_assert(sizeof(MAP_STATS) % sizeof(LONG) == 0, "MAP_STATS must be a whole number of LONGs");
 
+		// The block is published a word at a time so that a reader never sees
+		// a half-written value. The copy is taken through a value-initialised
+		// instance first, so every word that is published is a defined value
+		// rather than whatever the caller's object happened to hold.
+		MAP_STATS copy{};
+		copy = Src;
+
 		LONG * dst = ReCa<LONG *>(&g_LastMapStats);
-		const LONG * src = ReCa<const LONG *>(&Src);
+		const LONG * src = ReCa<const LONG *>(&copy);
 		for (size_t i = 0; i < sizeof(MAP_STATS) / sizeof(LONG); ++i)
 		{
 			InterlockedExchange(&dst[i], src[i]);
@@ -59,8 +66,15 @@ namespace
 	void StoreExecTelemetry(const VERIFIABLE_EXEC_TELEMETRY & Src)
 	{
 		static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0, "telemetry must be LONG-multiple");
+
+		// The block is published a word at a time so that a reader never sees
+		// a half-written value. The copy is taken through a value-initialised
+		// instance first, so every word that is published is a defined value.
+		VERIFIABLE_EXEC_TELEMETRY copy{};
+		copy = Src;
+
 		LONG * dst = ReCa<LONG *>(&g_LastExecTelemetry);
-		const LONG * src = ReCa<const LONG *>(&Src);
+		const LONG * src = ReCa<const LONG *>(&copy);
 		for (size_t i = 0; i < sizeof(VERIFIABLE_EXEC_TELEMETRY) / sizeof(LONG); ++i)
 		{
 			InterlockedExchange(&dst[i], src[i]);
@@ -1536,7 +1550,7 @@ DWORD __declspec(code_seg(".code$03")) __stdcall MMI_RelocateImage(MANUAL_MAPPIN
 	{
 		auto * pRelocDir = ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BASERELOC]);
 
-		if (!pRelocDir->Size || pRelocDir->Size < sizeof(IMAGE_BASE_RELOCATION))
+		if (pRelocDir->Size < sizeof(IMAGE_BASE_RELOCATION))
 		{
 			return INJ_MM_ERR_IMAGE_CANT_BE_RELOCATED;
 		}
