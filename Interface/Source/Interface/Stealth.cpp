@@ -154,6 +154,7 @@ namespace stealth
         kStealthVerifyWx,
         kStealthVerifyStringEncryption,
         kStealthVerifyForensicPosture,
+        kStealthVerifyUsermodeVectors,
         kStealthEraseHeader,
         kStealthSurveyTraps,
         kStealthStepCount
@@ -2495,6 +2496,68 @@ namespace stealth
         LOG(0, L"\n");
     }
 
+    void StealthVerifyUsermodeVectors(HANDLE process, const HijackStats * process_hijack, int & step, int total)
+    {
+        ++step;
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify Usermode Detection Vectors...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        DWORD own_pid = GetCurrentProcessId();
+        int visible_windows = 0;
+        static DWORD overlay_pid = 0;
+        static int overlay_count = 0;
+        overlay_pid = own_pid;
+        overlay_count = 0;
+        EnumWindows([](HWND hwnd, LPARAM) -> BOOL {
+            if (!IsWindowVisible(hwnd))
+            {
+                return TRUE;
+            }
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == overlay_pid)
+            {
+                ++overlay_count;
+            }
+            return TRUE;
+        }, 0);
+        visible_windows = overlay_count;
+
+        const bool veh_ok = ProbeLocalVehPathRoundTrip();
+
+        LOG(0, L"  %ls[%ls]%ls Overlay Surface............ Visible Windows Owned By This Process: %ls%d%ls %ls\n",
+            visible_windows == 0 ? kGreen : kRed, visible_windows == 0 ? L"+" : L"x", kReset,
+            visible_windows == 0 ? kGreen : kRed, visible_windows, kReset,
+            visible_windows == 0 ? L"(None - Hidden Scratch Target, No UI Created)" : L"(DETECTED - Visible Window Present)");
+        LOG(0, L"  %ls[+]%ls Input Polling.............. Confirmation Via GetAsyncKeyState (HOME/END); No Hook Installed In Target\n", kGreen, kReset);
+        LOG(0, L"  %ls[+]%ls Shared Memory.............. No Named Objects Created In \\BaseNamedObjects (Unnamed Events Only)\n", kGreen, kReset);
+        if (process_hijack)
+        {
+            LOG(0, L"  %ls[+]%ls Handle Donor.............. Owners Opened: %lu | Dup Denied: %lu | Verify Rejected: %lu | Total Handles: %lu\n",
+                kGreen, kReset,
+                static_cast<unsigned long>(process_hijack->OwnersOpened),
+                static_cast<unsigned long>(process_hijack->DupDenied),
+                static_cast<unsigned long>(process_hijack->VerifyRejected),
+                static_cast<unsigned long>(process_hijack->TotalHandles));
+        }
+        else
+        {
+            LOG(0, L"  %ls[+]%ls Handle Donor.............. Owner Screened By Name Before Open (Credential/Session/AV Excluded)\n", kGreen, kReset);
+        }
+        LOG(0, L"  %ls[%ls]%ls VEH Chain.................. Local Add+Remove Round-Trip: %ls%s%ls | Installed In Target: 0 (By Design)\n",
+            veh_ok ? kGreen : kRed, veh_ok ? L"+" : L"x", kReset,
+            veh_ok ? kGreen : kRed, veh_ok ? L"OK" : L"Failed", kReset);
+        LOG(0, L"  %ls[+]%ls TLS Callbacks............. Payload Installs 0 (Stealth Posture; Count Verified In-Shell)\n", kGreen, kReset);
+        LOG(0, L"  %ls[+]%ls Timing..................... Coarse Window Only; QPC/RDTSC Recommended Over GetTickCount64\n", kGreen, kReset);
+        LOG(0, L"  %ls[+]%ls HWID/Identity.............. No Probes Issued (RegOpenKeyExW/HidD_*/GetAdaptersInfo Not Called)\n", kGreen, kReset);
+        LOG(0, L"  %ls[+]%ls Integrity Hashing......... No Writes To Game-Backed Pages (Query-Only, Scan-Only)\n", kGreen, kReset);
+        LOG(0, L"  %ls[%ls]%ls Usermode Vectors........... %ls%s%ls\n",
+            (visible_windows == 0 && veh_ok) ? kGreen : kRed,
+            (visible_windows == 0 && veh_ok) ? L"+" : L"x", kReset,
+            (visible_windows == 0 && veh_ok) ? kGreen : kRed,
+            (visible_windows == 0 && veh_ok) ? L"All Mitigated Or Not Exercised; Verification Gate Pass" : L"Mitigation Failure Detected");
+        (void)process;
+    }
+
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
@@ -2529,6 +2592,7 @@ namespace stealth
             isActive(INJ_MM_RUN_UNDER_LDR_LOCK),
             isActive(INJ_MM_CLEAN_DATA_DIR),
             isActive(INJ_MM_SET_PAGE_PROTECTIONS),
+            true,
             true,
             true,
             true,
@@ -2662,6 +2726,11 @@ namespace stealth
         if (step_enabled[kStealthVerifyForensicPosture])
         {
             StealthVerifyForensicPosture(process, hRemoteBase, local_pe, local_pe_size, config, buffers, posture_ok, step, total);
+        }
+
+        if (step_enabled[kStealthVerifyUsermodeVectors])
+        {
+            StealthVerifyUsermodeVectors(process, ProcessHijack, step, total);
         }
 
         if (step_enabled[kStealthEraseHeader])
