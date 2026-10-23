@@ -226,28 +226,6 @@ namespace
         return got == 1 && buffer[0] == L'1';
     }
 
-    std::wstring GetAmegerWindowClass()
-    {
-        static const wchar_t kBakedWide[] = AMEGER_WIDEN(AMEGER_WINDOW_CLASS_STR);
-        size_t converted = 0;
-        for (size_t i = 0; kBakedWide[i] != L'\0' && i + 1 < 64; ++i)
-        {
-            const wchar_t c = kBakedWide[i];
-            const bool ok = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
-                (i > 0 && c >= L'0' && c <= L'9') || c == L'_';
-            if (!ok)
-            {
-                break;
-            }
-            converted = i + 1;
-        }
-        if (converted < 4)
-        {
-            return std::wstring(L"AmgWLayered");
-        }
-        return std::wstring(kBakedWide, converted);
-    }
-
     bool GetOwnExePath(std::wstring & out)
     {
         std::vector<wchar_t> buffer(static_cast<size_t>(MAX_PATH) * 2);
@@ -303,361 +281,6 @@ namespace
         }
         out += L".exe";
         return out.size() > 4;
-    }
-
-    struct LayeredDialogState
-    {
-        std::wstring title;
-        std::wstring message;
-        int mode = 0; 
-        int result = 0; 
-        int defaultResult = IDCANCEL;
-        HWND hwnd = nullptr;
-        HDC memDc = nullptr;
-        HBITMAP bitmap = nullptr;
-        void * bits = nullptr;
-        int width = 480;
-        int height = 210;
-        RECT primary = {};
-        RECT secondary = {};
-        bool hasSecondary = false;
-        UINT timeoutMs = 60000;
-    };
-
-    LRESULT CALLBACK LayeredDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-    {
-        auto * state = reinterpret_cast<LayeredDialogState *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-        switch (msg)
-        {
-        case WM_NCCREATE:
-        {
-            auto * create = reinterpret_cast<CREATESTRUCTW *>(lParam);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-            return TRUE;
-        }
-        case WM_LBUTTONDOWN:
-        {
-            if (!state || state->result != 0)
-            {
-                break;
-            }
-            const int x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
-            const int y = static_cast<int>(static_cast<short>(HIWORD(lParam)));
-            const POINT pt{ x, y };
-            if (PtInRect(&state->primary, pt))
-            {
-                state->result = (state->mode == 2) ? IDYES : IDOK;
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            if (state->hasSecondary && PtInRect(&state->secondary, pt))
-            {
-                state->result = (state->mode == 2) ? IDNO : IDCANCEL;
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            break;
-        }
-        case WM_TIMER:
-        {
-            if (!state || state->result != 0)
-            {
-                break;
-            }
-            if (wParam == 1)
-            {
-                state->result = state->defaultResult;
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            break;
-        }
-        case WM_CLOSE:
-        {
-            if (state && state->result == 0)
-            {
-                state->result = state->defaultResult;
-            }
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        case WM_DESTROY:
-        {
-            if (state)
-            {
-                KillTimer(hwnd, 1);
-                state->hwnd = nullptr;
-            }
-            PostQuitMessage(0);
-            return 0;
-        }
-        default:
-            break;
-        }
-        return DefWindowProcW(hwnd, msg, wParam, lParam);
-    }
-
-    bool EnsureLayeredClass(ATOM & atomOut)
-    {
-        static ATOM cached = 0;
-        if (cached)
-        {
-            atomOut = cached;
-            return true;
-        }
-        const std::wstring className = GetAmegerWindowClass();
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = LayeredDialogProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.lpszClassName = className.c_str();
-        const ATOM atom = RegisterClassExW(&wc);
-        if (atom)
-        {
-            cached = atom;
-            atomOut = cached;
-            return true;
-        }
-        if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
-        {
-            cached = 1;
-            atomOut = cached;
-            return true;
-        }
-        return false;
-    }
-
-    void PaintLayeredDialog(LayeredDialogState & state)
-    {
-        const HDC screen = GetDC(nullptr);
-        state.memDc = CreateCompatibleDC(screen);
-        ReleaseDC(nullptr, screen);
-        if (!state.memDc)
-        {
-            return;
-        }
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = state.width;
-        bi.bmiHeader.biHeight = -state.height;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        state.bitmap = CreateDIBSection(state.memDc, &bi, DIB_RGB_COLORS, &state.bits, nullptr, 0);
-        if (!state.bitmap || !state.bits)
-        {
-            if (state.bitmap)
-            {
-                DeleteObject(state.bitmap);
-                state.bitmap = nullptr;
-            }
-            DeleteDC(state.memDc);
-            state.memDc = nullptr;
-            return;
-        }
-        SelectObject(state.memDc, state.bitmap);
-
-        HBRUSH back = CreateSolidBrush(RGB(16, 19, 28));
-        RECT full{ 0, 0, state.width, state.height };
-        FillRect(state.memDc, &full, back);
-        DeleteObject(back);
-
-        HPEN border = CreatePen(PS_SOLID, 1, RGB(62, 68, 90));
-        HGDIOBJ oldPen = SelectObject(state.memDc, border);
-        HGDIOBJ oldBrush = SelectObject(state.memDc, GetStockObject(NULL_BRUSH));
-        Rectangle(state.memDc, 0, 0, state.width, state.height);
-        SelectObject(state.memDc, oldBrush);
-        SelectObject(state.memDc, oldPen);
-        DeleteObject(border);
-
-        SetBkMode(state.memDc, TRANSPARENT);
-        SetTextColor(state.memDc, RGB(235, 238, 245));
-        HFONT titleFont = CreateFontW(17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HGDIOBJ oldFont = nullptr;
-        if (titleFont)
-        {
-            oldFont = SelectObject(state.memDc, titleFont);
-        }
-        RECT titleRc{ 18, 14, state.width - 18, 42 };
-        DrawTextW(state.memDc, state.title.c_str(), -1, &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        if (titleFont)
-        {
-            SelectObject(state.memDc, oldFont);
-            DeleteObject(titleFont);
-        }
-
-        HFONT bodyFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HGDIOBJ oldBodyFont = nullptr;
-        if (bodyFont)
-        {
-            oldBodyFont = SelectObject(state.memDc, bodyFont);
-        }
-        SetTextColor(state.memDc, RGB(200, 206, 220));
-        RECT bodyRc{ 18, 44, state.width - 18, state.height - 70 };
-        DrawTextW(state.memDc, state.message.c_str(), -1, &bodyRc, DT_LEFT | DT_WORDBREAK);
-        if (bodyFont)
-        {
-            SelectObject(state.memDc, oldBodyFont);
-            DeleteObject(bodyFont);
-        }
-
-        const int btnW = 110;
-        const int btnH = 30;
-        const int margin = 18;
-        const int bottom = state.height - btnH - 14;
-        if (state.mode == 0)
-        {
-            state.primary = RECT{ state.width - btnW - margin, bottom, state.width - margin, bottom + btnH };
-            state.hasSecondary = false;
-        }
-        else
-        {
-            state.secondary = RECT{ state.width - btnW - margin, bottom, state.width - margin, bottom + btnH };
-            state.primary = RECT{ state.secondary.left - btnW - 10, bottom, state.secondary.left - 10, bottom + btnH };
-            state.hasSecondary = true;
-        }
-
-        auto paintButton = [&](const RECT & rc, const wchar_t * text) {
-            HBRUSH fill = CreateSolidBrush(RGB(48, 54, 76));
-            FillRect(state.memDc, &rc, fill);
-            DeleteObject(fill);
-            HPEN edge = CreatePen(PS_SOLID, 1, RGB(92, 100, 130));
-            HGDIOBJ p0 = SelectObject(state.memDc, edge);
-            HGDIOBJ b0 = SelectObject(state.memDc, GetStockObject(NULL_BRUSH));
-            Rectangle(state.memDc, rc.left, rc.top, rc.right, rc.bottom);
-            SelectObject(state.memDc, b0);
-            SelectObject(state.memDc, p0);
-            DeleteObject(edge);
-            SetTextColor(state.memDc, RGB(240, 243, 250));
-            RECT textRc = rc;
-            DrawTextW(state.memDc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        };
-
-        if (state.mode == 2)
-        {
-            paintButton(state.primary, L"Yes");
-            paintButton(state.secondary, L"No");
-        }
-        else if (state.mode == 1)
-        {
-            paintButton(state.primary, L"OK");
-            paintButton(state.secondary, L"Cancel");
-        }
-        else
-        {
-            paintButton(state.primary, L"OK");
-        }
-
-        const int screenW = GetSystemMetrics(SM_CXSCREEN);
-        const int screenH = GetSystemMetrics(SM_CYSCREEN);
-        const int x = screenW > state.width ? (screenW - state.width) / 2 : 0;
-        const int y = screenH > state.height ? (screenH - state.height) / 2 : 0;
-
-        POINT dst{ x, y };
-        SIZE size{ state.width, state.height };
-        POINT src{ 0, 0 };
-        BLENDFUNCTION blend{};
-        blend.BlendOp = AC_SRC_OVER;
-        blend.SourceConstantAlpha = 238;
-        blend.AlphaFormat = 0;
-        UpdateLayeredWindow(state.hwnd, nullptr, &dst, &size, state.memDc, &src,
-            RGB(0, 0, 0), &blend, ULW_ALPHA);
-    }
-
-    int ShowLayeredModal(const std::wstring & title, const std::wstring & message,
-        int mode, int defaultResult, UINT timeoutMs)
-    {
-        ATOM atom = 0;
-        if (!EnsureLayeredClass(atom))
-        {
-            return defaultResult;
-        }
-        const std::wstring className = GetAmegerWindowClass();
-        LayeredDialogState state;
-        state.title = title;
-        state.message = message;
-        state.mode = mode;
-        state.defaultResult = defaultResult;
-        state.timeoutMs = timeoutMs ? timeoutMs : 60000;
-
-        const HINSTANCE inst = GetModuleHandleW(nullptr);
-        HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            className.c_str(), title.c_str(), WS_POPUP, 0, 0,
-            state.width, state.height, nullptr, nullptr, inst, &state);
-        if (!hwnd)
-        {
-            return defaultResult;
-        }
-        state.hwnd = hwnd;
-        PaintLayeredDialog(state);
-        if (!state.memDc)
-        {
-            DestroyWindow(hwnd);
-            return defaultResult;
-        }
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        SetForegroundWindow(hwnd);
-        if (state.timeoutMs)
-        {
-            SetTimer(hwnd, 1, state.timeoutMs, nullptr);
-        }
-
-        MSG msg{};
-        while (state.result == 0)
-        {
-            const BOOL got = GetMessageW(&msg, nullptr, 0, 0);
-            if (got <= 0)
-            {
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-
-        if (state.memDc)
-        {
-            DeleteDC(state.memDc);
-            state.memDc = nullptr;
-        }
-        if (state.bitmap)
-        {
-            DeleteObject(state.bitmap);
-            state.bitmap = nullptr;
-        }
-        if (state.hwnd)
-        {
-            DestroyWindow(state.hwnd);
-            state.hwnd = nullptr;
-        }
-        MSG drain{};
-        while (PeekMessageW(&drain, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE))
-        {
-        }
-        return state.result != 0 ? state.result : defaultResult;
-    }
-
-    bool LayeredConfirm(const std::wstring & message)
-    {
-        const int rc = ShowLayeredModal(L"Confirm", message, 1, IDCANCEL, 60000);
-        return rc == IDOK;
-    }
-
-    bool LayeredYesNo(const std::wstring & message, bool defaultValue)
-    {
-        const int rc = ShowLayeredModal(L"Confirm", message, 2,
-            defaultValue ? IDYES : IDNO, 60000);
-        return rc == IDYES;
-    }
-
-    void LayeredNotify(const std::wstring & title, const std::wstring & message, UINT timeoutMs)
-    {
-        (void)ShowLayeredModal(title, message, 0, IDOK, timeoutMs ? timeoutMs : 4000);
     }
 
     bool HasMarker(const std::wstring & commandLine, const wchar_t * marker)
@@ -1234,6 +857,28 @@ namespace
         }
     }
 
+    void StealthBeep(DWORD frequency, DWORD duration)
+    {
+        using BeepFn = BOOL (WINAPI *)(DWORD, DWORD);
+        static BeepFn beep = nullptr;
+        static bool resolved = false;
+        if (!resolved)
+        {
+            resolved = true;
+            auto mod_name = XOR_STR_W(L"kernel32.dll");
+            HMODULE mod = GetModuleHandleW(mod_name.get());
+            if (mod)
+            {
+                auto api_name = XOR_STR_A("Beep");
+                beep = ReCa<BeepFn>(GetProcAddress(mod, api_name.get()));
+            }
+        }
+        if (beep)
+        {
+            beep(frequency, duration);
+        }
+    }
+
     [[noreturn]] void TerminateInterface(int code)
     {
         fflush(stdout);
@@ -1647,7 +1292,8 @@ namespace
                 return true;
             }
             std::wstring message = prompt ? std::wstring(prompt) : std::wstring(L"Continue?");
-            value = LayeredYesNo(message, default_value);
+            // Console fallback removed with the layered dialog; default applies.
+            value = default_value;
             return true;
         }
         for (;;)
@@ -1704,34 +1350,50 @@ namespace
         {
             return ConfirmationResult::Proceed;
         }
-        HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-        DWORD console_mode = 0;
-        const bool hasConsole = input && input != INVALID_HANDLE_VALUE &&
-            GetConsoleMode(input, &console_mode) != FALSE;
-        if (!hasConsole)
+        while ((GetAsyncKeyState(VK_HOME) & 0x8000) || (GetAsyncKeyState(VK_END) & 0x8000))
         {
-            const bool proceed = LayeredConfirm(
-                L"Begin Load? Select OK To Proceed Or Cancel To Quit.");
-            return proceed ? ConfirmationResult::Proceed : ConfirmationResult::Cancelled;
+            Sleep(10);
         }
 
-        LOG(0, L"%ls[+]%ls Press Enter To Begin, Or Q To Quit: \n", kGreen, kReset);
+        LOG(0, L"%ls[+]%ls Press HOME To Inject, END To Cancel.\n", kGreen, kReset);
         fflush(stdout);
 
-        std::wstring entered;
-        if (!std::getline(std::wcin, entered))
+        bool home_was_down = false;
+        bool end_was_down = false;
+        for (;;)
         {
+            const bool home_down = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
+            const bool end_down = (GetAsyncKeyState(VK_END) & 0x8000) != 0;
 
-            PrintError(L"Console Input Ended Before Confirmation; Refusing To Load.");
-            return ConfirmationResult::Unavailable;
-        }
+            if (home_down && !home_was_down)
+            {
+                StealthBeep(1600, 70);
+            }
+            if (end_down && !end_was_down)
+            {
+                StealthBeep(320, 120);
+            }
+            home_was_down = home_down;
+            end_was_down = end_down;
 
-        const std::wstring answer = TrimText(entered);
-        if (answer == L"q" || answer == L"Q")
-        {
-            return ConfirmationResult::Cancelled;
+            if (home_down)
+            {
+                while (GetAsyncKeyState(VK_HOME) & 0x8000)
+                {
+                    Sleep(10);
+                }
+                return ConfirmationResult::Proceed;
+            }
+            if (end_down)
+            {
+                while (GetAsyncKeyState(VK_END) & 0x8000)
+                {
+                    Sleep(10);
+                }
+                return ConfirmationResult::Cancelled;
+            }
+            Sleep(25);
         }
-        return ConfirmationResult::Proceed;
     }
 
     std::wstring ExecutableDirectory()
@@ -5412,7 +5074,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         const std::wstring message = g_TestMode
             ? L"Test Run Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L"."
             : L"Operation Failed After 3 Attempts. The Full Log Is In " + g_ResultLogName + L".";
-        LayeredNotify(g_TestMode ? L"Launcher (Test Mode)" : L"Launcher", message.c_str(), 5000);
+        LOG(0, L"%ls\n", message.c_str());
         result = 1;
     }
 
