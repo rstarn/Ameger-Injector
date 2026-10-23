@@ -453,9 +453,18 @@ namespace stealth
                     LOG(0, L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
                             L"Each Is VAD-Visible With No Loader Entry\n", kYellow, kReset, kYellow, rx_private, kReset);
                 }
-                LOG(0, L"      %ls[+]%ls VAD Anomaly Check: Unbacked RWX = 0 | Staging Regions Scrubbed/Released | "
-                        L"Remaining Private-RX = %ls%lu%s (Mapped Image Only - Inherent To Manual Map)\n",
-                        kGreen, kReset, rx_private ? kYellow : kGreen, rx_private, kReset);
+                // rx_private is a process-wide census over the whole VAD, not a
+                // measurement of this load alone, so the count is presented as
+                // process-wide and the image's own share is stated separately.
+                // Staging teardown is a mapper property that is not re-checked
+                // here, so it is called out as a design assertion.
+                LOG(0, L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | Process-Wide Private-RX = %ls%lu%s "
+                        L"(This Load Contributes Up To %lu RX Section Region(s) - Inherent To Manual Map)\n",
+                        kGreen, kReset, wx_rwx ? kYellow : kGreen, wx_rwx, kReset,
+                        rx_private ? kYellow : kGreen, rx_private, kReset,
+                        static_cast<unsigned long>(wx_exec_sections));
+                LOG(0, L"      %ls[*]%ls Staging Regions Scrubbed/Released Is A Mapper Property, Not Re-Checked Here.\n",
+                        kDim, kReset);
             }
         }
         else if (!wx_queryable)
@@ -485,7 +494,6 @@ namespace stealth
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify String Encryption...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
         auto m0 = XOR_STR_A("msdl.microsoft.com/download/symbols");
-        auto m1 = XOR_STR_A("NtUserMsgWaitForMultipleObjectsEx");
         auto m2 = XOR_STR_A("LdrpLoadDllInternal");
         auto m3 = XOR_STR_A("_RTL_INVERTED_FUNCTION_TABLE");
         auto m4 = XOR_STR_A("_INVERTED_FUNCTION_TABLE_USER_MODE");
@@ -499,7 +507,6 @@ namespace stealth
         auto m12 = XOR_STR_A("_KWAIT_REASON");
         auto m13 = XOR_STR_A("_KUSER_SHARED_DATA");
         auto m14 = XOR_STR_A("SameTebFlags");
-        auto m15 = XOR_STR_A("ProcessEnvironmentBlock");
         auto m16 = XOR_STR_A("LastErrorValue");
         auto m17 = XOR_STR_A("OSBuildNumber");
         auto m18 = XOR_STR_A("FullDllName");
@@ -515,17 +522,16 @@ namespace stealth
         auto m28 = XOR_STR_A("HandleAcq");
         auto m29 = XOR_STR_A("SymbolLoader");
         auto m30 = XOR_STR_A("SymbolParser");
-        auto m31 = XOR_STR_A("DownloadManager");
         auto m32 = XOR_STR_A("TLS_ENTRY");
         auto m33 = XOR_STR_A("PATH_SEARCH_CONTEXT");
         const char * markers[] =
         {
-            m0.get(), m1.get(), m2.get(), m3.get(), m4.get(), m5.get(),
+            m0.get(), m2.get(), m3.get(), m4.get(), m5.get(),
             m6.get(), m7.get(), m8.get(), m9.get(), m10.get(), m11.get(),
-            m12.get(), m13.get(), m14.get(), m15.get(), m16.get(), m17.get(),
+            m12.get(), m13.get(), m14.get(), m16.get(), m17.get(),
             m18.get(), m19.get(), m20.get(), m21.get(), m22.get(), m23.get(),
             m24.get(), m25.get(), m26.get(), m27.get(), m28.get(),
-            m29.get(), m30.get(), m31.get(), m32.get(), m33.get(),
+            m29.get(), m30.get(), m32.get(), m33.get(),
         };
         const size_t marker_count = sizeof(markers) / sizeof(markers[0]);
         static_assert(sizeof(markers) / sizeof(markers[0]) == kStringMarkerCount,
@@ -1415,6 +1421,12 @@ namespace stealth
             {
                 LOG(0, L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
+            if (exec->TlsCallbacksConfigured && !exec->TlsLoaderEntryUnlinked)
+            {
+                LOG(0, L"  %ls[!]%ls The Loader TLS Entry For The Mapped Module Was Not Found In LdrpTlsList; "
+                        L"The Fabricated Nodes Were Released, But Loader Bookkeeping May Remain.\n",
+                    kYellow, kReset);
+            }
         }
         else if (tls_callbacks > 0)
             LOG(0, L"  %ls[!]%ls %ls%d%ls TLS Callback(s) Declared; In-Shell Telemetry Unavailable (Advisory Only).\n",
@@ -1568,10 +1580,17 @@ namespace stealth
                 kGreen, satisfied, populated, kReset,
                 populated == 1 ? L"y" : L"ies", kReset,
                 all_cleaned ? L"" : L" - unreported: ", missed);
-            if (MapStats->Verified)
+            if (MapStats->Verified && MapStats->VerifiedCachedCopy)
             {
-                LOG(0, L"  %ls[+]%ls Payload-Side Re-Read After Header Cloak: Residual Mask "
-                        L"0x%08X Across All %zu Directories (Mapper-Side Snapshot).\n",
+                LOG(0, L"  %ls[*]%ls Residual Mask 0x%08X Across All %zu Directories Was Checked "
+                        L"Against The Mapper's Cached Copy: The In-Image Header Was Already Wiped "
+                        L"(INJ_ERASE_HEADER), So This Is Cache Consistency, Not An Independent Re-Read.\n",
+                    kDim, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
+            }
+            else if (MapStats->Verified)
+            {
+                LOG(0, L"  %ls[+]%ls Mapper-Side Re-Read Of The In-Image Directory Table: Residual Mask "
+                        L"0x%08X Across All %zu Directories.\n",
                     kGreen, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
             }
             else if (MapStats->ResidualMask)
@@ -2528,12 +2547,18 @@ namespace stealth
             visible_windows == 0 ? kGreen : kRed, visible_windows == 0 ? L"+" : L"x", kReset,
             visible_windows == 0 ? kGreen : kRed, visible_windows, kReset,
             visible_windows == 0 ? L"(None - Hidden Scratch Target, No UI Created)" : L"(DETECTED - Visible Window Present)");
-        LOG(0, L"  %ls[+]%ls Input Polling.............. Confirmation Via GetAsyncKeyState (HOME/END); No Hook Installed In Target\n", kGreen, kReset);
-        LOG(0, L"  %ls[+]%ls Shared Memory.............. No Named Objects Created In \\BaseNamedObjects (Unnamed Events Only)\n", kGreen, kReset);
+        // The rows below are design statements, not measurements. They are
+        // printed dim and marked [*] so they cannot be read as passed checks in
+        // the same visual language as the two vectors that are actually probed.
+        // The Handle Donor row is only an assertion when no handle telemetry is
+        // available, so the tally below must follow the row that was printed.
+        int design_assertions = 6;
+        LOG(0, L"  %ls[*]%ls Input Polling.............. Not Measured (Design Assertion): GetAsyncKeyState (HOME/END), No Target Hook\n", kDim, kReset);
+        LOG(0, L"  %ls[*]%ls Shared Memory.............. Not Measured (Design Assertion): Unnamed Events Only, No Named Objects\n", kDim, kReset);
         if (process_hijack)
         {
-            LOG(0, L"  %ls[+]%ls Handle Donor.............. Owners Opened: %lu | Dup Denied: %lu | Verify Rejected: %lu | Total Handles: %lu\n",
-                kGreen, kReset,
+            LOG(0, L"  %ls[*]%ls Handle Donor.............. Observed Telemetry: Owners Opened: %lu | Dup Denied: %lu | Verify Rejected: %lu | Total Handles: %lu\n",
+                kDim, kReset,
                 static_cast<unsigned long>(process_hijack->OwnersOpened),
                 static_cast<unsigned long>(process_hijack->DupDenied),
                 static_cast<unsigned long>(process_hijack->VerifyRejected),
@@ -2541,20 +2566,28 @@ namespace stealth
         }
         else
         {
-            LOG(0, L"  %ls[+]%ls Handle Donor.............. Owner Screened By Name Before Open (Credential/Session/AV Excluded)\n", kGreen, kReset);
+            LOG(0, L"  %ls[*]%ls Handle Donor.............. Not Measured (Design Assertion): Owner Screened By Name Before Open\n", kDim, kReset);
+            ++design_assertions;
         }
         LOG(0, L"  %ls[%ls]%ls VEH Chain.................. Local Add+Remove Round-Trip: %ls%s%ls | Installed In Target: 0 (By Design)\n",
             veh_ok ? kGreen : kRed, veh_ok ? L"+" : L"x", kReset,
             veh_ok ? kGreen : kRed, veh_ok ? L"OK" : L"Failed", kReset);
-        LOG(0, L"  %ls[+]%ls TLS Callbacks............. Payload Installs 0 (Stealth Posture; Count Verified In-Shell)\n", kGreen, kReset);
-        LOG(0, L"  %ls[+]%ls Timing..................... Coarse Window Only; QPC/RDTSC Recommended Over GetTickCount64\n", kGreen, kReset);
-        LOG(0, L"  %ls[+]%ls HWID/Identity.............. No Probes Issued (RegOpenKeyExW/HidD_*/GetAdaptersInfo Not Called)\n", kGreen, kReset);
-        LOG(0, L"  %ls[+]%ls Integrity Hashing......... No Writes To Game-Backed Pages (Query-Only, Scan-Only)\n", kGreen, kReset);
-        LOG(0, L"  %ls[%ls]%ls Usermode Vectors........... %ls%s%ls\n",
-            (visible_windows == 0 && veh_ok) ? kGreen : kRed,
-            (visible_windows == 0 && veh_ok) ? L"+" : L"x", kReset,
-            (visible_windows == 0 && veh_ok) ? kGreen : kRed,
-            (visible_windows == 0 && veh_ok) ? L"All Mitigated Or Not Exercised; Verification Gate Pass" : L"Mitigation Failure Detected");
+        LOG(0, L"  %ls[*]%ls TLS Callbacks............. Not Measured Here (Design Assertion): Payload Installs 0; Actual Count Is In-Shell Telemetry\n", kDim, kReset);
+        LOG(0, L"  %ls[*]%ls Timing..................... Not Measured (Design Assertion): Coarse GetTickCount64 Window Only\n", kDim, kReset);
+        LOG(0, L"  %ls[*]%ls HWID/Identity.............. Not Measured (Design Assertion): No Probe APIs Called By The Launcher\n", kDim, kReset);
+        LOG(0, L"  %ls[*]%ls Integrity Hashing......... Not Measured (Design Assertion): Query-Only And Scan-Only, No Writes To Game Pages\n", kDim, kReset);
+        const bool measured_ok = (visible_windows == 0 && veh_ok);
+        if (measured_ok)
+        {
+            LOG(0, L"  %ls[*]%ls Usermode Vectors........... 2 Vectors Measured And OK (Overlay, VEH); "
+                    L"%d Design Assertions Not Exercised - Not A Pass\n",
+                kDim, kReset, design_assertions);
+        }
+        else
+        {
+            LOG(0, L"  %ls[x]%ls Usermode Vectors........... Measured Vector Failure: Overlay Or VEH Check Failed\n",
+                kRed, kReset);
+        }
         (void)process;
     }
 

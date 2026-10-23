@@ -11,16 +11,12 @@ namespace
 #define AMEGER_CONFIG_MAGIC_STR "SYSCFG01"
 #endif
 
-#ifndef AMEGER_WINDOW_CLASS_STR
-#define AMEGER_WINDOW_CLASS_STR "AmgWLayered"
-#endif
-
-#define AMEGER_WIDEN2(x) L##x
-#define AMEGER_WIDEN(x) AMEGER_WIDEN2(x)
-
-
     constexpr int kMaxLaunchAttempts = 3;
     constexpr int kResultRetryable = 3;
+    // The payload mapped successfully but the verification gate did not run or
+    // did not pass. This is not a load failure and must never be retried: a
+    // retry would inject a second copy into the same target.
+    constexpr int kResultMappedUnverified = 4;
     constexpr wchar_t kChildMarker[] = L"--ameger-child";
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
     constexpr wchar_t kParentPathMarker[] = L"--ameger-parent-path=";
@@ -1286,13 +1282,6 @@ namespace
             GetConsoleMode(input, &console_mode) != FALSE;
         if (!hasConsole)
         {
-            if (GetRetryIndex() > 0)
-            {
-                value = default_value;
-                return true;
-            }
-            std::wstring message = prompt ? std::wstring(prompt) : std::wstring(L"Continue?");
-            // Console fallback removed with the layered dialog; default applies.
             value = default_value;
             return true;
         }
@@ -3632,8 +3621,8 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             LOG(0, L"Reason: The OS Gate Rejected The Host - Windows 11 (Build 22000+) Is Required\n");
             LOG(0, L"And This Build Is Outside The Supported Families (21H2 22000+, 22H2/23H2 22621+,\n");
-            LOG(0, L"24H2 26100+, 25H2 26200+, 26H2 26300+; Newer Builds Are Forward-Mapped). This Is An\n");
-            LOG(0, L"Environment Issue, Not A Mapping Or Symbol Failure. Update Windows.\n");
+            LOG(0, L"24H2 26100+, 25H2 26200+, 26H2 26300-26999; Builds Above The Ceiling Are Refused).\n");
+            LOG(0, L"This Is An Environment Issue, Not A Mapping Or Symbol Failure. Update Windows.\n");
         }
         else if (code == INJ_ERR_GET_MODULE_HANDLE_FAIL)
         {
@@ -3701,7 +3690,8 @@ DWORD BuildFlags(const WizardConfig & config)
                 LOG(0,  L"%lsUnsupported Windows Version (Code 0x%08X).%ls\n",
                     kRed, init_state, kReset);
             }
-            PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+), 26H2 (26300+).");
+            PrintError(L"Supported: Windows 11 21H2 (22000), 22H2/23H2 (22621-22631), 24H2 (26100+), 25H2 (26200+), 26H2 (26300-26999).");
+            PrintError(L"Builds Above 26999 Have No Validated Loader Layout And Are Refused.");
             PrintError(L"Windows 10 And Older Builds Are Not Supported By This x64/Win11-Only Build.");
             PrintError(L"Failed To Initialize The Runtime (OS Gate, Not A Symbol Download Failure).");
             return;
@@ -4422,8 +4412,8 @@ DWORD BuildFlags(const WizardConfig & config)
         if (runtime.get_last_map_stats)
         {
             runtime.get_last_map_stats(&MapStats);
-            Trace::Note(L"Map Stats: Cleaned = 0x%08X | Residual = 0x%08X | Verified = %u",
-                MapStats.CleanedMask, MapStats.ResidualMask, MapStats.Verified);
+            Trace::Note(L"Map Stats: Cleaned = 0x%08X | Residual = 0x%08X | Verified = %u | CachedCopy = %u",
+                MapStats.CleanedMask, MapStats.ResidualMask, MapStats.Verified, MapStats.VerifiedCachedCopy);
         }
 
         THREAD_EXEC_STATS ThreadExec{};
@@ -4654,9 +4644,11 @@ DWORD BuildFlags(const WizardConfig & config)
                 LOG(0, L"    Scannable, And Shipping It Defeats The Point Of The String Tiers.\n");
                 LOG(0, L"    Fix The Leak And Rebuild Before Using This Build.\n");
             }
+            LOG(0, L"    Exit Code %d Means Mapped-But-Unverified, Not A Load Failure: The Payload\n", kResultMappedUnverified);
+            LOG(0, L"    Is Running In The Target; Only The Proof Of Its Posture Is Missing.\n");
             Trace::Summary(had_target ? L"Failed At Verification Gate" : L"Verification Not Performed");
             PauseBeforeExit();
-            return 1;
+            return kResultMappedUnverified;
         }
         if (wx_violated)
         {
@@ -4669,8 +4661,12 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
             const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
+            // A re-read of the mapper's cached copy is not an independent check
+            // of the target's memory: under INJ_ERASE_HEADER the in-image
+            // directory table has already been wiped.
+            const bool map_stats_cached = MapStats.Verified != 0 && MapStats.VerifiedCachedCopy != 0;
             const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
-                MapStats.Verified != 0;
+                MapStats.Verified != 0 && !MapStats.VerifiedCachedCopy;
             stealth::VehFirstChanceSurvey veh_coverage{};
             const bool veh_checked = veh_coverage_read;
             if (veh_checked)
@@ -4688,7 +4684,9 @@ DWORD BuildFlags(const WizardConfig & config)
             const Coverage coverage[] =
             {
                 { L"In-Shell Execution Telemetry", exec_telemetry_read, L"RDTSC Timing, DllMain Result, Loader-Lock, TLS" },
-                { L"Data-Directory Wipe Re-Read",    map_stats_read, L"Mapper-Side Re-Read After Header Cloak" },
+                { L"Data-Directory Wipe Re-Read",    map_stats_read,
+                    map_stats_cached ? L"Cache Consistency Only: In-Image Header Already Wiped"
+                                     : L"Mapper-Side Re-Read Of The In-Image Table" },
                 { L"Cross-Process Header Re-Read",   false, L"Impossible: Mapper Leaves The Header PAGE_NOACCESS" },
                 { L"Page Protections / W^X",         !wx_violated, L"VirtualQueryEx Walk Of The Mapped Image" },
                 { L"Forensic Posture (Runtime DLL)", stealth_gate_ok, L"Exports, Section Names, Debug Directory" },
@@ -4794,9 +4792,11 @@ DWORD BuildFlags(const WizardConfig & config)
             ThreadExec.FpMode ? L"XSAVE" : L"FXSAVE");
 
         row(L"Data Directories Wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
-        LOG(0, L"Cleaned Mask = 0x%08X | Residual = 0x%08X | Mapper Re-Read %s\n",
+        LOG(0, L"Cleaned Mask = 0x%08X | Residual = 0x%08X | %s\n",
             (unsigned)MapStats.CleanedMask, (unsigned)MapStats.ResidualMask,
-            MapStats.Verified ? L"Verified" : L"Not Verified");
+            MapStats.VerifiedCachedCopy ? L"Cached Copy Only (Header Already Wiped; Not Independent)"
+                : MapStats.Verified ? L"Re-Read From The In-Image Header"
+                : L"Not Verified");
 
         row(L"W^X....................... ", !wx_violated);
         LOG(0, L"RWX Regions Found: %d (%s)\n", wx_violated ? 1 : 0,

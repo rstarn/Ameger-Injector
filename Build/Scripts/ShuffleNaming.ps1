@@ -34,7 +34,6 @@ try {
     do { $exe = New-DeployedName $rng } while ($exe -eq $payload -or $exe -eq $runtime)
     do { $dildir = New-DeployedName $rng } while ($dildir -eq $payload -or $dildir -eq $runtime -or $dildir -eq $exe)
     do { $config = New-DeployedName $rng } while ($config -eq $payload -or $config -eq $runtime -or $config -eq $exe -or $config -eq $dildir)
-    do { $wndclass = New-DeployedName $rng } while ($wndclass -eq $payload -or $wndclass -eq $runtime -or $wndclass -eq $exe -or $wndclass -eq $dildir -or $wndclass -eq $config)
     $mb = New-Object byte[] 8
     $rng.GetBytes($mb)
     $mc = New-Object 'char[]' 8
@@ -51,7 +50,7 @@ if ($magic.Length -ne 8 -or $magic -notmatch '^[A-Za-z][A-Za-z0-9]{7}$') {
     exit 1
 }
 
-foreach ($n in @($payload, $runtime, $exe, $dildir, $config, $magic, $wndclass)) {
+foreach ($n in @($payload, $runtime, $exe, $dildir, $config, $magic)) {
     if ($n.Length -lt 8 -or $n.Length -gt 12) {
         Write-Host "  [x] Error: Generated Name Has Invalid Length"
         exit 1
@@ -61,7 +60,7 @@ foreach ($n in @($payload, $runtime, $exe, $dildir, $config, $magic, $wndclass))
         exit 1
     }
 }
-$all = @($payload, $runtime, $exe, $dildir, $config, $magic, $wndclass)
+$all = @($payload, $runtime, $exe, $dildir, $config, $magic)
 for ($i = 0; $i -lt $all.Count; $i++) {
     for ($j = $i + 1; $j -lt $all.Count; $j++) {
         if ($all[$i] -eq $all[$j]) {
@@ -77,5 +76,4 @@ Write-Output ("EXE_NAME=" + $exe)
 Write-Output ("DLLDIR_NAME=" + $dildir)
 Write-Output ("CONFIG_NAME=" + $config)
 Write-Output ("CONFIG_MAGIC=" + $magic)
-Write-Output ("WINDOW_CLASS=" + $wndclass)
 exit 0

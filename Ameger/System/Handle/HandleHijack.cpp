@@ -655,6 +655,33 @@ namespace
 		Detail.Success = 0;
 		Detail.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 
+		// Probe method uses the documented encoding (0 = None, 1 = Reserve,
+		// 2 = Protect, 3 = Roundtrip). A thread scan only verifies query rights,
+		// so it reports None; a process scan reports the policy that
+		// ProbeVmOperation will actually apply.
+		if (ThreadScan)
+		{
+			Detail.ProbeMethod = 0;
+		}
+		else
+		{
+			switch (GetVmProbePolicy())
+			{
+			case VM_PROBE_POLICY::Protect:
+				Detail.ProbeMethod = 2;
+				break;
+
+			case VM_PROBE_POLICY::None:
+				Detail.ProbeMethod = 0;
+				break;
+
+			case VM_PROBE_POLICY::Reserve:
+			default:
+				Detail.ProbeMethod = 1;
+				break;
+			}
+		}
+
 		std::vector<std::pair<DWORD, UniqueHandle>> Owners;
 
 		// The image names are collected once, before anything is opened. A
@@ -936,7 +963,6 @@ namespace
 					Detail.Success = 1;
 					Detail.FailCode = INJ_ERR_SUCCESS;
 					Detail.SnapshotBytes = static_cast<DWORD>(Snapshot.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snapshot.Buffer.size());
-					Detail.ProbeMethod = 1;
 					LOG(1, "[Handle] [+] Donor Handle Acquired: Donor PID = %u | Donor Handle = 0x%08X\n", FoundDonorPid, FoundDonorHandle);
 					LOG(1, "[Handle] [+] Duplicated Handle: Local = 0x%08X | Granted = 0x%08X\n", FoundNewHandle, FoundGranted);
 					LOG(1, "[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu | Blocklisted = %llu\n",
@@ -1186,7 +1212,7 @@ void RecordHijackOutcome(const HijackStats & Stats, bool IsThread)
 
 void __stdcall GetLastHijackStats(HijackStats * ProcessOut, HijackStats * ThreadOut)
 {
-#pragma EXPORT_FUNCTION("CoreAcqStats", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreAcqStats", __FUNCDNAME__)
 
 	if (ProcessOut)
 	{

@@ -323,7 +323,7 @@ inline std::wstring StageTag(int stage)
 // The number of encrypted-string markers the build plants in the runtime DLL.
 // The verification suite counts how many of them survived into the mapped image
 // and asserts the count against this value, so the two must move together.
-constexpr size_t kStringMarkerCount = 34;
+constexpr size_t kStringMarkerCount = 31;
 #pragma region shared helpers
 
 // Whether the launcher should print the runtime's own trace output. The runtime

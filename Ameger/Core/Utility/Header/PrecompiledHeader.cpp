@@ -6,7 +6,7 @@ static SRWLOCK g_print_lock = SRWLOCK_INIT;
 
 DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 {
-#pragma EXPORT_FUNCTION("CoreSetTrace", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreSetTrace", __FUNCDNAME__)
 
 	g_print_raw_callback.store(print);
 

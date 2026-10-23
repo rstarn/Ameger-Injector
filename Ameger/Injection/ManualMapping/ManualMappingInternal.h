@@ -140,6 +140,9 @@ namespace MMAP_NATIVE
  	{
  		ALIGN HINSTANCE	hRet		= NULL;
  		ALIGN DWORD		Flags		= NULL;
+		// The host-validated OS build. The shell uses it to select the
+		// exception-table encoding that this build family actually stores.
+		ALIGN DWORD		OSBuildNumber	= 0;
  		ALIGN NTSTATUS	ntRet		= STATUS_SUCCESS;
 
  		ALIGN void				*	pFakeSEHDirectory	= nullptr;

@@ -67,9 +67,8 @@ namespace
 	{
 		static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0, "telemetry must be LONG-multiple");
 
-		// The block is published a word at a time so that a reader never sees
-		// a half-written value. The copy is taken through a value-initialised
-		// instance first, so every word that is published is a defined value.
+		// Same word-at-a-time publication rule as StoreMapStats, for the same
+		// reason: no reader may observe a half-written telemetry block.
 		VERIFIABLE_EXEC_TELEMETRY copy{};
 		copy = Src;
 
@@ -236,10 +235,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 {
 	LOG(1, "Begin In-Memory Load\n");
 
+	const DWORD os_build = GetOSBuildVersion();
 	WINDOWS_LAYOUT_FAMILY layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_21H2;
-	if (!GetSupportedWindowsLayout(GetOSBuildVersion(), layout_family))
+	if (!GetSupportedWindowsLayout(os_build, layout_family))
 	{
-		INIT_ERROR_DATA(error_data, static_cast<DWORD>(GetOSBuildVersion()));
+		INIT_ERROR_DATA(error_data, os_build);
 
 		return INJ_ERR_WINDOWS_BUILD_UNSUPPORTED;
 	}
@@ -273,6 +273,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	MANUAL_MAPPING_DATA data{ 0 };
 	data.Flags = remote_flags;
+	data.OSBuildNumber = os_build;
 	data.RawSize = source.RawSize;
 
 	if (!g_DynamicOffsetsReady.load(std::memory_order_acquire))
@@ -702,7 +703,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// either an image without an entry point or an earlier stage that aborted.
 	if (data.ExecTelemetry.DllMainCyclesDelta == 0)
 	{
-	// A zero cycle delta means the entry point was never reached.
 		LOG(1, "[ManualMap] [*] DllMain: Not Entered (No Entry Point In Image, Or An Earlier Stage Aborted)\n");
 	}
 	else if (data.ExecTelemetry.DllMainResult == 0)
@@ -2229,7 +2229,12 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 		{
 
 			const DYNAMIC_NT_OFFSETS & dyno = pData->NtOffsets;
-			const bool inv_ok =
+			const DWORD os_build = pData->OSBuildNumber;
+			// The layout read below and the encoding written later are only
+			// understood for the validated build families. An unknown build
+			// fails closed here, before anything is written to the table.
+			const bool build_known = os_build != 0 && os_build <= g_Windows11_KnownMaxBuild;
+			const bool inv_ok = build_known &&
 				!!f->RtlInsertInvertedFunctionTable && !!f->LdrpInvertedFunctionTable && !!f->LdrProtectMrdata &&
 				dyno.InvertedEntryImageBase + sizeof(void *) <= dyno.InvertedEntrySize &&
 				dyno.InvertedEntryExceptionDirectory + sizeof(void *) <= dyno.InvertedEntrySize &&
@@ -2277,11 +2282,20 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 					pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pFakeSEHDirectory);
 					pData->MapStats.RetainedAllocSize = static_cast<DWORD>(FakeDirSize);
 
-					UINT_PTR pRaw = ReCa<UINT_PTR>(pData->pFakeSEHDirectory);
-					const DWORD cookie = *ReCa<volatile DWORD *>(ReCa<BYTE *>(static_cast<UINT_PTR>(KUSER_SHARED_DATA)) + dyno.KuserCookie);
-					UINT_PTR pEncoded = static_cast<UINT_PTR>(MMI_RotateRight64(cookie ^ pRaw, cookie & 0x3F));
+					UINT_PTR stored = ReCa<UINT_PTR>(pData->pFakeSEHDirectory);
+					// 24H2 introduced RtlpImageBaseEncode for this field:
+					// ror64(cookie ^ ptr, cookie & 0x3F). Pre-24H2 builds
+					// store the pointer in the clear. Builds above the
+					// validated ceiling were refused above, so an unknown
+					// transform is never guessed at and the entry is only
+					// written in a form this build family is known to read.
+					if (os_build >= g_Windows11_24H2)
+					{
+						const DWORD cookie = *ReCa<volatile DWORD *>(ReCa<BYTE *>(static_cast<UINT_PTR>(KUSER_SHARED_DATA)) + dyno.KuserCookie);
+						stored = static_cast<UINT_PTR>(MMI_RotateRight64(cookie ^ stored, cookie & 0x3F));
+					}
 					f->LdrProtectMrdata(FALSE);
-					*ReCa<void **>(ReCa<BYTE *>(const_cast<BYTE *>(entry)) + dyno.InvertedEntryExceptionDirectory) = ReCa<void *>(pEncoded);
+					*ReCa<void **>(ReCa<BYTE *>(const_cast<BYTE *>(entry)) + dyno.InvertedEntryExceptionDirectory) = ReCa<void *>(stored);
 					f->LdrProtectMrdata(TRUE);
 				}
 				break;
@@ -2525,10 +2539,11 @@ DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPP
 		pAllocatedTlsEntry = nullptr;
 	}
 
-	if (!unlinked)
-	{
-		LOG(1, "MMI_RunTlsCallbacks: Loader TLS Entry Not Found; Released The Fake Nodes Only\n");
-	}
+	// No diagnostic may be emitted here: this function lives in the copied
+	// remote-shell span and LOG resolves to a host .text routine outside it.
+	// Whether the loader entry was found is published through ExecTelemetry
+	// instead, which the host reads back as plain data.
+	pData->ExecTelemetry.TlsLoaderEntryUnlinked = unlinked ? 1u : 0u;
 
 	DeleteObject(f, pDummyLdrRaw);
 	DeleteObject(f, pDdagRaw);
@@ -3092,6 +3107,11 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 
 		pData->MapStats.ResidualMask	= residual;
 		pData->MapStats.Verified		= residual ? 0u : 1u;
+		// With INJ_ERASE_HEADER the in-image header was already wiped and the
+		// cached copy is the only readable source, so this read-back can only
+		// prove that the cache is consistent. Report that instead of implying
+		// an independent verification of the target's memory.
+		pData->MapStats.VerifiedCachedCopy = (pData->Flags & INJ_ERASE_HEADER) ? 1u : 0u;
 	}
 
 	return INJ_ERR_SUCCESS;
@@ -3382,7 +3402,7 @@ void ResetMapStats()
 
 void __stdcall GetLastMapStats(MAP_STATS * Out)
 {
-#pragma EXPORT_FUNCTION("CoreLoadStats", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreLoadStats", __FUNCDNAME__)
 
 	if (Out)
 	{
@@ -3398,7 +3418,7 @@ void ResetExecTelemetry()
 
 void __stdcall GetLastExecTelemetry(VERIFIABLE_EXEC_TELEMETRY * Out)
 {
-#pragma EXPORT_FUNCTION("CoreExecTelemetry", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreExecTelemetry", __FUNCDNAME__)
 
 	if (Out)
 	{

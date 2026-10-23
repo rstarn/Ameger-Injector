@@ -49,11 +49,17 @@
 #pragma warning(disable: 6258)
 #pragma warning(disable: 28159)
 
+#ifndef RECA_DEFINED
+#define RECA_DEFINED
 #define ReCa reinterpret_cast
+#endif
 
 #define MDWD(p) (DWORD)((ULONG_PTR)p & 0xFFFFFFFF)
 
-#define EXPORT_FUNCTION(export_name, link_name) comment(linker, "/EXPORT:" export_name "=" link_name)
+// Self-contained: use EXPORT_FUNCTION(...) inside the exported function body.
+// __pragma keeps the linker directive valid without a leading #pragma, and the
+// macro no longer expands to a bare token sequence that only works there.
+#define EXPORT_FUNCTION(export_name, link_name) __pragma(comment(linker, "/EXPORT:" export_name "=" link_name))
 
 #define ALIGN_8 __declspec(align(8))
 #define ALIGN ALIGN_8

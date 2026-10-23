@@ -137,7 +137,7 @@ std::wstring g_SymbolCacheRoot;
 
 DWORD __stdcall InitializeRuntime()
 {
-#pragma EXPORT_FUNCTION("CoreStart", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreStart", __FUNCDNAME__)
 
 	LONG previous_state = InterlockedCompareExchange(&g_RuntimeInitializationState, RUNTIME_STATE_INITIALIZING, RUNTIME_STATE_UNINITIALIZED);
 	if (previous_state == RUNTIME_STATE_READY)
@@ -259,7 +259,7 @@ DWORD __stdcall InitializeRuntime()
 }
 DWORD __stdcall ShutdownRuntime()
 {
-#pragma EXPORT_FUNCTION("CoreStop", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreStop", __FUNCDNAME__)
 
 	for (int attempt = 0; attempt < 4; ++attempt)
 	{

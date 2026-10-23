@@ -235,7 +235,10 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 		error_data = import_handler_error_data;
 
-		return InitErrorStruct(Data, -1, INJ_ERR_IMPORT_HANDLER_NOT_DONE, error_data);
+		// The specific code (SYMBOL_ERR_*, INJ_ERR_SYMBOL_PARSE_FAIL, ...) is
+		// preserved so the launcher can map it to a targeted hint instead of
+		// reporting a generic import-handler failure.
+		return InitErrorStruct(Data, -1, RetVal, error_data);
 	}
 
 	if (!Data.ProcessID)
@@ -380,14 +383,14 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 DWORD __stdcall Memory_Inject(MEMORY_INJECTIONDATA * pData)
 {
-#pragma EXPORT_FUNCTION("CoreExecute", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreExecute", __FUNCDNAME__)
 
 	return Memory_InjectBody(pData);
 }
 
 DWORD __stdcall GetSymbolState()
 {
-#pragma EXPORT_FUNCTION("CoreSymbolState", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreSymbolState", __FUNCDNAME__)
 
 	try
 	{
@@ -427,7 +430,7 @@ DWORD __stdcall GetSymbolState()
 
 DWORD __stdcall GetImportState()
 {
-#pragma EXPORT_FUNCTION("CoreImportState", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreImportState", __FUNCDNAME__)
 
 	try
 	{

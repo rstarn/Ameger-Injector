@@ -94,10 +94,20 @@ bool GetSupportedWindowsLayout(DWORD build_number, WINDOWS_LAYOUT_FAMILY & layou
 {
 
 	bool supported = true;
-	// Builds newer than the newest known release are mapped onto the closest
-	// supported family. The loader layout only changes at a release boundary,
-	// so a newer build is expected to share the layout of the family it was
-	// released in.
+	// Builds above the validated ceiling are refused. Forward mapping is only
+	// defensible within a release family whose loader layout was checked; it
+	// is not a licence to accept an arbitrary future build.
+	if (build_number > g_Windows11_KnownMaxBuild)
+	{
+		LOG(1, "Refusing Unknown Windows Build %lu: Newest Validated Layout Is 26H2 (Ceiling %lu)\n",
+			static_cast<unsigned long>(build_number), static_cast<unsigned long>(g_Windows11_KnownMaxBuild));
+
+		return false;
+	}
+	// Builds newer than the newest known release within the validated ceiling
+	// are mapped onto the closest supported family. The loader layout only
+	// changes at a release boundary, so a newer build is expected to share the
+	// layout of the family it was released in.
 	if (build_number >= 26300)
 	{
 		layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_26H2;
@@ -772,7 +782,7 @@ void ErrorLog(const ERROR_INFO & info)
 
 DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 {
-#pragma EXPORT_FUNCTION("CoreLastError", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreLastError", __FUNCDNAME__)
 
 	if (!Out)
 	{
@@ -816,7 +826,7 @@ DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out)
 
 DWORD __stdcall ClearLastErrorInfo()
 {
-#pragma EXPORT_FUNCTION("CoreClearLastError", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreClearLastError", __FUNCDNAME__)
 
 	AcquireSRWLockExclusive(&g_ErrorLogLock);
 	for (size_t i = 0; i < kErrorRingCapacity; ++i)
@@ -922,7 +932,7 @@ std::wstring CharArrayToStdWstring(const char * szString)
 
 void __stdcall StartDownload()
 {
-#pragma EXPORT_FUNCTION("CoreFetch", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreFetch", __FUNCDNAME__)
 
 	const DWORD initialization_state = InitializeRuntime();
 	if (initialization_state != INJ_ERR_SUCCESS)

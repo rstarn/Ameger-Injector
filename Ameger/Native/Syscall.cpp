@@ -611,9 +611,6 @@ DWORD SyscallResolveAll()
 	// The harvest buffer keeps every healthy export that was seen, not just the
 	// ones this project cares about. The neighbour interpolation in pass two
 	// needs those as reference points.
-	// The harvest buffer keeps every healthy export that was seen, not just the
-	// ones this project cares about. The neighbour interpolation in pass two
-	// needs those as reference points.
 	std::vector<HARVESTED_ENTRY> HarvestedStorage;
 	try
 	{
@@ -871,8 +868,6 @@ DWORD SyscallResolveAll()
 		SC_LOG_ERR("Failed To Build Syscall Stub Pool");
 		return 0;
 	}
-	// The resolution table is printed for diagnostics: it shows which service
-	// numbers were read straight out of ntdll and which were reconstructed.
 	DWORD Ready = 0;
 	for (size_t i = 0; i < kSyscallTableCount; ++i)
 	{
@@ -916,8 +911,6 @@ DWORD SyscallResolveAll()
 			if (is_rx)
 			{
 				SC_LOG_OK("[Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n", pool, kStubAreaSize);
-	// The pool is only armed once its live protection has been confirmed to be
-	// execute-read.
 				SC_LOG_OK("[Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n",
 					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
 			}
@@ -1038,9 +1031,6 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	ULONG Size = 0x400;
 	std::vector<BYTE> Scratch;
 
-	// ProcessImageFileNameWin32 returns a UNICODE_STRING at the head of the buffer
-	// with the name following it, so the buffer has to be large enough for both.
-	// The size is grown on demand when the kernel reports a mismatch.
 	for (int attempt = 0; attempt < 4; ++attempt)
 	{
 		try

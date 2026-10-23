@@ -95,6 +95,10 @@ struct MAP_STATS
 	DWORD HeaderScanBytes = 0;
 	DWORD HeaderScanMZ = 0;
 	DWORD HeaderScanPE = 0;
+	// 1 when the residual check read the mapper's cached directory copy rather
+	// than the in-image header (INJ_ERASE_HEADER wipes the header first). The
+	// check then proves cache consistency only, not an independent re-read.
+	DWORD VerifiedCachedCopy = 0;
 	// An allocation that had to be kept alive because something in the target
 	// still points into the mapped image.
 	ULONG_PTR RetainedAllocBase = 0;
@@ -144,7 +148,9 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	DWORD MZRemnantsFound = 0;
 	DWORD PERemnantsFound = 0;
 	DWORD PostWipeProtection = 0;
-	DWORD Reserved = 0;
+	// 1 when the loader-allocated TLS entry was found and unlinked from
+	// LdrpTlsList, 0 when it was not (or TLS was not configured).
+	DWORD TlsLoaderEntryUnlinked = 0;
 };
 
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 5 * sizeof(ULONG_PTR) + 14 * sizeof(DWORD),

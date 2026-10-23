@@ -1884,7 +1884,7 @@ void ResetThreadExecStats()
 
 void __stdcall GetLastThreadExecStats(THREAD_EXEC_STATS * Out)
 {
-#pragma EXPORT_FUNCTION("CoreExecStats", __FUNCDNAME__)
+	EXPORT_FUNCTION("CoreExecStats", __FUNCDNAME__)
 
 	if (Out)
 	{

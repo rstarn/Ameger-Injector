@@ -60,6 +60,11 @@ inline DWORD g_OSBuildNumber = 0;
 #define g_Windows11_24H2 26100
 #define g_Windows11_25H2 26200
 #define g_Windows11_26H2 26300
+// The highest build whose loader layout is validated. 26300-26999 is assumed
+// to share the 26H2 layout; a build above this ceiling is refused rather than
+// guessed at, because neither the loader offsets nor the exception-table
+// encoding can be assumed to be unchanged.
+#define g_Windows11_KnownMaxBuild 26999
 
 enum class WINDOWS_LAYOUT_FAMILY
 {
