@@ -5,6 +5,44 @@
 
 #define NEXT_SYSTEM_PROCESS_ENTRY(pCurrent) ReCa<SYSTEM_PROCESS_INFORMATION *>(ReCa<BYTE *>(pCurrent) + pCurrent->NextEntryOffset)
 
+namespace
+{
+	// Walks the snapshot's NextEntryOffset chain with the same bounds rules
+	// the inline loop used: a zero/self-referential offset or an entry that
+	// would cross the buffer end stops the walk.
+	SYSTEM_PROCESS_INFORMATION * LocateProcessEntry(SYSTEM_PROCESS_INFORMATION * first, ULONG_PTR buffer_size, ULONG_PTR pid)
+	{
+		if (!first)
+		{
+			return nullptr;
+		}
+
+		SYSTEM_PROCESS_INFORMATION * current = first;
+		BYTE * buffer_end = ReCa<BYTE *>(first) + buffer_size;
+
+		for (;;)
+		{
+			if (current->UniqueProcessId == ReCa<void *>(pid))
+			{
+				return current;
+			}
+
+			auto pNext = NEXT_SYSTEM_PROCESS_ENTRY(current);
+			if (pNext == current)
+			{
+				return nullptr;
+			}
+
+			if (ReCa<BYTE *>(pNext) + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer_end)
+			{
+				return nullptr;
+			}
+
+			current = pNext;
+		}
+	}
+}
+
 ProcessInformation::ProcessInformation()
 {
 	m_pNtQueryInformationProcess	= ReCa<f_NtQueryInformationProcess>	(SyscallStub(SC_NtQueryInformationProcess));
@@ -72,34 +110,27 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 	}
 
 	m_ProcessLocated = false;
-	m_pCurrentProcess = m_pFirstProcess;
-	BYTE * buffer_end = ReCa<BYTE *>(m_pFirstProcess) + m_BufferSize;
+	m_pCurrentProcess = LocateProcessEntry(m_pFirstProcess, m_BufferSize, PID);
 
-	for (;;)
+	if (!m_pCurrentProcess)
 	{
-		if (m_pCurrentProcess->UniqueProcessId == ReCa<void *>(PID))
+		// The cached snapshot predates this process: it may simply have been
+		// created after the last enumeration. Re-query once and search again
+		// before reporting the process as absent, so a caller that targets a
+		// newly started process does not have to know that the cache must be
+		// dropped manually.
+		if (!RefreshInformation())
 		{
-			break;
+			return false;
 		}
 
-		auto pNext = NEXT_SYSTEM_PROCESS_ENTRY(m_pCurrentProcess);
-		if (pNext == m_pCurrentProcess)
+		m_pCurrentProcess = LocateProcessEntry(m_pFirstProcess, m_BufferSize, PID);
+
+		if (!m_pCurrentProcess)
 		{
-			break;
+			m_pCurrentProcess = m_pFirstProcess;
+			return false;
 		}
-
-		if (ReCa<BYTE *>(pNext) + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer_end)
-		{
-			break;
-		}
-
-		m_pCurrentProcess = pNext;
-	}
-
-	if (m_pCurrentProcess->UniqueProcessId != ReCa<void *>(PID))
-	{
-		m_pCurrentProcess = m_pFirstProcess;
-		return false;
 	}
 
 	m_ProcessLocated = true;
@@ -279,7 +310,10 @@ void * ProcessInformation::GetTEB()
 
 bool ProcessInformation::IsThreadWorkerThread()
 {
-
+	// Every unreadable case reports "worker", which every caller treats as
+	// "skip this thread": a thread that cannot be proven to be an ordinary
+	// thread is never hijacked. The failure is conservative by design, and a
+	// caller that needs the distinction must query the TEB itself.
 	if (!m_pCurrentThread)
 	{
 		return true;

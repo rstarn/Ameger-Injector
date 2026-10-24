@@ -8,6 +8,7 @@
 #include <vector>
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "Core/Foundation/Primitives/KcStrings/Core/XorString.h"
+#include "Core/Utility/Tools/Tools.h"
 #include "System/Handle/HandleHijack.h"
 #include "Native/Syscall.h"
 
@@ -77,22 +78,6 @@ namespace
 		return Status >= 0;
 	}
 
-	std::wstring LowercaseW(const std::wstring & text)
-	{
-		std::wstring out = text;
-
-		for (size_t i = 0; i < out.size(); ++i)
-		{
-			wchar_t & c = out[i];
-			if (c >= L'A' && c <= L'Z')
-			{
-				c = static_cast<wchar_t>(c - L'A' + L'a');
-			}
-		}
-
-		return out;
-	}
-
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
 		// The handle enumeration and the duplication both go through the syscall
@@ -137,18 +122,25 @@ namespace
 	std::atomic<USHORT> g_CachedProcessType{ 0 };
 	std::atomic<USHORT> g_CachedThreadType{ 0 };
 
-	std::atomic<bool> g_DebugPrivilegeAttempted{ false };
+	// Every scan that may open foreign owners runs inside one
+	// SeDebugPrivilegeScope, and the privilege is given back only by the last
+	// scope that exits. The previous once-per-process guard let one scan's
+	// teardown revoke the privilege while a concurrent scan was still using
+	// it, and it skipped the enable for a later scan whenever an earlier scan
+	// had already been through here - which left that later scan running
+	// without the privilege at all.
+	std::atomic<LONG> g_SeDebugScopes{ 0 };
+	std::atomic<bool> g_SeDebugEnabled{ false };
 
 	void EnsureSeDebugPrivilege()
 	{
-		bool expected = false;
-		if (g_DebugPrivilegeAttempted.compare_exchange_strong(expected, true))
+		if (EnableSeDebugPrivilege())
 		{
-			EnableSeDebugPrivilege();
+			g_SeDebugEnabled.store(true, std::memory_order_release);
 		}
 	}
 
-	void RevokeSeDebugPrivilege()
+	void DisableSeDebugPrivilege()
 	{
 		HANDLE RawToken = nullptr;
 		if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &RawToken))
@@ -158,33 +150,38 @@ namespace
 			LUID Luid{ 0 };
 			if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
 			{
+				// Disabling (clearing SE_PRIVILEGE_ENABLED) rather than
+				// SE_PRIVILEGE_REMOVED: removal is irreversible for the token,
+				// so a later scan could never re-enable it, and a token with
+				// the privilege present but disabled is exactly the state an
+				// elevated process is born with.
 				TOKEN_PRIVILEGES Privileges{ 0 };
 				Privileges.PrivilegeCount = 1;
 				Privileges.Privileges[0].Luid = Luid;
+				Privileges.Privileges[0].Attributes = 0;
 
-				Privileges.Privileges[0].Attributes = SE_PRIVILEGE_REMOVED;
-				AdjustTokenPrivileges(Token.get(), FALSE, &Privileges, sizeof(Privileges), nullptr, nullptr);
+				if (AdjustTokenPrivileges(Token.get(), FALSE, &Privileges, sizeof(Privileges), nullptr, nullptr))
+				{
+					g_SeDebugEnabled.store(false, std::memory_order_release);
+				}
 			}
 		}
-
-		g_DebugPrivilegeAttempted.store(false, std::memory_order_release);
 	}
 
 	class SeDebugPrivilegeScope
 	{
-		bool m_Revoke = false;
-
 	public:
-		explicit SeDebugPrivilegeScope(bool revoke_on_exit)
-			: m_Revoke(revoke_on_exit)
+		SeDebugPrivilegeScope()
 		{
+			g_SeDebugScopes.fetch_add(1, std::memory_order_acq_rel);
 		}
 
 		~SeDebugPrivilegeScope()
 		{
-			if (m_Revoke && g_DebugPrivilegeAttempted.load(std::memory_order_acquire))
+			const LONG remaining = g_SeDebugScopes.fetch_sub(1, std::memory_order_acq_rel) - 1;
+			if (remaining == 0 && g_SeDebugEnabled.load(std::memory_order_acquire))
 			{
-				RevokeSeDebugPrivilege();
+				DisableSeDebugPrivilege();
 			}
 		}
 
@@ -435,20 +432,32 @@ namespace
 		}
 			// A page that can be reserved and released proves the handle carries
 			// the virtual memory rights the mapping needs.
-		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
-		if (!Page)
-		{
-			return false;
-		}
+			void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
+			if (!Page)
+			{
+				return false;
+			}
 
-		if (ScFreeMemory(Candidate, Page))
-		{
+			// The release can fail transiently, and a page left behind in the
+			// target is a census-visible artifact, so it is retried. If it
+			// still fails the rights are proven regardless - the allocation
+			// itself required them - and the retained page is only reported.
+			for (int attempt = 0; attempt < 3; ++attempt)
+			{
+				if (ScFreeMemory(Candidate, Page))
+				{
+					return true;
+				}
+
+				if (attempt + 1 < 3)
+				{
+					Sleep(1);
+				}
+			}
+
+			LOG(1, "ProbeVmOperation: Release Failed Three Times; Page Retained In Target\n");
+
 			return true;
-		}
-
-		LOG(1, "ProbeVmOperation: Release Failed\n");
-
-		return false;
 	}
 
 	bool VerifyProcessDonor(HANDLE Candidate, DWORD TargetPid)
@@ -1003,8 +1012,7 @@ namespace
 		Local.Attempted = 1;
 		Local.Source = static_cast<DWORD>(HijackSource::Scan);
 
-		const bool priv_previously_attempted = g_DebugPrivilegeAttempted.load(std::memory_order_acquire);
-		SeDebugPrivilegeScope debug_privilege_scope(!priv_previously_attempted);
+		SeDebugPrivilegeScope debug_privilege_scope;
 
 		const auto Finish = [&](DWORD Code) -> DWORD
 		{
@@ -1105,26 +1113,23 @@ HijackStats g_ThreadHijackStats{ };
 namespace
 {
 
+	// The block is published as a whole under one lock rather than a word at a
+	// time: the export can be polled while a scan is still writing, and a
+	// reader must see one run's fields or another's, never a mix of the two.
+	SRWLOCK g_HijackStatsLock{ SRWLOCK_INIT };
+
 	void StoreHijackStats(HijackStats & Dst, const HijackStats & Src)
 	{
-		static_assert(sizeof(HijackStats) % sizeof(LONG) == 0, "HijackStats must be a whole number of LONGs");
-
-		volatile LONG * dst = ReCa<volatile LONG *>(&Dst);
-		const volatile LONG * src = ReCa<const volatile LONG *>(&Src);
-		for (size_t i = 0; i < sizeof(HijackStats) / sizeof(LONG); ++i)
-		{
-			InterlockedExchange(&dst[i], src[i]);
-		}
+		AcquireSRWLockExclusive(&g_HijackStatsLock);
+		Dst = Src;
+		ReleaseSRWLockExclusive(&g_HijackStatsLock);
 	}
 
 	void LoadHijackStats(HijackStats & Src, HijackStats & Dst)
 	{
-		volatile LONG * src = ReCa<volatile LONG *>(&Src);
-		LONG * dst = ReCa<LONG *>(&Dst);
-		for (size_t i = 0; i < sizeof(HijackStats) / sizeof(LONG); ++i)
-		{
-			dst[i] = InterlockedCompareExchange(&src[i], 0, 0);
-		}
+		AcquireSRWLockShared(&g_HijackStatsLock);
+		Dst = Src;
+		ReleaseSRWLockShared(&g_HijackStatsLock);
 	}
 }
 
@@ -1183,6 +1188,11 @@ namespace
 			{
 				released = true;
 				break;
+			}
+
+			if (attempt + 1 < 2)
+			{
+				Sleep(1);
 			}
 		}
 		if (!released)

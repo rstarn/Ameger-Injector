@@ -1572,6 +1572,13 @@ wchar_t name[48]{};
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
+    // Advisory donor pre-selection for the sponsor pre-open. This is the
+    // launcher-side copy of the runtime's donor policy (FindHijackThread and
+    // FindHijackThreadToolhelp in Ameger/Execution/ThreadHijacking.cpp):
+    // whatever it picks is re-validated by the runtime before use, but the
+    // two implementations express the same preference order - running before
+    // safe-wait, loader workers excluded, exe-start threads preferred - and
+    // must be moved together.
     DWORD PickHijackThreadTid(DWORD target_pid, DWORD exclude_tid)
     {
         if (!target_pid)

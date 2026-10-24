@@ -120,4 +120,23 @@ bool WaitAsyncWorkerThread(const ASYNC_WORKER_SLOT & slot);
 
 std::wstring CharArrayToStdWstring(const char * szString);
 
+// Shared by the tool helpers and the handle-acquisition scan: an ASCII-only
+// lowercase copy. It is deliberately not locale-aware; every caller compares
+// against ASCII names (process image names, environment values).
+inline std::wstring LowercaseW(const std::wstring & text)
+{
+	std::wstring out = text;
+
+	for (size_t i = 0; i < out.size(); ++i)
+	{
+		wchar_t & c = out[i];
+		if (c >= L'A' && c <= L'Z')
+		{
+			c = static_cast<wchar_t>(c - L'A' + L'a');
+		}
+	}
+
+	return out;
+}
+
 void __stdcall StartDownload();

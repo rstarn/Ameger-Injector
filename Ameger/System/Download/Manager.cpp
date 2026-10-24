@@ -84,7 +84,16 @@ void Manager::WatchdogProc()
     {
         if (WaitForSingleObject(m_hWatchdogWake, 250) == WAIT_OBJECT_0)
         {
-            break;
+            // The wake event is armed by StopWatchdog (a stop request) and by
+            // SetTimeout on an already-running watchdog (a deadline refresh).
+            // A stop exits; a refresh falls through so the loop re-reads the
+            // new deadline instead of dying and leaving the timeout unarmed.
+            if (m_bWatchdogStop.load())
+            {
+                break;
+            }
+
+            continue;
         }
 
         const ULONGLONG deadline = m_ullDeadline.load();
@@ -112,8 +121,16 @@ bool Manager::SetTimeout(DWORD milliseconds)
 
     m_ullDeadline.store(GetTickCount64() + milliseconds);
 
-    bool was_running = (m_hWatchdog != nullptr);
-    StartWatchdog();
+    const bool was_running = (m_hWatchdog != nullptr);
+    if (!StartWatchdog())
+    {
+        // Without the watchdog the timeout is not armed: the latched flag
+        // would never be set no matter what the deadline says, so the
+        // deadline is withdrawn rather than left as a promise nothing keeps.
+        m_ullDeadline.store(0);
+
+        return false;
+    }
     if (was_running && m_hWatchdogWake)
     {
         SetEvent(m_hWatchdogWake);

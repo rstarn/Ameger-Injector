@@ -407,9 +407,15 @@ namespace
 			const IMAGE_DATA_DIRECTORY & load_config =
 				mapped_nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
 
-			if (load_config.Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) + sizeof(ULONG_PTR) ||
+			// Only the fields through SecurityCookie are read here, so the
+			// directory is required to cover exactly that span rather than the
+			// full modern structure: a valid load config that stops after the
+			// cookie must not be rejected for being shorter than the newest
+			// layout.
+			const SIZE_T cookie_span = offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) + sizeof(ULONG_PTR);
+			if (load_config.Size < cookie_span ||
 				load_config.VirtualAddress > size_of_image ||
-				sizeof(IMAGE_LOAD_CONFIG_DIRECTORY) > size_of_image - load_config.VirtualAddress)
+				cookie_span > size_of_image - load_config.VirtualAddress)
 			{
 				return INJ_MM_ERR_INVALID_PE_IMAGE;
 			}
@@ -879,8 +885,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		LOG(1, "StartRoutine Failed = %08X\n", dwRet);
 
-		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED ||
-			dwRet == SR_HT_ERR_REMOTE_PENDING_TIMEOUT)
+		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED)
 		{
 			// The stub may still execute. The shell owns the image from here
 			// and will free it through its cleanup path; the completion event
@@ -892,11 +897,29 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			image_guard.release();
 			allocation_guard.release();
 			remote_event_owned = false;
+
+			// If that donor never runs after all, nothing in the target will
+			// free these. The image - the artifact a census would see - is
+			// recorded in the map statistics so the leak stays visible through
+			// the telemetry export even though the host no longer owns the
+			// memory; the staging allocation shares the shell's fate and is
+			// reported by the same base until it settles.
+			{
+				MAP_STATS Retained{ };
+				Retained.RetainedAllocBase = ReCa<ULONG_PTR>(image_base);
+				Retained.RetainedAllocSize = static_cast<DWORD>(image_span);
+				StoreMapStats(Retained);
+			}
 		}
 		else
 		{
-			// L1: scrub before releasing so the failure path does not leave the
-			// mapped image behind in the target.
+			// Every other failure - including SR_HT_ERR_REMOTE_PENDING_TIMEOUT,
+			// which only ever arrives after the donor's context was confirmed
+			// rewound with the shell never started - leaves the image ours: no
+			// code in the target can ever touch it again. L1: scrub before
+			// releasing so the failure path does not leave the mapped image
+			// behind in the target; the staging and the target-side duplicated
+			// event handle are reclaimed by their own guards.
 			ScrubRemoteRegion(hTargetProc, image_base, image_span, kScrubChunk);
 			image_guard.reset();
 		}
@@ -2159,8 +2182,12 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 	// cloak stage and must not be touched again.
 	if (!(pData->Flags & INJ_ERASE_HEADER))
 	{
+		// NtProtectVirtualMemory writes the page-rounded base back through the
+		// pointer it is given, so a local is passed: the shared data block's
+		// pImageBase must stay the allocation base every other stage uses.
+		void * HeaderBase = pData->pImageBase;
 		SIZE_T SizeOut = MMI_SizeOfHeaders(pData);
-		pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), ReCa<void **>(&pData->pImageBase), &SizeOut, PAGE_READONLY, &OldProtection);
+		pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &HeaderBase, &SizeOut, PAGE_READONLY, &OldProtection);
 
 		if (NT_FAIL(pData->ntRet))
 		{
@@ -2309,6 +2336,7 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 			const bool build_known = os_build != 0 && os_build <= g_Windows11_KnownMaxBuild;
 			const bool inv_ok = build_known &&
 				!!f->RtlInsertInvertedFunctionTable && !!f->LdrpInvertedFunctionTable && !!f->LdrProtectMrdata &&
+				!!f->LdrLockLoaderLock && !!f->LdrUnlockLoaderLock &&
 				dyno.InvertedEntryImageBase + sizeof(void *) <= dyno.InvertedEntrySize &&
 				dyno.InvertedEntryExceptionDirectory + sizeof(void *) <= dyno.InvertedEntrySize &&
 				dyno.InvertedEntryExceptionDirectorySize + sizeof(DWORD) <= dyno.InvertedEntrySize &&
@@ -2322,6 +2350,21 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 			}
 
 			f->RtlInsertInvertedFunctionTable(pData->pImageBase, MMI_SizeOfImage(pData));
+
+			// The count and the entries are live loader state: they are read
+			// under the loader lock, the same lock the loader itself holds
+			// when it mutates the table. LdrProtectMrdata below only guards
+			// the .mrdata write, not the reads above it. The lock is released
+			// before the fail-closed return so no early exit leaves it held.
+			ULONG inv_lock_state = 0;
+			ULONG_PTR inv_lock_cookie = 0;
+			const NTSTATUS inv_lock_status = f->LdrLockLoaderLock(NULL, &inv_lock_state, &inv_lock_cookie);
+			if (NT_FAIL(inv_lock_status))
+			{
+				pData->ntRet = inv_lock_status;
+				return INJ_MM_ERR_ENABLING_SEH_FAILED;
+			}
+
 			const BYTE * table_base = ReCa<const BYTE *>(f->LdrpInvertedFunctionTable);
 			const DWORD inv_count = *ReCa<const DWORD *>(table_base + dyno.InvertedTableCount);
 			const BYTE * entries_base = table_base + dyno.InvertedTableEntries;
@@ -2373,6 +2416,8 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 				}
 				break;
 			}
+			f->LdrUnlockLoaderLock(NULL, inv_lock_cookie);
+
 			if (!inv_entry)
 			{
 				pData->ntRet = STATUS_UNSUCCESSFUL;
@@ -3367,9 +3412,13 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		{
 			limit = first_section;
 		}
-		if (first_section)
+		// A first section whose RVA does not fall inside the image cannot
+		// bound the wipe: treating an out-of-range RVA as the image size
+		// would zero the whole mapped image, so it is ignored here and the
+		// structural header span alone is wiped.
+		if (first_section && first_section < size_of_image)
 		{
-			pre_section = first_section < size_of_image ? first_section : size_of_image;
+			pre_section = first_section;
 		}
 	}
 

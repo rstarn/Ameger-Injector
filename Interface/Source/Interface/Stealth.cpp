@@ -2541,24 +2541,30 @@ namespace stealth
 
         DWORD own_pid = GetCurrentProcessId();
         int visible_windows = 0;
-        static DWORD overlay_pid = 0;
-        static int overlay_count = 0;
-        overlay_pid = own_pid;
-        overlay_count = 0;
-        EnumWindows([](HWND hwnd, LPARAM) -> BOOL {
+
+        // The tally travels through LPARAM rather than through statics: the
+        // census callbacks must stay re-entrant so the suite cannot race
+        // itself if it is ever run from more than one thread.
+        struct OverlayTally
+        {
+            DWORD pid;
+            int count;
+        } overlay{ own_pid, 0 };
+        EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+            OverlayTally * tally = reinterpret_cast<OverlayTally *>(param);
             if (!IsWindowVisible(hwnd))
             {
                 return TRUE;
             }
             DWORD pid = 0;
             GetWindowThreadProcessId(hwnd, &pid);
-            if (pid == overlay_pid)
+            if (pid == tally->pid)
             {
-                ++overlay_count;
+                ++tally->count;
             }
             return TRUE;
-        }, 0);
-        visible_windows = overlay_count;
+        }, reinterpret_cast<LPARAM>(&overlay));
+        visible_windows = overlay.count;
 
         const bool veh_ok = ProbeLocalVehPathRoundTrip();
 
@@ -2617,9 +2623,12 @@ namespace stealth
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
+        // Fail-closed: the flag starts as "not confirmed" and is only cleared
+        // by the W^X walk actually completing, so an early return can never
+        // be read as a passed posture by a caller that checks the flag alone.
         if (wx_violated)
         {
-            *wx_violated = false;
+            *wx_violated = true;
         }
 
         if (!hRemoteBase)
@@ -3376,6 +3385,7 @@ namespace stealth
         size_t core_regions = 0;
         size_t core_bytes = 0;
         size_t regions_walked = 0;
+        ULONG_PTR walked_bytes = 0;
         size_t regions_total = 0;
         bool walk_capped = false;
         bool walk_aborted = false;
@@ -3394,12 +3404,27 @@ namespace stealth
             }
         }
 
+        // The census was built from the base-sorted module list, so a module
+        // for an address is found by binary search rather than a linear scan
+        // per region: a module-heavy target walks tens of thousands of
+        // regions, and each one must not re-read the whole list.
         const auto module_of = [&](ULONG_PTR address) -> ModuleCensus *
         {
-            for (ModuleCensus & entry : census)
+            size_t lo = 0;
+            size_t hi = census.size();
+            while (lo < hi)
             {
-                if (entry.module && address >= entry.module->base &&
-                    address - entry.module->base < entry.module->size)
+                const size_t mid = lo + (hi - lo) / 2;
+                ModuleCensus & entry = census[mid];
+                if (!entry.module || address < entry.module->base)
+                {
+                    hi = mid;
+                }
+                else if (address - entry.module->base >= entry.module->size)
+                {
+                    lo = mid + 1;
+                }
+                else
                 {
                     return &entry;
                 }
@@ -3458,6 +3483,7 @@ namespace stealth
             {
                 ++space_committed;
                 ++regions_walked;
+                walked_bytes += mbi.RegionSize;
 
                 ModuleCensus * owner = module_of(region_start);
                 const bool in_image = (owner != nullptr);
@@ -3559,14 +3585,7 @@ namespace stealth
                 if (owner)
                 {
                     ++owner->committed_regions;
-                    if (in_image)
-                    {
-                        ++image_committed;
-                    }
-                    else
-                    {
-                        ++free_committed;
-                    }
+                    ++image_committed;
                 }
                 else
                 {
@@ -3576,7 +3595,10 @@ namespace stealth
 
             cursor = region_end;
 
-            if (max_walk_bytes && regions_walked * 4096ULL > max_walk_bytes)
+            // The cap is measured against the bytes actually walked rather
+            // than a page-count estimate, so a bound configured in MB caps
+            // what it says it caps.
+            if (max_walk_bytes && walked_bytes > max_walk_bytes)
             {
                 walk_capped = true;
                 walk_reason = L"Walk Cap";
@@ -3592,9 +3614,10 @@ namespace stealth
             kGreen, main_name.c_str(), kReset, reinterpret_cast<void *>(main_base),
             kGreen, static_cast<size_t>(main_size / 1024), kReset);
 
-        LOG(0, L"  %lsWalk%ls    %ls%zu%ls Committed Region(s) Walked | %ls%zu%ls Guard | %ls%zu%ls No-Access | %ls%zu%ls Executable\n",
+        LOG(0, L"  %lsWalk%ls    %ls%zu%ls Committed Region(s) Walked (%ls%zu%ls MB) | %ls%zu%ls Guard | %ls%zu%ls No-Access | %ls%zu%ls Executable\n",
             kDim, kReset,
             kGreen, regions_walked, kReset,
+            kGreen, static_cast<size_t>(walked_bytes / (1024 * 1024)), kReset,
             kGreen, space_guard, kReset,
             kGreen, space_noaccess, kReset,
             kGreen, space_exec, kReset);

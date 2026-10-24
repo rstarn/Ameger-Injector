@@ -224,6 +224,11 @@ namespace
 		} while (pi.NextThread());
 	}
 
+	// The runtime's donor-selection policy. The launcher keeps a second,
+	// advisory copy of this policy (PickHijackThreadTid in
+	// Interface/Source/Main.cpp) to pre-open a sponsor thread; the runtime
+	// re-validates whatever it is handed here, but the two implementations
+	// express the same preference order and must be moved together.
 	DWORD FindHijackThreadToolhelp(HANDLE hTargetProc, const std::vector<DWORD> & excluded)
 	{
 		if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE)
@@ -1115,8 +1120,6 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	const size_t state_area_size = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadHijackEnd) - reinterpret_cast<ULONG_PTR>(RemoteThreadState));
 	// The state block has to sit behind the code, and it has to be large enough
 	// for the FP image plus the slot that holds the thread's return address.
-	// The state block has to sit behind the code, and it has to be large enough
-	// for the FP image plus the slot that holds the thread's return address.
 	// Anything else means the assembler layout drifted away from what this
 	// code expects, and the stub must not be staged.
 	if (return_target_offset < state_offset ||
@@ -1802,17 +1805,38 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			ForceRestoreContext(context_restored, resumed);
 		}
 
-		ReclaimOrRetainTrampoline(context_restored, data.State);
-
-		StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
-		StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_REMOTE_PENDING_TIMEOUT : SR_HT_ERR_RECOVERY_REQUIRED);
-
+		// A shell that began finishing while the rollback was polling is a
+		// late success, not a timeout. The state page is re-read here so the
+		// completion flow below owns the round, and the caller can never
+		// launch a retry against an image the shell has already executed.
 		if (context_restored)
 		{
-			return SR_HT_ERR_REMOTE_PENDING_TIMEOUT;
+			SR_REMOTE_DATA fresh{ };
+			fresh.State = SR_REMOTE_STATE::SR_RS_ExecutionPending;
+			if (ScReadProcessMemory(hTargetProc, pState, &fresh, sizeof(fresh), nullptr) &&
+				RemoteRoutineSettled(fresh.State))
+			{
+				data = fresh;
+			}
 		}
 
-		return SR_HT_ERR_RECOVERY_REQUIRED;
+		if (!RemoteRoutineSettled(data.State))
+		{
+			ReclaimOrRetainTrampoline(context_restored, data.State);
+
+			StoreThreadExecStat(g_ThreadExecStats.Success, (context_restored && resumed) ? 1 : 0);
+			StoreThreadExecStat(g_ThreadExecStats.FailCode, context_restored ? SR_HT_ERR_REMOTE_PENDING_TIMEOUT : SR_HT_ERR_RECOVERY_REQUIRED);
+
+			if (context_restored)
+			{
+				return SR_HT_ERR_REMOTE_PENDING_TIMEOUT;
+			}
+
+			return SR_HT_ERR_RECOVERY_REQUIRED;
+		}
+
+		// The round settled late: fall through to the completion flow with the
+		// freshest state.
 	}
 
 	LOG(2, "pRoutine Returned = %08X\n", data.Ret);
@@ -1897,12 +1921,19 @@ static bool IsRetryableHijackFailure(DWORD code)
 {
 	switch (code)
 	{
-	// M2: a pending-timeout round may have partially run the shell, so do not
-	// retry it against the same pData/image.
+	// M2: a pending-timeout round is returned only after the donor's context
+	// was confirmed rewound (or the donor died) with the state page still
+	// Pending, so the shell provably never started and the image is exactly
+	// as it was staged. A round that was finishing late is converted to a
+	// success before the return and never reaches this code, so a retry
+	// cannot run a second shell against an already-executed image.
+	// SR_HT_ERR_RECOVERY_REQUIRED stays non-retryable: that donor may still
+	// be inside the stub, and its image belongs to the shell now.
 	case SR_HT_ERR_NO_THREADS:
 	case SR_HT_ERR_SUSPEND_FAIL:
 	case SR_HT_ERR_OPEN_THREAD_FAIL:
 	case SR_HT_ERR_OPEN_REFUSED:
+	case SR_HT_ERR_REMOTE_PENDING_TIMEOUT:
 		return true;
 	default:
 		return false;

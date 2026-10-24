@@ -230,7 +230,15 @@ bool GetSymbolCacheRoot(std::wstring & out)
 		root += L'\\';
 	}
 
+	// The alphabet is a NUL-terminated literal, so _countof counts the
+	// terminator. The terminator must never be selected: an embedded NUL in
+	// the leaf would make the directory that is created (which stops at the
+	// NUL) shorter than the string that is remembered, and the ownership
+	// check that gates deletion would then reject the leaf and leak the
+	// directory.
 	static const wchar_t kAlphabet[] = L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	constexpr size_t kAlphabetChars = _countof(kAlphabet) - 1;
+	static_assert(kAlphabetChars == 62, "the scratch alphabet must stay 62 characters");
 
 	unsigned char pick[10]{ 0 };
 	if (!BCRYPT_SUCCESS(BCryptGenRandom(nullptr, pick, sizeof(pick), BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
@@ -249,7 +257,7 @@ bool GetSymbolCacheRoot(std::wstring & out)
 
 	for (int i = 1; i < 10; ++i)
 	{
-		leaf += kAlphabet[pick[i] % _countof(kAlphabet)];
+		leaf += kAlphabet[pick[i] % kAlphabetChars];
 	}
 
 	leaf += L'\\';
@@ -596,22 +604,6 @@ namespace
 
 		return path;
 	}
-
-	std::wstring Lowercase(const std::wstring & text)
-	{
-		std::wstring out = text;
-
-		for (size_t i = 0; i < out.size(); ++i)
-		{
-			wchar_t & c = out[i];
-			if (c >= L'A' && c <= L'Z')
-			{
-				c = static_cast<wchar_t>(c - L'A' + L'a');
-			}
-		}
-
-		return out;
-	}
 }
 
 bool IsOwnedScratchRoot(const std::wstring & root)
@@ -664,7 +656,7 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 		}
 	}
 
-	const std::wstring lower_root = Lowercase(normalized);
+	const std::wstring lower_root = LowercaseW(normalized);
 
 	const std::wstring windows_dir = []() -> std::wstring
 	{
@@ -675,7 +667,7 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 			return std::wstring();
 		}
 
-		return Lowercase(NormalizeTrailingSeparator(std::wstring(buffer, length)));
+		return LowercaseW(NormalizeTrailingSeparator(std::wstring(buffer, length)));
 	}();
 
 	if (!windows_dir.empty())
@@ -689,7 +681,7 @@ bool IsOwnedScratchRoot(const std::wstring & root)
 	// accepted when every path segment below it is a scratch leaf.
 	if (!own_path.empty())
 	{
-		const std::wstring lower_own = Lowercase(own_path);
+		const std::wstring lower_own = LowercaseW(own_path);
 
 		if (lower_root == lower_own)
 		{
