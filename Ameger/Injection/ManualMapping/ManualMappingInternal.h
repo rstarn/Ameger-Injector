@@ -34,11 +34,8 @@ typedef struct _MM_DEPENDENCY_RECORD
 } MM_DEPENDENCY_RECORD;
 
 DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
-DWORD __declspec(code_seg(".code$02")) __stdcall MMI_MapSections			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$05")) __stdcall MMI_SetExecProtections	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, DWORD NewState);
 bool	__declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const UNICODE_STRING * FullName, HINSTANCE * hModule);
-DWORD __declspec(code_seg(".code$03")) __stdcall MMI_RelocateImage			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
-DWORD __declspec(code_seg(".code$04")) __stdcall MMI_InitializeCookie		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections		(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
@@ -49,6 +46,14 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain			(MMAP_NATI
 DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories	(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp				(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
+
+// A6: OutputDebugString raises DBG_PRINTEXCEPTION_C on current builds even
+// without a debugger. A normal thread absorbs that raise in its top-level
+// handler frame; the hijacked thread has no such frame on its synthetic stack,
+// so the raise would terminate the target. This handler resumes execution for
+// the two debug-print codes and passes everything else through. It is copied
+// with the rest of the shell and therefore must not call anything outside it.
+LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh			(PEXCEPTION_POINTERS ExceptionInfo);
 
 NTSTATUS __declspec(code_seg(".code$12")) __stdcall MMIH_PreprocessModuleName(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const char * szModule, UNICODE_STRING * ModuleName, LDRP_LOAD_CONTEXT_FLAGS * CtxFlags);
 NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, UNICODE_STRING * Module, LDRP_LOAD_CONTEXT_FLAGS CtxFlag, HINSTANCE * hModule, MM_DEPENDENCY_RECORD ** head);
@@ -70,6 +75,8 @@ namespace MMAP_NATIVE
 	ALIGN NT_FUNC_LOCAL(NtAllocateVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtProtectVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtFreeVirtualMemory);
+		ALIGN NT_FUNC_LOCAL(NtSetEvent);
+		ALIGN NT_FUNC_LOCAL(NtClose);
 
 		ALIGN NT_FUNC_LOCAL(memmove);
 		ALIGN NT_FUNC_LOCAL(RtlZeroMemory);
@@ -89,6 +96,8 @@ namespace MMAP_NATIVE
 		ALIGN NT_FUNC_LOCAL(RtlLookupFunctionEntry);
 
 		ALIGN NT_FUNC_LOCAL(RtlDeleteFunctionTable);
+		ALIGN NT_FUNC_LOCAL(RtlAddVectoredExceptionHandler);
+		ALIGN NT_FUNC_LOCAL(RtlRemoveVectoredExceptionHandler);
 		ALIGN NT_FUNC_LOCAL(LdrpHandleTlsData);
 
 		ALIGN NT_FUNC_LOCAL(LdrLockLoaderLock);
@@ -103,9 +112,6 @@ namespace MMAP_NATIVE
 		ALIGN NT_FUNC_LOCAL(LdrpTlsList);
 
 		ALIGN f_MMI_FUNCTION MMP_Shell					= nullptr;
-		ALIGN f_MMI_FUNCTION MMIP_MapSections			= nullptr;
-		ALIGN f_MMI_FUNCTION MMIP_RelocateImage			= nullptr;
-		ALIGN f_MMI_FUNCTION MMIP_InitializeCookie		= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadImports			= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadDelayImports		= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_SetPageProtections	= nullptr;
@@ -124,12 +130,13 @@ namespace MMAP_NATIVE
 
 		bool IsValid() const
 		{
-			return NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory &&
+			return NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory && NtSetEvent && NtClose &&
 		memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
 		LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
 		RtlAnsiStringToUnicodeString &&
 		LdrpPreprocessDllName &&
 		RtlAddFunctionTable && LdrpHandleTlsData &&
+		RtlAddVectoredExceptionHandler && RtlRemoveVectoredExceptionHandler &&
 		LdrLockLoaderLock && LdrUnlockLoaderLock &&
 		LdrpDereferenceModule &&
 		LdrpHeap && LdrpTlsList;
@@ -139,6 +146,8 @@ namespace MMAP_NATIVE
  	ALIGN struct MANUAL_MAPPING_DATA
  	{
  		ALIGN HINSTANCE	hRet		= NULL;
+ 		ALIGN HANDLE	CompletionEvent = nullptr;
+ 		ALIGN PVOID		DebugPrintVehHandle = nullptr;
  		ALIGN DWORD		Flags		= NULL;
 		// The host-validated OS build. The shell uses it to select the
 		// exception-table encoding that this build family actually stores.
@@ -153,10 +162,8 @@ namespace MMAP_NATIVE
 
 	ALIGN BYTE *	pAllocationBase	= nullptr;
 	ALIGN BYTE *	pImageBase		= nullptr;
- 		ALIGN BYTE *	pRawData		= nullptr;
- 		ALIGN DWORD		RawSize			= 0;
 
- 		ALIGN IMAGE_DOS_HEADER		* pDosHeader		= nullptr;
+ 	ALIGN IMAGE_DOS_HEADER		* pDosHeader		= nullptr;
  		ALIGN IMAGE_NT_HEADERS		* pNtHeaders		= nullptr;
  		ALIGN IMAGE_OPTIONAL_HEADER	* pOptionalHeader	= nullptr;
  		ALIGN IMAGE_FILE_HEADER		* pFileHeader		= nullptr;
@@ -175,10 +182,6 @@ namespace MMAP_NATIVE
 		ALIGN DWORD ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
 		// Tracks whether the executable sections are currently execute-read or
 		// writable, so the stages do not have to re-apply the protection.
-		ALIGN DWORD64	PayloadSeed0	= 0;
-		ALIGN DWORD64	PayloadSeed1	= 0;
-		ALIGN DWORD		PayloadEncoded	= 0;
-		// The keystream seed and whether the payload is masked at all.
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
 		// The callback that was rejected and where it pointed, so the launcher
@@ -194,6 +197,23 @@ namespace MMAP_NATIVE
  		ALIGN void *	TlsDirectory	= nullptr;	
  		ALIGN void *	TlsDummyLdr		= nullptr;	
  		ALIGN void *	TlsDdagNode		= nullptr;	
+		// Exact allocation sizes of the two fabricated loader blocks. The TLS
+		// callback stage zeroes each block before returning it to the loader
+		// heap, and a vtable-free free cannot recover these sizes later.
+		ALIGN DWORD	TlsDummyLdrSize		= 0;
+		ALIGN DWORD	TlsDdagNodeSize		= 0;
+		// A1: what the loader registration set. TlsIndexPrior is the image's
+		// _tls_index before registration and is restored when the registration
+		// is undone; TlsDataLive marks a data-bearing TLS block whose index,
+		// bit, slot and loader entry must all stay alive.
+		ALIGN DWORD	TlsIndex			= 0;
+		ALIGN DWORD	TlsIndexPrior		= 0;
+		ALIGN DWORD	TlsDataLive			= 0;
+		ALIGN DWORD	TlsExpectedIndex	= 0;
+		ALIGN DWORD64	TlsBitmapBefore		= 0;
+		ALIGN DWORD64	TlsBitmapAfter		= 0;
+		ALIGN ULONG_PTR	TlsSlotBefore		= 0;
+		ALIGN ULONG_PTR	TlsSlotAfter		= 0;
 		// Everything the shell learned about its own execution is copied back
 		// into this block for the host to read.
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
@@ -216,79 +236,6 @@ __forceinline DWORD64 MMI_RotateRight64(DWORD64 Value, unsigned Count)
 }
 
 #pragma region inlined helper functions
-
-__forceinline DWORD64 MMI_KeyBlock(DWORD64 Seed0, DWORD64 Seed1, DWORD64 Index)
-{
-	DWORD64 x = Seed0 ^ (Index * 0x9E3779B97F4A7C15ULL);
-	x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;
-	x ^= x >> 27; x *= 0x94D049BB133111EBULL;
-	x ^= x >> 31;
-	x ^= Seed1 + (Index << 32) + Index;
-	x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ULL;
-	x ^= x >> 32;
-	x ^= x >> 25; x *= 0x2545F4914F6CDD1DULL;
-	x ^= x >> 12;
-
-	return x;
-}
-
-__forceinline void MMI_KeyTransformInPlace(BYTE * Data, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
-{
-	if (!Data || !Size)
-	{
-		return;
-	}
-
-	size_t offset = 0;
-
-	while (offset + sizeof(DWORD64) <= Size)
-	{
-		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
-		*ReCa<DWORD64 *>(Data + offset) ^= Block;
-
-		offset += sizeof(DWORD64);
-	}
-
-	if (offset < Size)
-	{
-		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
-		const auto * Bytes = ReCa<const BYTE *>(&Block);
-
-		for (size_t i = 0; offset + i < Size; ++i)
-		{
-			Data[offset + i] ^= Bytes[i];
-		}
-	}
-}
-
-__forceinline void MMI_KeyTransformCopy(BYTE * Destination, const BYTE * Source, size_t Size, DWORD64 Seed0, DWORD64 Seed1)
-{
-	if (!Destination || !Source || !Size)
-	{
-		return;
-	}
-
-	size_t offset = 0;
-
-	while (offset + sizeof(DWORD64) <= Size)
-	{
-		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
-		*ReCa<DWORD64 *>(Destination + offset) = *ReCa<const DWORD64 *>(Source + offset) ^ Block;
-
-		offset += sizeof(DWORD64);
-	}
-
-	if (offset < Size)
-	{
-		const DWORD64 Block = MMI_KeyBlock(Seed0, Seed1, offset / sizeof(DWORD64));
-		const auto * Bytes = ReCa<const BYTE *>(&Block);
-
-		for (size_t i = 0; offset + i < Size; ++i)
-		{
-			Destination[offset + i] = Source[offset + i] ^ Bytes[i];
-		}
-	}
-}
 
 __forceinline void * MMI_LdrpHeap(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f)
 {
@@ -473,6 +420,28 @@ __forceinline void DeleteObject(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f, 
 	{
 		f->RtlFreeHeap(heap, NULL, Object);
 	}
+}
+
+// A2: zero a loader-heap block before returning it to the heap. The loader heap
+// is shared with the rest of ntdll, so a freed-but-unscrubbed block is a
+// readable record of the mapped image (module names, paths, the fabricated
+// loader entry) long after the load has finished. Bytes must be the exact
+// allocation size; the caller owns that value because this helper has no way to
+// recover it from the block header.
+template <class T>
+__forceinline void ScrubFreeObject(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f, T * Object, size_t Bytes)
+{
+	if (!Object)
+	{
+		return;
+	}
+
+	if (f && f->RtlZeroMemory && Bytes)
+	{
+		f->RtlZeroMemory(Object, Bytes);
+	}
+
+	DeleteObject(f, Object);
 }
 
 __forceinline bool InitAnsiString(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f, ANSI_STRING * String, const char * szString, size_t Length)

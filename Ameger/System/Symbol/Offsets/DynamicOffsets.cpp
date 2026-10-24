@@ -77,6 +77,8 @@ DWORD ResolveDynamicOffsets()
 	auto f_module_entry = XOR_STR_A("ModuleEntry");
 	auto f_orig_full_dll = XOR_STR_A("OriginalFullDllName");
 	auto f_running = XOR_STR_A("Running");
+	auto f_tls_slots = XOR_STR_A("TlsSlots");
+	auto f_tls_bitmap_bits = XOR_STR_A("TlsBitmapBits");
 
 	const char * kTeb[] = { t_teb_a.get(), t_teb_b.get() };
 	const char * kPeb[] = { t_peb_a.get(), t_peb_b.get() };
@@ -151,6 +153,32 @@ DWORD ResolveDynamicOffsets()
 	REQUIRE_FIELD(kTeb, f_last_error.get(), tmp.TebLastErrorValue);
 
 	OPTIONAL_FIELD(kPeb, f_ldr.get(), tmp.PebLdr);
+
+	{
+		DWORD off = 0;
+		if (sym_parser.GetFieldOffsetAny(kTeb, _countof(kTeb), f_tls_slots.get(), off) == SYMBOL_ERR_SUCCESS &&
+			off && off + 64 * sizeof(void *) <= 0x2000)
+		{
+			tmp.TebTlsSlots = off;
+		}
+		else
+		{
+			tmp.TebTlsSlots = 0;
+			LOG(1, "DynamicOffsets: TlsSlots Not Resolved; TLS Rewind Disabled\n");
+		}
+
+		off = 0;
+		if (sym_parser.GetFieldOffsetAny(kPeb, _countof(kPeb), f_tls_bitmap_bits.get(), off) == SYMBOL_ERR_SUCCESS &&
+			off && off + 2 * sizeof(ULONG) <= 0x400)
+		{
+			tmp.PebTlsBitmapBits = off;
+		}
+		else
+		{
+			tmp.PebTlsBitmapBits = 0;
+			LOG(1, "DynamicOffsets: TlsBitmapBits Not Resolved; TLS Rewind Disabled\n");
+		}
+	}
 
 	REQUIRE_FIELD(kKuser, f_cookie.get(), tmp.KuserCookie);
 

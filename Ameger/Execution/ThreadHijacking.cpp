@@ -50,6 +50,29 @@ namespace
 	// Chunk size used when zeroing a remote region before it is released.
 	constexpr SIZE_T kScrubChunk = 0x2000;
 
+	// Hijack staging geometry, mirrored by SR_SHELL_* in Execution/Routine/StartRoutine.h
+	// and RemoteShell.inc: an execute-read code page, a read-write state page, then
+	// the dedicated shell stack the stub pivots onto before it calls the routine.
+	constexpr SIZE_T kHijackCodePage = 0x1000;
+	constexpr SIZE_T kHijackStatePage = 0x1000;
+	constexpr SIZE_T kHijackGuardPage = 0x1000;
+	constexpr SIZE_T kHijackShellStack = SR_SHELL_STACK_SIZE;
+	constexpr SIZE_T kHijackAllocationSize = kHijackCodePage + kHijackStatePage + kHijackGuardPage + kHijackShellStack;
+
+	// The stub pushes RFLAGS plus all sixteen general-purpose registers on the
+	// victim stack before it pivots. Those 136 bytes hold the victim's own
+	// register values; nothing belonging to the injector is ever placed there.
+	constexpr DWORD kHijackVictimStackBytes = 17 * sizeof(ULONG_PTR);
+
+	static_assert(SR_SHELL_STACK_BASE == kHijackStatePage + kHijackGuardPage,
+		"the shell stack must start after the guard page");
+	static_assert(SR_SHELL_STACK_BASE + SR_SHELL_STACK_SIZE == kHijackStatePage + kHijackGuardPage + kHijackShellStack,
+		"the stub shell stack geometry must match the host allocation");
+	static_assert(SR_SHELL_STACK_TOP + 0x20 <= SR_SHELL_STACK_BASE + SR_SHELL_STACK_SIZE,
+		"the stub pivot address must stay inside the shell stack");
+	static_assert(SR_SHELL_STACK_TOP % 16 == 0,
+		"the shell stack top must be 16-byte aligned");
+
 	// How many threads may be probed per candidate before the scan gives up on
 	// finding a running one and falls back to a waiting thread.
 	constexpr DWORD kMaxHandleProbes = 4;
@@ -394,8 +417,8 @@ namespace
 		void *	Base	= nullptr;
 	};
 
-	constexpr SIZE_T kDeferredTrampolineSize = 0x2000;
-	constexpr SIZE_T kDeferredCodePage = 0x1000;
+	constexpr SIZE_T kDeferredTrampolineSize = kHijackAllocationSize;
+	constexpr SIZE_T kDeferredCodePage = kHijackCodePage;
 
 	SRWLOCK g_DeferredTrampolineLock = SRWLOCK_INIT;
 	std::vector<DeferredTrampoline> g_DeferredTrampolines;
@@ -697,7 +720,7 @@ static void ProbeFpCaps(DWORD & OutFlags, DWORD & OutMask, const BYTE * pStatePa
 	OutMask = supported;
 }
 
-static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, const std::vector<DWORD> & excluded, ERROR_DATA & error_data)
+static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, const std::vector<DWORD> & excluded, ERROR_DATA & error_data)
 {
 	LOG(2, "Begin SR_AcquireThread\n");
 
@@ -1071,11 +1094,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return false;
 	};
 
-	constexpr size_t kWxCodePage = 0x1000;
-	constexpr size_t kWxAllocSize = 0x2000;
-
-	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kWxCodePage,
-		"the FP/XSAVE image does not fit the RW state page - raise kWxAllocSize and re-split the pages");
+	static_assert(SR_FP_AREA + SR_FP_AREA_SIZE + sizeof(ULONG_PTR) <= kHijackStatePage,
+		"the FP/XSAVE image does not fit the RW state page - raise kHijackAllocationSize and re-split the pages");
 	// The stub is copied out of this image and re-laid out in the target: the
 	// executable part goes on an execute-read page and the state block goes on a
 	// read-write page, so the target never holds a writable page of code.
@@ -1116,8 +1136,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	const size_t code_size = state_offset;
 	const size_t data_size = shellcode_size - state_offset;
-	const size_t pad = kWxCodePage - code_size;
-	if (code_size >= kWxCodePage || data_size > kWxCodePage)
+	const size_t pad = kHijackCodePage - code_size;
+	if (code_size >= kHijackCodePage || data_size > kHijackCodePage)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1126,13 +1146,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	std::vector<BYTE> shellcode(shellcode_size);
 	memcpy(shellcode.data(), RemoteThreadHijackBegin, shellcode_size);
-	// The staged image is split across two pages: code on the first, the state
-	// block on the second.
-	// The staged image is split across two pages: code on the first, the state
-	// block on the second.
-	std::vector<BYTE> staged(kWxCodePage + data_size, 0x00);
+	// Three page groups: the executable stub, the state block, then the shell
+	// stack. Only the first two are staged; the stack is left zero, which is
+	// what the allocator already guarantees.
+	std::vector<BYTE> staged(kHijackCodePage + data_size, 0x00);
 
-	void * pMem = ScAllocateMemory(hTargetProc, kWxAllocSize, PAGE_READWRITE);
+	void * pMem = ScAllocateMemory(hTargetProc, kHijackAllocationSize, PAGE_READWRITE);
 	if (!pMem)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -1145,17 +1164,14 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	auto scrub_guard = MakeScopeExit([&]() noexcept {
 		if (allocation_guard.get())
 		{
-			ScrubRemoteRegion(hTargetProc, pMem, kWxAllocSize, kScrubChunk);
+			ScrubRemoteRegion(hTargetProc, pMem, kHijackAllocationSize, kScrubChunk);
 		}
 	});
 
 	memcpy(staged.data(), shellcode.data(), code_size);
-	memcpy(staged.data() + kWxCodePage, shellcode.data() + state_offset, data_size);
+	memcpy(staged.data() + kHijackCodePage, shellcode.data() + state_offset, data_size);
 
 	{
-		// The RIP-relative displacements in the stub were computed for the layout
-		// of this image. The state block moves to a different page in the target,
-		// so every displacement that points at it is shifted by the same amount.
 		// The RIP-relative displacements in the stub were computed for the layout
 		// of this image. The state block moves to a different page in the target,
 		// so every displacement that points at it is shifted by the same amount.
@@ -1274,8 +1290,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return SR_HT_ERR_GET_CONTEXT_FAIL;
 	}
 
-	const size_t staged_return_offset = kWxCodePage + (return_target_offset - state_offset);
-	const size_t staged_state_offset = kWxCodePage;
+	const size_t staged_return_offset = kHijackCodePage + (return_target_offset - state_offset);
+	const size_t staged_state_offset = kHijackCodePage;
 
 	const auto OldRIP = OldContext.Rip;
 	*reinterpret_cast<ULONG_PTR *>(staged.data() + staged_return_offset) = OldRIP;
@@ -1284,13 +1300,21 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	remote_data->pRoutine = pRoutine;
 
 	BYTE * pCode = ReCa<BYTE *>(pMem);
-	BYTE * pState = ReCa<BYTE *>(pMem) + kWxCodePage;
+	BYTE * pState = ReCa<BYTE *>(pMem) + kHijackCodePage;
 
 	ProbeFpCaps(remote_data->FpFlags, remote_data->FpMask, pState);
 	remote_data->ShellCw = 0x037F;
 	remote_data->ShellMxcsr = 0x01F80;
 	remote_data->RoutineCyclesDelta = 0;
-	remote_data->StackScrubbedBytes = 0;
+	remote_data->ShellStackTop = 0;
+
+	{
+		const ULONG_PTR shell_stack_base = ReCa<ULONG_PTR>(pState) + SR_SHELL_STACK_BASE;
+		InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.ShellStackBase), static_cast<LONG64>(shell_stack_base));
+		StoreThreadExecStat(g_ThreadExecStats.ShellStackSize, static_cast<DWORD>(kHijackShellStack));
+		StoreThreadExecStat(g_ThreadExecStats.VictimStackBytes, kHijackVictimStackBytes);
+		StoreThreadExecStat(g_ThreadExecStats.ShellStackResumeCount, 0);
+	}
 
 	void * pRemoteFunc = pCode;
 	OldContext.Rip = reinterpret_cast<ULONG_PTR>(pRemoteFunc);
@@ -1301,7 +1325,8 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	StoreThreadExecStat(g_ThreadExecStats.FpMask, remote_data->FpMask);
 	LOG(1, "[ThreadHijack] [*] Context Captured: Target RIP = 0x%llX | RSP = 0x%llX\n", (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
 	LOG(1, "[ThreadHijack] [*] Floating-Point State: Mode = %s | Ceiling Mask = 0x%X | Area = %u Bytes\n", remote_data->FpFlags ? "XSAVE" : "FXSAVE", remote_data->FpMask, SR_FP_AREA_SIZE);
-	LOG(1, "[ThreadHijack] [*] Staging: VA = %p | RX = 0x1000 | RW = 0x%llX\n", pMem, (unsigned long long)(kWxAllocSize - kWxCodePage));
+	LOG(1, "[ThreadHijack] [*] Staging: VA = %p | Code RX = 0x1000 | State RW = 0x1000 | Shell Stack RW = %llu Bytes\n",
+		pMem, static_cast<unsigned long long>(kHijackShellStack));
 	LOG(1, "[ThreadHijack] [*] RIP Redirection: 0x%llX -> %p\n", (unsigned long long)OldRIP, pRemoteFunc);
 	LOG(2, "Remote Thread Shell Prepared (W^X Split: Code RX 0x1000, State RW)\n");
 
@@ -1329,7 +1354,18 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	}
 
 	{
-		if (!ScProtectMemory(hTargetProc, pCode, kWxCodePage, PAGE_EXECUTE_READ))
+		// M3: guard page between the state page and the shell stack.
+		const BOOL guard_page_ok = ScProtectMemory(hTargetProc, ReCa<BYTE *>(pMem) + kHijackCodePage + kHijackStatePage, kHijackGuardPage, PAGE_NOACCESS);
+		if (!guard_page_ok)
+		{
+			LOG(2, "Guard Page Protect(NOACCESS) Failed\n");
+		}
+		else
+		{
+			LOG(2, "Guard Page Established (NOACCESS) Between State Page And Shell Stack\n");
+		}
+
+		if (!ScProtectMemory(hTargetProc, pCode, kHijackCodePage, PAGE_EXECUTE_READ))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1412,7 +1448,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		resumed = false;
 
 		const ULONG_PTR code_base = ReCa<ULONG_PTR>(pCode);
-		const ULONG_PTR code_end = code_base + kWxCodePage;
+		const ULONG_PTR code_end = code_base + kHijackCodePage;
 
 		for (int poll = 0; poll < kForceRestorePolls; ++poll)
 		{
@@ -1492,7 +1528,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		const ULONG_PTR code_base = ReCa<ULONG_PTR>(pCode);
 
-		return probe.Rip < code_base || probe.Rip >= code_base + kWxCodePage;
+		return probe.Rip < code_base || probe.Rip >= code_base + kHijackCodePage;
 	};
 
 	// Decide what happens to the trampoline: reclaim it now, or hand it to the
@@ -1541,22 +1577,83 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	DWORD poll_wait_ms = 1;
 
+	// A6: the shell signals this event immediately before it returns, so the
+	// state page settles a handful of instructions later. Waiting on both
+	// handles lets the host observe that transition at once instead of on the
+	// next backoff tick; the grace bound keeps a lost completion from turning
+	// the loop into an unbounded spin.
+	// M1: a manual-reset completion event is shared across donor rounds, so
+	// reset it here for every attempt; otherwise a stale signal makes the wait
+	// return immediately. The grace break below is also removed, so a signaled
+	// event never aborts polling before the state page settles or the timeout
+	// expires.
+	if (CompletionEvent)
+	{
+		ResetEvent(CompletionEvent);
+	}
+
+	bool completion_seen = false;
+	ULONGLONG completion_seen_at = 0;
+	HANDLE wait_handles[2] = { g_hInterruptEvent, CompletionEvent };
+	const DWORD wait_count = CompletionEvent ? 2 : 1;
+
 	// A stub that never got scheduled is a common failure: the donor thread was
 	// parked on something the OS would not wake for us. A single posted message
 	// nudges it once before the whole attempt is abandoned.
 	bool nudge_sent = false;
 	DWORD nudge_after_ms = 250;
 
+	// Shell stack geometry, computed once: the state page sits at pState and
+	// the shell stack begins SR_SHELL_STACK_BASE bytes into it. These values
+	// are used both for the observation counter (below) and for the final
+	// pivot verification.
+	const ULONG_PTR shell_base = ReCa<ULONG_PTR>(pState) + SR_SHELL_STACK_BASE;
+	const ULONG_PTR shell_end = shell_base + SR_SHELL_STACK_SIZE;
+
 	while (GetTickCount64() - Timer < Timeout)
 	{
-		auto dwWaitRet = WaitForSingleObject(g_hInterruptEvent, poll_wait_ms);
-		poll_wait_ms = poll_wait_ms < 5 ? 5 : 25;
+		auto dwWaitRet = WaitForMultipleObjects(wait_count, wait_handles, FALSE, poll_wait_ms);
+		const bool completion_signaled = CompletionEvent && dwWaitRet == WAIT_OBJECT_0 + 1;
+
+		if (completion_signaled)
+		{
+			if (!completion_seen)
+			{
+				completion_seen = true;
+				completion_seen_at = GetTickCount64();
+
+				LOG(2, "Completion Event Signaled; Polling The State Page At Full Speed\n");
+			}
+			else if (GetTickCount64() - completion_seen_at > 1000)
+			{
+				LOG(2, "Completion Event Signaled But The Stub State Has Not Settled Yet; Continuing To Poll\n");
+			}
+
+			poll_wait_ms = 1;
+		}
+		else
+		{
+			poll_wait_ms = poll_wait_ms < 5 ? 5 : 25;
+		}
+
 		++poll_iterations;
 
 		BOOL bRet = ScReadProcessMemory(hTargetProc, pState, &data, sizeof(data), nullptr);
 		if (bRet)
 		{
 			consecutive_read_failures = 0;
+
+			// Count live observations of the thread executing on the shell
+			// stack: each poll that sees State == Executing with RSP inside
+			// the window is an independent confirmation that the pivot held.
+			// A counter > 0 means the host directly observed the thread
+			// resumed on the shell stack, not merely that the staging
+			// allocation was set up.
+			if (data.State == SR_REMOTE_STATE::SR_RS_Executing &&
+				data.ShellStackTop >= shell_base && data.ShellStackTop < shell_end)
+			{
+				InterlockedIncrement(ReCa<volatile LONG *>(&g_ThreadExecStats.ShellStackResumeCount));
+			}
 
 			if (RemoteRoutineSettled(data.State))
 			{
@@ -1566,34 +1663,40 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				StoreThreadExecStat(g_ThreadExecStats.ExecMs, exec_ms);
 				StoreThreadExecStat(g_ThreadExecStats.RoutineRet, data.Ret);
 				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.RoutineCyclesDelta), static_cast<LONG64>(data.RoutineCyclesDelta));
-				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackScrubbedBytes), static_cast<LONG64>(data.StackScrubbedBytes));
+				InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.ShellStackTop), static_cast<LONG64>(data.ShellStackTop));
 				{
 					// The stub rewrote SR_FP_MASK with the mask it actually used, which
 					// is the intersection of the CPU ceiling and the victim's own XCR0.
 					// Report that effective mask rather than the staged ceiling.
 					StoreThreadExecStat(g_ThreadExecStats.FpMask, data.FpMask);
 				}
-				{
-					ULONG_PTR saved_rsp = 0;
-					if (ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(pState) + SR_SAVED_RSP, &saved_rsp, sizeof(saved_rsp), nullptr) && saved_rsp)
-					{
-						if (data.StackScrubbedBytes && saved_rsp >= data.StackScrubbedBytes)
-						{
-							InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.StackLimit), static_cast<LONG64>(saved_rsp - data.StackScrubbedBytes));
-						}
-					}
-				}
+				const bool shell_pivot_ok = data.ShellStackTop >= shell_base && data.ShellStackTop < shell_end;
 				LOG(1, "[ThreadHijack] [*] Polling Execution: State = Finished | Iterations = %u | Elapsed = %u ms | Return Value = 0x%08X\n", poll_iterations, exec_ms, data.Ret);
 
-				if (data.StackScrubbedBytes)
+				if (CompletionEvent)
 				{
-					LOG(1, "[ThreadHijack] [+] Stack Sanitization: Scrubbed = %llu Bytes | Cycles = %llu\n",
-						(unsigned long long)data.StackScrubbedBytes,
+					LOG(1, "[ThreadHijack] [%s] Completion Event: %s | Iterations = %u\n",
+						completion_seen ? "+" : "*",
+						completion_seen ? "Signaled Before The State Page Settled" : "Not Observed Before Settlement",
+						poll_iterations);
+				}
+
+				if (shell_pivot_ok)
+				{
+					StoreThreadExecStat(g_ThreadExecStats.Success, 1);
+					LOG(1, "[ThreadHijack] [+] Shell Stack Pivot: RSP = 0x%llX Inside 0x%llX..0x%llX | Victim Stack Spill = %u Bytes (Register Values Only) | Cycles = %llu\n",
+						(unsigned long long)data.ShellStackTop,
+						(unsigned long long)shell_base, (unsigned long long)shell_end,
+						static_cast<unsigned>(kHijackVictimStackBytes),
 						(unsigned long long)data.RoutineCyclesDelta);
 				}
 				else
 				{
-					LOG(1, "[ThreadHijack] [*] Stack Sanitization: 0 Bytes Scrubbed (No Sanitization Result Reported)\n");
+					StoreThreadExecStat(g_ThreadExecStats.Success, 0);
+					StoreThreadExecStat(g_ThreadExecStats.FailCode, SR_HT_ERR_SHELL_PIVOT_INVALID);
+					LOG(1, "[ThreadHijack] [x] Shell Stack Pivot Not Verified: RSP = 0x%llX Outside 0x%llX..0x%llX; The Victim Stack May Have Been Used\n",
+						(unsigned long long)data.ShellStackTop,
+						(unsigned long long)shell_base, (unsigned long long)shell_end);
 				}
 
 				break;
@@ -1743,7 +1846,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			const ULONG_PTR check_rip = check_context.Rip;
 			const ULONG_PTR code_base = ReCa<ULONG_PTR>(pCode);
-			const ULONG_PTR code_end = code_base + kWxCodePage;
+			const ULONG_PTR code_end = code_base + kHijackCodePage;
 			const bool outside_code = check_rip < code_base || check_rip >= code_end;
 
 			if (outside_code)
@@ -1794,7 +1897,8 @@ static bool IsRetryableHijackFailure(DWORD code)
 {
 	switch (code)
 	{
-	case SR_HT_ERR_REMOTE_PENDING_TIMEOUT:
+	// M2: a pending-timeout round may have partially run the shell, so do not
+	// retry it against the same pData/image.
 	case SR_HT_ERR_NO_THREADS:
 	case SR_HT_ERR_SUSPEND_FAIL:
 	case SR_HT_ERR_OPEN_THREAD_FAIL:
@@ -1805,7 +1909,7 @@ static bool IsRetryableHijackFailure(DWORD code)
 	}
 }
 
-DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
+DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, ERROR_DATA & error_data)
 {
 	const ULONGLONG budget_start = GetTickCount64();
 	std::vector<DWORD> excluded;
@@ -1836,7 +1940,7 @@ DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD
 		ERROR_DATA round_error{ };
 		DWORD round_out = 0;
 		last_code = SR_HijackThreadOnce(hTargetProc, pRoutine, pArg, round_out, remaining, Flags,
-			sponsor_handle, sponsor_tid, excluded, round_error);
+			sponsor_handle, sponsor_tid, CompletionEvent, excluded, round_error);
 
 		if (last_code == SR_ERR_SUCCESS)
 		{

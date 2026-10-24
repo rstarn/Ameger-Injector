@@ -6,6 +6,12 @@ struct DYNAMIC_NT_OFFSETS
 {
 	DWORD TebSameTebFlags = 0;
 	DWORD TebLastErrorValue = 0;
+	// A1: the current thread's 64 TLS slot pointers, and the PEB's inline
+	// 64-bit TLS bitmap. LdrpHandleTlsData sets one bit and one slot; without
+	// these the registration cannot be undone after a callbacks-only TLS block
+	// has been processed.
+	DWORD TebTlsSlots = 0;
+	DWORD PebTlsBitmapBits = 0;
 
 	DWORD PebLdr = 0;
 

@@ -26,7 +26,18 @@ using f_Routine			= DWORD(__fastcall *)(void * pArg);
 #define SR_FP_AREA_SIZE 864
 #define SR_SAVED_RSP 96
 #define SR_CYCLES_DELTA 80
-#define SR_SCRUB_BYTES 88
+// The RSP the stub actually pivoted to. The host checks it against the shell
+// stack window below, so a stub that did not pivot cannot pass as one that did.
+#define SR_SHELL_RSP 88
+
+// Dedicated shell stack geometry, mirrored from Execution/Stub/RemoteShell.inc.
+// The stack is the third page group of the same allocation: code page, state
+// page, then the stack. The first 128 bytes of victim stack are still used for
+// the register spill (victim values only), but no shell frame ever touches it.
+#define SR_SHELL_STACK_BASE 0x2000
+#define SR_SHELL_STACK_SIZE 0x100000
+// 16-byte aligned top of the stack, minus the caller's 64-byte shadow slot.
+#define SR_SHELL_STACK_TOP 0x101FC0
 
 // XCR0 components the hijack stub is allowed to request. Mirrors the SR_FP_* constants
 // in Execution/Stub/RemoteShell.inc; the stub narrows this further against the
@@ -56,7 +67,7 @@ ALIGN struct SR_REMOTE_DATA
 	// The stub installs a known control word and MXCSR before the routine
 	// runs, and restores the originals afterwards.
 	ALIGN unsigned __int64	RoutineCyclesDelta	= 0;
-	ALIGN SIZE_T			StackScrubbedBytes	= 0;
+	ALIGN ULONG_PTR			ShellStackTop		= 0;
 };
 
 static_assert(sizeof(SR_REMOTE_DATA) == 96);
@@ -70,7 +81,7 @@ static_assert(offsetof(SR_REMOTE_DATA, FpMask) == 56);
 static_assert(offsetof(SR_REMOTE_DATA, ShellCw) == 64);
 static_assert(offsetof(SR_REMOTE_DATA, ShellMxcsr) == 72);
 static_assert(offsetof(SR_REMOTE_DATA, RoutineCyclesDelta) == 80);
-static_assert(offsetof(SR_REMOTE_DATA, StackScrubbedBytes) == 88);
+static_assert(offsetof(SR_REMOTE_DATA, ShellStackTop) == 88);
 
 extern "C" BYTE RemoteThreadHijackBegin[];
 extern "C" BYTE RemoteThreadHijackEnd[];
@@ -84,6 +95,6 @@ extern "C" BYTE RemoteThreadTebReadIn[];
 extern "C" BYTE RemoteThreadTebReadOut[];
 extern "C" BYTE RemoteThreadTebWrite[];
 
-DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
+DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, ERROR_DATA & error_data);
 
-DWORD SR_HijackThread		(HANDLE hTargetProc, f_Routine pRoutine, void * pArg,							DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data);
+DWORD SR_HijackThread		(HANDLE hTargetProc, f_Routine pRoutine, void * pArg,							DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, ERROR_DATA & error_data);

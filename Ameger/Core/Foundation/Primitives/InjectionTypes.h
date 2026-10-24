@@ -53,27 +53,45 @@ struct THREAD_EXEC_STATS
 	DWORD FailCode = 0;
 	DWORD DonorRounds = 0;
 	DWORD64 RoutineCyclesDelta = 0;
-	ULONG_PTR StackScrubbedBytes = 0;
+	// A5: the RSP the stub pivoted to, and the window that RSP must fall in.
+	// A zero ShellStackTop means the pivot was not observed, which is a failed
+	// isolation check rather than a cosmetic one.
+	ULONG_PTR ShellStackTop = 0;
 	DWORD PollIterations = 0;
 	DWORD ExecMs = 0;
 	DWORD RoutineRet = 0;
 	ULONG_PTR OldRip = 0;
 	ULONG_PTR OldRsp = 0;
-	ULONG_PTR StackLimit = 0;
+	ULONG_PTR ShellStackBase = 0;
 	DWORD FpMode = 0;
 	DWORD FpMask = 0;
+	DWORD ShellStackSize = 0;
+	// The register spill below the victim RSP holds only the victim's own
+	// register values; no shell pointer or frame is ever placed there.
+	DWORD VictimStackBytes = 0;
+
+	// Host-side observation counter: incremented once per polling iteration in
+	// which the stub was observed executing with its RSP inside the dedicated
+	// shell stack.  Replaces the ShellStackSize "install flag" as the primary
+	// evidence that the thread actually resumed on the shell stack — a zero
+	// here means the pivot was never independently observed, even if the
+	// staging allocation succeeded.
+	DWORD ShellStackResumeCount = 0;
 };
 
-static_assert(sizeof(THREAD_EXEC_STATS) == 88);
+static_assert(sizeof(THREAD_EXEC_STATS) == 104);
 static_assert(offsetof(THREAD_EXEC_STATS, Attempted) == 0);
 static_assert(offsetof(THREAD_EXEC_STATS, DonorRounds) == 16);
 static_assert(offsetof(THREAD_EXEC_STATS, PollIterations) == 40);
 static_assert(offsetof(THREAD_EXEC_STATS, RoutineRet) == 48);
 static_assert(offsetof(THREAD_EXEC_STATS, OldRip) == 56);
 static_assert(offsetof(THREAD_EXEC_STATS, OldRsp) == 64);
-static_assert(offsetof(THREAD_EXEC_STATS, StackLimit) == 72);
+static_assert(offsetof(THREAD_EXEC_STATS, ShellStackBase) == 72);
 static_assert(offsetof(THREAD_EXEC_STATS, FpMode) == 80);
 static_assert(offsetof(THREAD_EXEC_STATS, FpMask) == 84);
+static_assert(offsetof(THREAD_EXEC_STATS, ShellStackSize) == 88);
+static_assert(offsetof(THREAD_EXEC_STATS, VictimStackBytes) == 92);
+static_assert(offsetof(THREAD_EXEC_STATS, ShellStackResumeCount) == 96);
 
 struct MAP_STATS
 {
@@ -134,6 +152,20 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	PVOID TlsLastExecutedAddress = nullptr;
 	PVOID InvertedTableEntryBase = nullptr;
 	SIZE_T PreSectionSpanWiped = 0;
+	// A6: the image is mapped by the host before the hijack, so the victim
+	// thread never executes the map/relocate/cookie work. HostMapCycles is the
+	// host's own TSC for that work; the remaining counters are written by the
+	// shell around the stages it still owns, so the launcher can show exactly
+	// where the in-shell window went.
+	unsigned __int64 HostMapCycles = 0;
+	unsigned __int64 ImportStageCycles = 0;
+	unsigned __int64 DelayImportStageCycles = 0;
+	unsigned __int64 ExceptionStageCycles = 0;
+	unsigned __int64 TlsStageCycles = 0;
+	unsigned __int64 TlsCallbackStageCycles = 0;
+	unsigned __int64 HeaderStageCycles = 0;
+	unsigned __int64 DirectoryStageCycles = 0;
+	unsigned __int64 ProtectStageCycles = 0;
 
 	NTSTATUS LdrLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
 	NTSTATUS LdrUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
@@ -151,9 +183,38 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	// 1 when the loader-allocated TLS entry was found and unlinked from
 	// LdrpTlsList, 0 when it was not (or TLS was not configured).
 	DWORD TlsLoaderEntryUnlinked = 0;
+	// L2: 1 when no loader entry existed to rewind (a valid outcome), so
+	// telemetry consumers can distinguish "nothing to do" from "failed".
+	DWORD TlsLoaderEntryAbsent = 0;
+	// Reserved to keep the trailing four-byte group an even number of words.
+	DWORD Reserved = 0;
+	// A1: the TLS index the loader assigned, whether the image carries real TLS
+	// data (which forces the registration to be retained), and whether each
+	// piece of the registration was restored. The index in the image and the
+	// PEB bitmap bit are separate facts, so each gets its own flag.
+	DWORD TlsIndex = 0;
+	DWORD TlsHasData = 0;
+	DWORD TlsIndexRestored = 0;
+	DWORD TlsBitmapBitCleared = 0;
+	DWORD TlsSlotCleared = 0;
+	NTSTATUS TlsLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	NTSTATUS TlsUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	// A6: the shell signals a host-owned event as its last act, so the launcher
+	// can stop polling the state page the moment the work is done instead of
+	// waiting for the next poll tick. The handle is closed by the shell.
+	DWORD CompletionEventSignaled = 0;
+	NTSTATUS CompletionEventStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
+	// A6: 1 when the shell registered its vectored handler for the two
+	// debug-print exception codes. OutputDebugString raises DBG_PRINTEXCEPTION_C
+	// unconditionally on current builds; the OS top-level handler frame that
+	// normally absorbs it does not exist on the hijacked thread's synthetic
+	// stack, so this guard is what keeps DllMain from terminating the target.
+	// The block is copied a word at a time and must stay free of padding, so the
+	// four-byte group has an even number of members.
+	DWORD DebugPrintVehInstalled = 0;
 };
 
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 5 * sizeof(ULONG_PTR) + 14 * sizeof(DWORD),
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 26 * sizeof(DWORD),
 	"the telemetry block must have no padding, because it is published a word at a time");
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0,
 	"the telemetry block is published a word at a time, so its size must be a whole number of words");

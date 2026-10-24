@@ -310,6 +310,13 @@ DWORD __stdcall ShutdownRuntime()
 	return INJ_ERR_ALREADY_RUNNING;
 }
 
+DWORD __stdcall GetRuntimeAbiVersion()
+{
+	EXPORT_FUNCTION("CoreAbiVersion", __FUNCDNAME__)
+
+	return AMEGER_RUNTIME_ABI_VERSION;
+}
+
 BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, void * pReserved)
 {
 	UNREFERENCED_PARAMETER(pReserved);

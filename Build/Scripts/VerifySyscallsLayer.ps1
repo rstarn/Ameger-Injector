@@ -116,15 +116,32 @@ if ($Check -eq "Stub") {
 
 if ($Check -eq "Payload") {
 
-
+    # A6 removed the raw-payload transfer: the host maps the finished image at
+    # its final address and no keystream is ever mixed. These constants are the
+    # old transfer encoder; finding one means the superseded path is still
+    # compiled into the runtime.
     $k1 = Get-ByteMatches $data $keystreamConstant
     $k2 = Get-ByteMatches $data $keystreamAlt
     $k3 = Get-ByteMatches $data $keystreamAlt2
-    if (($k1 + $k2 + $k3) -lt 1) {
-        Write-Fail "Payload Keystream Mixer Constants Not Present; Transfer Obfuscation Appears Disabled"
+    if (($k1 + $k2 + $k3) -gt 0) {
+        Write-Fail "Legacy Payload Keystream Constants Still Present; The Raw-Payload Transfer Path Was Not Removed (K1 = $k1 | K2 = $k2 | K3 = $k3)"
         exit 1
     }
-    Write-Ok ("Payload Keystream Mixer Present (K1 = " + $k1 + " | K2 = " + $k2 + " | K3 = " + $k3 + ")")
+    Write-Ok "Raw-Payload Transfer Path Removed (Keystream Constants Absent)"
+
+    # Positive attestation for the split: the host-map log marker, the per-stage
+    # timing marker, and the completion-event marker all live in the new code.
+    $hostMapNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Host Map: Image Mapped")
+    $stageNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Shell Stages:")
+    $eventNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Completion Event")
+    $hostMap = Get-ByteMatches $data $hostMapNeedle
+    $stages = Get-ByteMatches $data $stageNeedle
+    $events = Get-ByteMatches $data $eventNeedle
+    if (($hostMap -lt 1) -or ($stages -lt 1) -or ($events -lt 1)) {
+        Write-Fail ("A6 Host-Mapped Shell Markers Missing (HostMap = " + $hostMap + " | Stages = " + $stages + " | Completion = " + $events + ")")
+        exit 1
+    }
+    Write-Ok ("A6 Host-Mapped Shell Present (HostMap = " + $hostMap + " | Stages = " + $stages + " | Completion = " + $events + ")")
 }
 
 if ($Check -eq "Stealth") {

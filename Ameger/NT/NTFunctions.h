@@ -40,6 +40,17 @@ using f_LdrGetProcedureAddress = NTSTATUS (__stdcall *)
 	PVOID			*	ProcedureAddress
 );
 
+using f_NtSetEvent = NTSTATUS (__stdcall *)
+(
+	HANDLE	EventHandle,
+	PLONG	PreviousState
+);
+
+using f_NtClose = NTSTATUS (__stdcall *)
+(
+	HANDLE	Handle
+);
+
 using f_NtQueryInformationProcess = NTSTATUS (__stdcall *)
 (
 	HANDLE					hTargetProc,
@@ -97,6 +108,17 @@ using f_RtlAddFunctionTable = BOOL (__stdcall *)
 using f_RtlDeleteFunctionTable = BOOLEAN (__stdcall *)
 (
 	RUNTIME_FUNCTION *	FunctionTable
+);
+
+using f_RtlAddVectoredExceptionHandler = PVOID (__stdcall *)
+(
+	ULONG							First,
+	PVECTORED_EXCEPTION_HANDLER		Handler
+);
+
+using f_RtlRemoveVectoredExceptionHandler = ULONG (__stdcall *)
+(
+	PVOID	Handle
 );
 
 using f_LdrpHandleTlsData = NTSTATUS (__fastcall *)

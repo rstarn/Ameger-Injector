@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Windows.h>
+
+#define AMEGER_RUNTIME_ABI_VERSION 20261024u
 #include "Core/Foundation/Primitives/InjectionTypes.h"
 
 struct MEMORY_INJECTIONDATA
@@ -67,8 +69,10 @@ struct LAST_ERROR_INFO
 static_assert(sizeof(LAST_ERROR_INFO) % 4 == 0, "LAST_ERROR_INFO must stay 4-byte aligned");
 
 using f_GetLastErrorInfo = DWORD(__stdcall *)(LAST_ERROR_INFO * Out);
+using f_GetRuntimeAbiVersion = DWORD(__stdcall *)();
 using f_ClearLastErrorInfo = DWORD(__stdcall *)();
 DWORD __stdcall GetLastErrorInfo(LAST_ERROR_INFO * Out);
+DWORD __stdcall GetRuntimeAbiVersion();
 
 DWORD __stdcall ClearLastErrorInfo();
 

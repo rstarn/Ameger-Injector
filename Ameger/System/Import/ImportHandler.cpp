@@ -204,6 +204,8 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	if (LoadSymbolNative(S_FUNC(NtAllocateVirtualMemory)))				return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(NtFreeVirtualMemory)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(NtProtectVirtualMemory)))				return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(NtSetEvent)))							return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(NtClose)))								return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
 	if (LoadSymbolNative(S_FUNC(RtlInsertInvertedFunctionTable)))		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(LdrpHandleTlsData)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
@@ -251,6 +253,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	if (LoadSymbolNative(S_FUNC(RtlLookupFunctionEntry))) return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
 	LoadSymbolNative(S_FUNC(RtlDeleteFunctionTable));
+
+	if (LoadSymbolNative(S_FUNC(RtlAddVectoredExceptionHandler)))		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
+	if (LoadSymbolNative(S_FUNC(RtlRemoveVectoredExceptionHandler)))	return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
 	{
 		const DWORD dyno_ret = ResolveDynamicOffsets();

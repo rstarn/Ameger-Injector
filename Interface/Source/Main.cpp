@@ -2661,6 +2661,9 @@ wchar_t name[48]{};
                 auto exp_exec = XOR_STR_A("CoreExecTelemetry");
                 runtime.get_last_exec_telemetry = reinterpret_cast<f_GetLastExecTelemetry>(resolve_optional_export(exp_exec.get()));
 
+                auto exp_abi = XOR_STR_A("CoreAbiVersion");
+                runtime.get_runtime_abi_version = reinterpret_cast<f_GetRuntimeAbiVersion>(resolve_optional_export(exp_abi.get()));
+
                 auto exp_err = XOR_STR_A("CoreLastError");
                 runtime.get_last_error_info = reinterpret_cast<f_GetLastErrorInfo>(resolve_export(exp_err.get()));
 
@@ -2704,6 +2707,15 @@ wchar_t name[48]{};
         else
         {
             LOG(0, L"  %ls[!]%ls Telemetry Export Missing; The Acquire Process Handle Step Will Show No Telemetry.\n", kYellow, kReset);
+        }
+
+        if (runtime.get_runtime_abi_version && runtime.get_runtime_abi_version() != AMEGER_RUNTIME_ABI_VERSION)
+        {
+            LOG(0, L"  %ls[x]%ls Runtime ABI Mismatch: Launcher %u, Runtime %u. Rebuild Both Together.\n",
+                kRed, kReset, AMEGER_RUNTIME_ABI_VERSION, runtime.get_runtime_abi_version());
+            FreeLibrary(runtime.module);
+            runtime.module = nullptr;
+            return false;
         }
 
         return true;
@@ -4423,8 +4435,11 @@ DWORD BuildFlags(const WizardConfig & config)
             Trace::Note(L"Thread Exec: TID = 0x%04X | Success = %u | Return Value = 0x%08X | Iterations = %u | Elapsed = %u ms",
                 ThreadExec.HijackedTid, ThreadExec.Success, ThreadExec.RoutineRet,
                 ThreadExec.PollIterations, ThreadExec.ExecMs);
-            Trace::Note(L"Scrubbed = %llu Bytes | Cycles = %llu",
-                static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
+            Trace::Note(L"Shell Stack Top = 0x%llX | Window = 0x%llX..0x%llX | Size = %u Bytes | Victim Spill = %u Bytes | Cycles = %llu",
+                static_cast<unsigned long long>(ThreadExec.ShellStackTop),
+                static_cast<unsigned long long>(ThreadExec.ShellStackBase),
+                static_cast<unsigned long long>(ThreadExec.ShellStackBase + ThreadExec.ShellStackSize),
+                ThreadExec.ShellStackSize, ThreadExec.VictimStackBytes,
                 static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
         }
         VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
@@ -4436,6 +4451,19 @@ DWORD BuildFlags(const WizardConfig & config)
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus,
                 ExecTelemetry.TlsCallbacksConfigured, ExecTelemetry.TlsCallbacksExecuted,
                 ExecTelemetry.TlsCallbacksFailed);
+            Trace::Note(L"Host Map Cycles = %llu | Stages: Import = %llu | Delay = %llu | Exceptions = %llu | TLS = %llu | TLS Callbacks = %llu",
+                static_cast<unsigned long long>(ExecTelemetry.HostMapCycles),
+                static_cast<unsigned long long>(ExecTelemetry.ImportStageCycles),
+                static_cast<unsigned long long>(ExecTelemetry.DelayImportStageCycles),
+                static_cast<unsigned long long>(ExecTelemetry.ExceptionStageCycles),
+                static_cast<unsigned long long>(ExecTelemetry.TlsStageCycles),
+                static_cast<unsigned long long>(ExecTelemetry.TlsCallbackStageCycles));
+            Trace::Note(L"Completion Event: Signaled = %u | Status = 0x%08X | Debug-Print Guard = %u | TLS Data = %u | Index = %u | Restored = %u | Bit Cleared = %u | Slot Restored = %u | Entry Unlinked = %u",
+                ExecTelemetry.CompletionEventSignaled, (unsigned)ExecTelemetry.CompletionEventStatus,
+                ExecTelemetry.DebugPrintVehInstalled,
+                ExecTelemetry.TlsHasData, ExecTelemetry.TlsIndex,
+                ExecTelemetry.TlsIndexRestored, ExecTelemetry.TlsBitmapBitCleared,
+                ExecTelemetry.TlsSlotCleared, ExecTelemetry.TlsLoaderEntryUnlinked);
         }
         Trace::End();
         Context.UsedTid = ThreadExec.HijackedTid;
@@ -4658,9 +4686,13 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
+        // The runtime publishes the block through an optional export; when the
+        // export is missing nothing was read and every consumer below must
+        // report "not reported" rather than a zero-valued pass.
+        const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
+
         {
             const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
-            const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
             // A re-read of the mapper's cached copy is not an independent check
             // of the target's memory: under INJ_ERASE_HEADER the in-image
             // directory table has already been wiped.
@@ -4759,11 +4791,100 @@ DWORD BuildFlags(const WizardConfig & config)
             ExecTelemetry.TlsCallbacksExecuted, ExecTelemetry.TlsCallbacksConfigured,
             ExecTelemetry.TlsCallbacksFailed);
 
-        const bool lock_attempted = ExecTelemetry.DllMainCyclesDelta != 0;
+        if (ExecTelemetry.TlsCallbacksConfigured || ExecTelemetry.TlsHasData)
+        {
+            const bool tls_residue_ok = ExecTelemetry.TlsHasData != 0 ||
+                ExecTelemetry.TlsLoaderEntryAbsent != 0 ||
+                (ExecTelemetry.TlsIndexRestored != 0 &&
+                 ExecTelemetry.TlsBitmapBitCleared != 0 &&
+                 ExecTelemetry.TlsSlotCleared != 0);
+            row(L"TLS Loader Residue........ ", tls_residue_ok);
+            if (ExecTelemetry.TlsHasData)
+            {
+                LOG(0, L"Retained By Design: Image Carries TLS Data | Index %u, PEB Bit, TEB Slot, And LdrpTlsList Entry Stay Live\n",
+                    ExecTelemetry.TlsIndex);
+            }
+            else
+            {
+                LOG(0, L"Index Restored = %ls | PEB Bit Cleared = %ls | TEB Slot Restored = %ls | Loader Entry Unlinked = %ls\n",
+                    ExecTelemetry.TlsIndexRestored ? L"True" : L"False",
+                    ExecTelemetry.TlsBitmapBitCleared ? L"True" : L"False",
+                    ExecTelemetry.TlsSlotCleared ? L"True" : L"False",
+                    ExecTelemetry.TlsLoaderEntryUnlinked ? L"True" : L"False");
+            }
+        }
+
+        {
+            const bool host_mapped = exec_telemetry_read && ExecTelemetry.HostMapCycles != 0;
+            row(L"Host-Side Image Map....... ", exec_telemetry_read ? host_mapped : true);
+            if (!exec_telemetry_read)
+            {
+                LOG(0, L"Not Reported (No Exec Telemetry Available)\n");
+            }
+            else if (!host_mapped)
+            {
+                LOG(0, L"Not Reported (No Host-Mapped Image In This Run)\n");
+            }
+            else
+            {
+                LOG(0, L"%llu Cycles On The Host | In-Shell: Import %llu, Delay %llu, Exceptions %llu, TLS %llu\n",
+                    static_cast<unsigned long long>(ExecTelemetry.HostMapCycles),
+                    static_cast<unsigned long long>(ExecTelemetry.ImportStageCycles),
+                    static_cast<unsigned long long>(ExecTelemetry.DelayImportStageCycles),
+                    static_cast<unsigned long long>(ExecTelemetry.ExceptionStageCycles),
+                    static_cast<unsigned long long>(ExecTelemetry.TlsStageCycles));
+            }
+        }
+
+        {
+            const bool completion_ok = exec_telemetry_read &&
+                ExecTelemetry.CompletionEventSignaled != 0 &&
+                ExecTelemetry.CompletionEventStatus == 0;
+            row(L"Completion Handshake...... ", exec_telemetry_read ? completion_ok : true);
+            if (!exec_telemetry_read)
+            {
+                LOG(0, L"Not Reported (No Exec Telemetry Available)\n");
+            }
+            else if (ExecTelemetry.CompletionEventSignaled)
+            {
+                LOG(0, L"Shell Signaled The Host Event | NtSetEvent = 0x%08X | Handle Closed In Target\n",
+                    static_cast<unsigned>(ExecTelemetry.CompletionEventStatus));
+            }
+            else
+            {
+                LOG(0, L"Not Observed | Status = 0x%08X (The State Poll Still Confirmed Completion)\n",
+                    static_cast<unsigned>(ExecTelemetry.CompletionEventStatus));
+            }
+        }
+
+        {
+            const bool debug_print_guard_read = runtime.get_last_exec_telemetry != nullptr;
+            const bool debug_print_guard_ok = ExecTelemetry.DebugPrintVehInstalled != 0;
+            row(L"Debug-Print Guard......... ", debug_print_guard_read ? debug_print_guard_ok : true);
+            if (!debug_print_guard_read)
+            {
+                LOG(0, L"Not Reported (The Runtime DLL Exposes No Exec-Telemetry Export)\n");
+            }
+            else if (debug_print_guard_ok)
+            {
+                LOG(0, L"VEH Registered Before Payload Code | DBG_PRINTEXCEPTION_C/WIDE Resumed On The Shell Stack | Removed Before Staging Release\n");
+            }
+            else
+            {
+                LOG(0, L"Not Installed (Debug-Print Guard Was Not Registered For This Run)\n");
+            }
+        }
+
+        const bool lock_attempted = exec_telemetry_read &&
+            ExecTelemetry.DllMainCyclesDelta != 0;
         const bool lock_ok = !lock_attempted ||
             (ExecTelemetry.LdrLockStatus == 0 && ExecTelemetry.LdrUnlockStatus == 0);
-        row(L"Loader Lock Acquire/Release  ", lock_ok);
-        if (!lock_attempted)
+        row(L"Loader Lock Acquire/Release  ", exec_telemetry_read ? lock_ok : true);
+        if (!exec_telemetry_read)
+        {
+            LOG(0, L"Not Reported (No Exec Telemetry Available)\n");
+        }
+        else if (!lock_attempted)
         {
             LOG(0, L"Not Attempted (Inside The DllMain Step; DllMain Not Entered)\n");
         }
@@ -4773,22 +4894,61 @@ DWORD BuildFlags(const WizardConfig & config)
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
         }
 
+        // TLS loader lock status (written by MMI_HandleTLS) — gated on the
+        // telemetry export so a missing export reports "Not Reported" instead
+        // of a misleading zero-valued pass.
+        const bool tls_lock_attempted = exec_telemetry_read &&
+            (ExecTelemetry.TlsLockStatus != AMEGER_NTSTATUS_UNSUCCESSFUL ||
+             ExecTelemetry.TlsUnlockStatus != AMEGER_NTSTATUS_UNSUCCESSFUL);
+        const bool tls_lock_ok = !tls_lock_attempted ||
+            (ExecTelemetry.TlsLockStatus == 0 && ExecTelemetry.TlsUnlockStatus == 0);
+        row(L"TLS Loader Lock Acquire/Release   ", exec_telemetry_read ? tls_lock_ok : true);
+        if (!exec_telemetry_read)
+        {
+            LOG(0, L"Not Reported (No Exec Telemetry Available)\n");
+        }
+        else if (tls_lock_attempted)
+        {
+            LOG(0, L"Lock = 0x%08X | Unlock = 0x%08X\n",
+                (unsigned)ExecTelemetry.TlsLockStatus, (unsigned)ExecTelemetry.TlsUnlockStatus);
+        }
+        else
+        {
+            LOG(0, L"Not Attempted (No TLS Data Or Lock Not Required)\n");
+        }
+
         row(L"Thread Hijack............. ", ThreadExec.Success != 0);
         LOG(0, L"TID 0x%04X | Success = %u | Routine Return Value = 0x%08X | %u Poll(s) Over %u ms\n",
             (unsigned)ThreadExec.HijackedTid, (unsigned)ThreadExec.Success,
             (unsigned)ThreadExec.RoutineRet, (unsigned)ThreadExec.PollIterations,
             (unsigned)ThreadExec.ExecMs);
 
-        row(L"Hijacked Stack Scrubbed... ", ThreadExec.StackScrubbedBytes != 0);
-        LOG(0, L"%llu Bytes In %llu Cycles\n",
-            static_cast<unsigned long long>(ThreadExec.StackScrubbedBytes),
-            static_cast<unsigned long long>(ThreadExec.RoutineCyclesDelta));
+        {
+            const bool shell_pivot_ok = ThreadExec.ShellStackResumeCount > 0 &&
+                ThreadExec.ShellStackTop >= ThreadExec.ShellStackBase &&
+                ThreadExec.ShellStackTop < ThreadExec.ShellStackBase + ThreadExec.ShellStackSize;
+            row(L"Shell Stack Isolation..... ", shell_pivot_ok);
+            if (!ThreadExec.ShellStackSize)
+            {
+                LOG(0, L"Not Reported (No Hijack Staging This Run)\n");
+            }
+            else
+            {
+                LOG(0, L"Dedicated %u-Byte Stack | Pivot RSP = 0x%llX (%s) | Victim Stack Spill = %u Bytes | Shell Stack Observations = %u\n",
+                    ThreadExec.ShellStackSize,
+                    static_cast<unsigned long long>(ThreadExec.ShellStackTop),
+                    shell_pivot_ok ? L"Inside Window" : L"Outside Window",
+                    ThreadExec.VictimStackBytes,
+                    ThreadExec.ShellStackResumeCount);
+            }
+        }
 
         row(L"Thread Context Snapshot... ", ThreadExec.OldRip != 0);
-        LOG(0, L"Original RIP = 0x%llX | Original RSP = 0x%llX | Post-Scrub Limit = 0x%llX | FP Mode %ls\n",
+        LOG(0, L"Original RIP = 0x%llX | Original RSP = 0x%llX | Shell Window = 0x%llX..0x%llX | FP Mode %ls\n",
             static_cast<unsigned long long>(ThreadExec.OldRip),
             static_cast<unsigned long long>(ThreadExec.OldRsp),
-            static_cast<unsigned long long>(ThreadExec.StackLimit),
+            static_cast<unsigned long long>(ThreadExec.ShellStackBase),
+            static_cast<unsigned long long>(ThreadExec.ShellStackBase + ThreadExec.ShellStackSize),
             ThreadExec.FpMode ? L"XSAVE" : L"FXSAVE");
 
         row(L"Data Directories Wiped.... ", MapStats.Verified != 0 && MapStats.ResidualMask == 0);
@@ -5037,6 +5197,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.get_last_string_stats = nullptr;
         runtime.get_last_thread_exec_stats = nullptr;
         runtime.get_last_exec_telemetry = nullptr;
+        runtime.get_runtime_abi_version = nullptr;
         runtime.get_last_error_info = nullptr;
         runtime.clear_last_error_info = nullptr;
         FreeLibrary(runtime.module);

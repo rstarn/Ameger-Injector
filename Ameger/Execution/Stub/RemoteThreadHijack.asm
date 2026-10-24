@@ -56,8 +56,23 @@ ELSE
     mov r12, rsp
 ENDIF
     mov [rbx+SR_SAVED_RSP], r12
-    and rsp, 0FFFFFFFFFFFFFFF0h
-    sub rsp, 40h
+
+    ;; A5: pivot onto the dedicated shell stack before anything else runs. The
+    ;; victim's free stack is never zero-filled, so no zero-run or entropy
+    ;; signature is left behind; only the 17 push slots below the victim RSP
+    ;; are written, and they hold the victim's own register values.
+IF STUB_RSP_CAPTURE
+    lea rsp, [rbx + SR_SHELL_STACK_TOP]
+ELSE
+    mov r10, rbx
+    add r10, SR_SHELL_STACK_TOP
+    mov rsp, r10
+ENDIF
+    mov r10, rsp
+    mov [rbx+SR_SHELL_RSP], r10
+    ;; Caller-owned shadow space for the routine being called. RSP is
+    ;; 16-byte aligned here, so the call leaves the callee at 8 mod 16.
+    sub rsp, 20h
 
 IF STUB_FP_ADDR
     mov r10, rbx
@@ -150,26 +165,10 @@ StubFpRestoreDone:
 
 
 
-    lea rdi, [r12]
-    mov r10, gs:[10h]
-    cmp r10, rdi
-    jae StubStackScrubDone
-
-    mov rax, r12
-    sub rax, r10
-    mov [rbx+SR_SCRUB_BYTES], rax
-    mov rdx, rdi
-    sub rdx, r10
-    shr rdx, 3
-    xor r8d, r8d
-StubStackScrubLoop:
-    test rdx, rdx
-    jz StubStackScrubDone
-    mov qword ptr [rdi-8], r8
-    sub rdi, 8
-    dec rdx
-    jmp StubStackScrubLoop
-StubStackScrubDone:
+    ;; A5: no victim-stack scrub. The only bytes written below the victim RSP
+    ;; are the 17 push slots at the top of this stub, and they hold the victim's
+    ;; own register values. The shell stack is zeroed by the allocator and is
+    ;; wiped by the host before this allocation is released or freed.
     mov rsp, r12
     pop r15
     pop r14
@@ -213,7 +212,7 @@ RemoteThreadShellCwPad1  DD 0
 RemoteThreadShellMxcsr   DD 01F80h
 RemoteThreadShellMxPad   DD 0
 RemoteThreadCyclesDelta  DQ 0
-RemoteThreadScrubBytes   DQ 0
+RemoteThreadShellStackTop DQ 0
 RemoteThreadSavedRsp     DQ 0
 RemoteThreadFpReserved   BYTE 24 DUP (0)
 RemoteThreadFpArea       BYTE SR_FP_AREA_SIZE DUP (0)

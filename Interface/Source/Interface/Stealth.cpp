@@ -1421,11 +1421,30 @@ namespace stealth
             {
                 LOG(0, L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
-            if (exec->TlsCallbacksConfigured && !exec->TlsLoaderEntryUnlinked)
+            if (exec->TlsHasData)
             {
-                LOG(0, L"  %ls[!]%ls The Loader TLS Entry For The Mapped Module Was Not Found In LdrpTlsList; "
-                        L"The Fabricated Nodes Were Released, But Loader Bookkeeping May Remain.\n",
-                    kYellow, kReset);
+                LOG(0, L"  %ls[+]%ls TLS Registration Retained: The Image Carries TLS Data, So Index %u, The PEB Bit, "
+                        L"The TEB Slot, And The LdrpTlsList Entry Must Stay Live.\n",
+                    kGreen, kReset, exec->TlsIndex);
+            }
+            else if (exec->TlsCallbacksConfigured)
+            {
+                const bool nothing_to_rewind = exec->TlsLoaderEntryAbsent != 0;
+                const bool rewound = nothing_to_rewind || (exec->TlsIndexRestored && exec->TlsBitmapBitCleared &&
+                    exec->TlsSlotCleared && exec->TlsLoaderEntryUnlinked);
+                LOG(0, L"  %ls[%ls]%ls Loader TLS Registration: Index Restored = %ls | PEB Bit Cleared = %ls | "
+                        L"TEB Slot Restored = %ls | Loader Entry Unlinked = %ls | Nothing To Rewind = %ls\n",
+                    rewound ? L"+" : L"!", rewound ? kGreen : kYellow, kReset,
+                    exec->TlsIndexRestored ? L"True" : L"False",
+                    exec->TlsBitmapBitCleared ? L"True" : L"False",
+                    exec->TlsSlotCleared ? L"True" : L"False",
+                    exec->TlsLoaderEntryUnlinked ? L"True" : L"False",
+                    nothing_to_rewind ? L"True" : L"False");
+                if (!rewound)
+                {
+                    LOG(0, L"  %ls[!]%ls The Loader Registration Could Not Be Fully Rewound; Loader Bookkeeping May Remain.\n",
+                        kYellow, kReset);
+                }
             }
         }
         else if (tls_callbacks > 0)

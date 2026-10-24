@@ -1,5 +1,10 @@
 Diagnostics:
   UnusedIncludes: None
+  Suppress:
+    # EXPORT_FUNCTION expands to __pragma(comment(linker, "/EXPORT:name=__FUNCDNAME__")).
+    # MSVC expands the builtin inside __pragma; clang does not, so it diagnoses every
+    # export site as a malformed pragma. The builds emit the aliases correctly.
+    - pragma_comment_malformed
 
 # Include roots.
 #

@@ -45,6 +45,8 @@ namespace NATIVE
 	NT_FUNC(NtAllocateVirtualMemory);
 	NT_FUNC(NtFreeVirtualMemory);
 	NT_FUNC(NtProtectVirtualMemory);
+	NT_FUNC(NtSetEvent);
+	NT_FUNC(NtClose);
 
 	NT_FUNC(LdrProtectMrdata);
 
@@ -55,6 +57,9 @@ namespace NATIVE
 	NT_FUNC(RtlAddFunctionTable);
 
 	NT_FUNC(RtlDeleteFunctionTable);
+
+	NT_FUNC(RtlAddVectoredExceptionHandler);
+	NT_FUNC(RtlRemoveVectoredExceptionHandler);
 }
 
 DWORD ResolveImports(ERROR_DATA & error_data);

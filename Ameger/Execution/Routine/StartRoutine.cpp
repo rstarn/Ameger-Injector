@@ -2,7 +2,7 @@
 
 #include "Execution/Routine/StartRoutine.h"
 
-DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
+DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Flags, DWORD & Out, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, ERROR_DATA & error_data)
 {
 	if (!hTargetProc || hTargetProc == INVALID_HANDLE_VALUE || !pRoutine)
 	{
@@ -11,5 +11,5 @@ DWORD StartRoutine(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD Fl
 		return SR_ERR_INVALID_LAUNCH_METHOD;
 	}
 
-	return SR_HijackThread(hTargetProc, pRoutine, pArg, Out, Timeout, Flags, SponsorThread, SponsorTid, error_data);
+	return SR_HijackThread(hTargetProc, pRoutine, pArg, Out, Timeout, Flags, SponsorThread, SponsorTid, CompletionEvent, error_data);
 }

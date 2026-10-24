@@ -138,6 +138,7 @@ struct Runtime
     f_GetLastStringStats get_last_string_stats = nullptr;
     f_GetLastThreadExecStats get_last_thread_exec_stats = nullptr;
     f_GetLastExecTelemetry get_last_exec_telemetry = nullptr;
+    f_GetRuntimeAbiVersion get_runtime_abi_version = nullptr;
     f_GetLastErrorInfo get_last_error_info = nullptr;
     f_ClearLastErrorInfo clear_last_error_info = nullptr;
 };

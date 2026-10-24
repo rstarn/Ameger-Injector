@@ -9,11 +9,24 @@ SR_FP_MASK EQU 56
 SR_SHELL_CW EQU 64
 SR_SHELL_MXCSR EQU 72
 SR_CYCLES_DELTA EQU 80
-SR_SCRUB_BYTES EQU 88
+;; The RSP the stub actually pivoted to. The host compares it against the
+;; allocation window, so a stub that failed to pivot cannot pass silently.
+SR_SHELL_RSP EQU 88
 SR_FP_FLAG_XSAVE EQU 1
 SR_FP_AREA EQU 128
 SR_FP_AREA_SIZE EQU 864
 SR_SAVED_RSP EQU 96
+
+;; Dedicated shell stack, laid out after the state page in the same allocation.
+;; The first 128 bytes of victim stack are still used for the register spill
+;; (they hold the victim's own register values and hold no shell data), but the
+;; routine and everything it calls run here.
+;; Guard page sits between the state page and the shell stack, so an overflow
+;; faults on PAGE_NOACCESS instead of overwriting the state page.
+SR_SHELL_STACK_BASE EQU 8192
+SR_SHELL_STACK_SIZE EQU 1048576
+;; 16-byte aligned top, minus a 64-byte slot for the caller's shadow space.
+SR_SHELL_STACK_TOP EQU 1056704
 
 ;; XCR0 components this stub is allowed to request. Bit 0 = x87, bit 1 = SSE,
 ;; bit 2 = AVX (YMM). AVX-512 (bits 5-7) is deliberately excluded: its XSAVE image
