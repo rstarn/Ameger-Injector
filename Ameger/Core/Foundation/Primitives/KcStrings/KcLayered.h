@@ -153,21 +153,10 @@ public:
 			detail::XteaBlockDecrypt(buf + blk, tk);
 		}
 
-		const detail::DomainMask mask;
-
-		char staged[N];
 		for (std::size_t i = 0; i < N; ++i)
 		{
-			staged[i] = static_cast<char>(buf[i] ^ detail::LayerXorKey(KeyA, i))
-				^ static_cast<char>(mask.Byte(i));
+			out[i] = static_cast<char>(static_cast<std::uint8_t>(buf[i] ^ detail::LayerXorKey(KeyA, i)));
 		}
-
-		for (std::size_t i = 0; i < N; ++i)
-		{
-			out[i] = static_cast<char>(staged[i] ^ static_cast<char>(mask.Byte(i)));
-		}
-
-		detail::Wipe<char, N>(staged);
 
 		detail::Wipe<std::uint8_t, kPadded>(buf);
 	}
@@ -266,23 +255,12 @@ public:
 			detail::XteaBlockDecrypt(buf + blk, tk);
 		}
 
-		const detail::DomainMask mask;
-
-		wchar_t staged[N];
 		for (std::size_t i = 0; i < N; ++i)
 		{
 			const std::uint16_t lo = static_cast<std::uint16_t>(buf[i * 2] ^ detail::LayerXorKey(KeyA, i * 2));
 			const std::uint16_t hi = static_cast<std::uint16_t>(buf[i * 2 + 1] ^ detail::LayerXorKey(KeyA, i * 2 + 1));
-			staged[i] = static_cast<wchar_t>(lo | (hi << 8))
-				^ static_cast<wchar_t>(mask.Byte(i));
+			out[i] = static_cast<wchar_t>(lo | (hi << 8));
 		}
-
-		for (std::size_t i = 0; i < N; ++i)
-		{
-			out[i] = static_cast<wchar_t>(staged[i] ^ static_cast<wchar_t>(mask.Byte(i)));
-		}
-
-		detail::Wipe<wchar_t, N>(staged);
 
 		detail::Wipe<std::uint8_t, kPadded>(buf);
 	}

@@ -1048,14 +1048,16 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 
 		if (Status == static_cast<NTSTATUS>(0xC0000004))
 		{
-			ULONG Required = Size;
-			if (Required <= Scratch.size())
-			{
-				const SIZE_T Attempted = Scratch.size();
-				const ULONGLONG Grown = Attempted ? static_cast<ULONGLONG>(Attempted) * 2 : 0x800;
-				Required = Grown > 0x10000 ? 0x10000 : static_cast<ULONG>(Grown);
-			}
-			Size = Required;
+			// On STATUS_INFO_LENGTH_MISMATCH the kernel reports the exact output
+			// length it needs through the out parameter. Honor that value (capped)
+			// so one retry always converges, instead of guessing by doubling.
+			const ULONG Required = Size > 0x10000 ? 0x10000 : Size;
+
+			const SIZE_T Attempted = Scratch.size();
+			const ULONGLONG Grown = Attempted ? static_cast<ULONGLONG>(Attempted) * 2 : 0x800;
+			const ULONGLONG Next = Grown > 0x10000 ? 0x10000 : Grown;
+
+			Size = Next >= Required ? static_cast<ULONG>(Next) : Required;
 			if (!Size)
 			{
 				return 0;

@@ -43,22 +43,11 @@ namespace xor_string
 	public:
 		__declspec(noinline) explicit XorDecrypted(const XorEncrypted<CharT, N, Key> & enc) noexcept
 		{
-			const kc_strings::detail::DomainMask mask;
-
-			CharT staged[N];
 			for (size_t i = 0; i < N; ++i)
 			{
 				const unsigned ks = Key + static_cast<unsigned>(i) * kGolden;
-				staged[i] = static_cast<CharT>(enc.Data[i] ^ static_cast<CharT>(ks)
-					^ static_cast<CharT>(mask.Byte(i)));
+				Buf[i] = static_cast<CharT>(enc.Data[i] ^ static_cast<CharT>(ks));
 			}
-
-			for (size_t i = 0; i < N; ++i)
-			{
-				Buf[i] = static_cast<CharT>(staged[i] ^ static_cast<CharT>(mask.Byte(i)));
-			}
-
-			kc_strings::detail::Wipe<CharT, N>(staged);
 		}
 
 		~XorDecrypted() noexcept

@@ -249,7 +249,7 @@ bool GetSymbolCacheRoot(std::wstring & out)
 
 	for (int i = 1; i < 10; ++i)
 	{
-		leaf += kAlphabet[pick[i] % (_countof(kAlphabet) - 1)];
+		leaf += kAlphabet[pick[i] % _countof(kAlphabet)];
 	}
 
 	leaf += L'\\';

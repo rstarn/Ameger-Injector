@@ -30,23 +30,12 @@ public:
 
 	__forceinline void Decrypt(wchar_t * out) const noexcept
 	{
-		const kc_strings::detail::DomainMask mask;
-
-		std::uint16_t staged[N];
 		for (std::size_t i = 0; i < N; ++i)
 		{
 			const std::uint32_t derived = Key ^ static_cast<std::uint32_t>(i * 0x9E3779B9u);
 			const std::uint16_t k = static_cast<std::uint16_t>(derived ^ (derived >> 16));
-			staged[i] = static_cast<std::uint16_t>(m_encrypted[i] ^ k
-				^ static_cast<std::uint16_t>(mask.Byte(i)));
+			out[i] = static_cast<wchar_t>(static_cast<std::uint16_t>(m_encrypted[i] ^ k));
 		}
-
-		for (std::size_t i = 0; i < N; ++i)
-		{
-			out[i] = static_cast<wchar_t>(staged[i] ^ static_cast<std::uint16_t>(mask.Byte(i)));
-		}
-
-		kc_strings::detail::Wipe<std::uint16_t, N>(staged);
 	}
 
 	static constexpr std::size_t length() noexcept

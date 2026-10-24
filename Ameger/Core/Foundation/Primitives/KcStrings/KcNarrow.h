@@ -29,21 +29,11 @@ public:
 
 	__forceinline void Decrypt(char * out) const noexcept
 	{
-		const kc_strings::detail::DomainMask mask;
-
-		std::uint8_t staged[N];
 		for (std::size_t i = 0; i < N; ++i)
 		{
 			const std::uint8_t k = static_cast<std::uint8_t>((Key >> ((i % 4) * 8)) ^ (i * 0x9E3779B9u));
-			staged[i] = static_cast<std::uint8_t>(m_encrypted[i] ^ k ^ mask.Byte(i));
+			out[i] = static_cast<char>(static_cast<std::uint8_t>(m_encrypted[i] ^ k));
 		}
-
-		for (std::size_t i = 0; i < N; ++i)
-		{
-			out[i] = static_cast<char>(staged[i] ^ mask.Byte(i));
-		}
-
-		kc_strings::detail::Wipe<std::uint8_t, N>(staged);
 	}
 
 	static constexpr std::size_t length() noexcept
