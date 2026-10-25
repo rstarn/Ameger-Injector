@@ -1447,40 +1447,48 @@ namespace stealth
             {
                 LOG(0, L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
-            if (exec->TlsHasData)
+            if (exec->TlsHasData || exec->TlsCallbacksConfigured)
             {
-                LOG(0, L"  %ls[+]%ls TLS Registration Retained: The Image Carries TLS Data, So Index %u, The PEB Bit, "
-                        L"The TEB Slot, And The LdrpTlsList Entry Must Stay Live.\n",
-                    kGreen, kReset, exec->TlsIndex);
-            }
-            else if (exec->TlsCallbacksConfigured == 0 && exec->TlsLoaderEntryAbsent != 0)
-            {
-                // A4: the stage skipped the loader entirely - the image's TLS
-                // directory declares neither callbacks nor data, so no LDR
-                // entry was fabricated, no PEB bitmap bit was taken, and no
-                // loader-heap churn happened.
-                LOG(0, L"  %ls[+]%ls Loader Mutation Skipped: The TLS Directory Declares No Callbacks And No Data; "
-                        L"No LDR Entry, PEB Bit, Or Loader Heap Was Ever Touched.\n",
-                    kGreen, kReset);
-            }
-            else if (exec->TlsCallbacksConfigured)
-            {
-                const bool nothing_to_rewind = exec->TlsLoaderEntryAbsent != 0;
-                const bool rewound = nothing_to_rewind || (exec->TlsIndexRestored && exec->TlsBitmapBitCleared &&
-                    exec->TlsSlotCleared && exec->TlsLoaderEntryUnlinked);
-                LOG(0, L"  %ls[%ls]%ls Loader TLS Registration: Index Restored = %ls | PEB Bit Cleared = %ls | "
-                        L"TEB Slot Restored = %ls | Loader Entry Unlinked = %ls | Nothing To Rewind = %ls\n",
-                    rewound ? L"+" : L"!", rewound ? kGreen : kYellow, kReset,
-                    exec->TlsIndexRestored ? L"True" : L"False",
-                    exec->TlsBitmapBitCleared ? L"True" : L"False",
-                    exec->TlsSlotCleared ? L"True" : L"False",
-                    exec->TlsLoaderEntryUnlinked ? L"True" : L"False",
-                    nothing_to_rewind ? L"True" : L"False");
-                if (!rewound)
+                // A10: the registration is a TlsAlloc slot, one heap block and
+                // a patched _tls_index - no LDR entry, no loader lock, no
+                // cross-thread spread. TlsLoaderEntryAbsent is the scheme's
+                // standing truth (the loader list was never touched), and the
+                // three rewind flags below are only set on a load-failure
+                // unwind, so their state at report time is itself the datum.
+                const bool unwound = exec->TlsIndexRestored != 0 && exec->TlsBitmapBitCleared != 0 && exec->TlsSlotCleared != 0;
+                const bool registered_live = exec->TlsIndexRestored == 0 && exec->TlsBitmapBitCleared == 0 && exec->TlsSlotCleared == 0;
+                LOG(0, L"  %ls[%ls]%ls TLS Registration (TlsAlloc Scheme): Index = %u | Data Template = %ls | LdrpTlsList Entry = %ls | Loader Lock Taken = No\n",
+                    kGreen, L"+", kReset,
+                    exec->TlsIndex,
+                    exec->TlsHasData ? L"Yes (One Heap Block, This Thread's Slot)" : L"No",
+                    L"None (Never Added)");
+                if (registered_live)
                 {
-                    LOG(0, L"  %ls[!]%ls The Loader Registration Could Not Be Fully Rewound; Loader Bookkeeping May Remain.\n",
-                        kYellow, kReset);
+                    LOG(0, L"  %ls[+]%ls Registration Live: Slot %u, One PEB Bitmap Bit, One TEB Slot, One Heap Block - And No Loader Bookkeeping, No Cross-Thread Template Spread.\n",
+                        kGreen, kReset, exec->TlsIndex);
                 }
+                else if (unwound)
+                {
+                    LOG(0, L"  %ls[+]%ls Registration Unwound On The Failure Path: Index Restored = True | Slot Freed = True | Block Scrubbed = True.\n",
+                        kGreen, kReset);
+                }
+                else
+                {
+                    LOG(0, L"  %ls[!]%ls Registration State Partially Reported (Index Restored = %ls | Slot Freed = %ls | Block Scrubbed = %ls) - Inspect The Telemetry.\n",
+                        kYellow, kReset,
+                        exec->TlsIndexRestored ? L"True" : L"False",
+                        exec->TlsBitmapBitCleared ? L"True" : L"False",
+                        exec->TlsSlotCleared ? L"True" : L"False");
+                }
+            }
+            else if (exec->TlsLoaderEntryAbsent != 0)
+            {
+                // A4: the stage skipped entirely - the image's TLS directory
+                // declares neither callbacks nor data, so no slot was taken,
+                // no bitmap bit was set, and nothing was allocated.
+                LOG(0, L"  %ls[+]%ls TLS Skipped: The TLS Directory Declares No Callbacks And No Data; "
+                        L"No Slot, No PEB Bit, No Heap Block, No Loader Contact.\n",
+                    kGreen, kReset);
             }
         }
         else if (tls_callbacks > 0)

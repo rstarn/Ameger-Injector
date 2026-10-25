@@ -250,6 +250,12 @@ struct WizardConfig
     // The transcript of a run is always written. Removing it is something
     // that has to be asked for, and it is only ever asked for after a
     // successful run.
+    // The transcript of a run is always written while the run is going, so a
+    // crash still leaves its record. Whether a *successful* run's transcript
+    // is kept afterwards is the operator's call, and the standing choice is
+    // to keep it: the record of a successful load is the one worth having.
+    // Removing it has to be asked for explicitly in the configuration; a
+    // failed or cancelled run always keeps its transcript regardless.
     bool discard_result_log_on_success = false;
     // Whether the "begin load?" confirmation is answered for the operator.
     // It lives here rather than in an environment variable because the

@@ -5043,24 +5043,27 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (ExecTelemetry.TlsCallbacksConfigured || ExecTelemetry.TlsHasData)
         {
+            // A10: the registration is a TlsAlloc slot, one heap block and a
+            // patched _tls_index; the loader list was never touched, so the
+            // residue question is about the surviving minimum, and the print
+            // states exactly what that is.
             const bool tls_residue_ok = ExecTelemetry.TlsHasData != 0 ||
                 ExecTelemetry.TlsLoaderEntryAbsent != 0 ||
                 (ExecTelemetry.TlsIndexRestored != 0 &&
                  ExecTelemetry.TlsBitmapBitCleared != 0 &&
                  ExecTelemetry.TlsSlotCleared != 0);
-            row(L"TLS Loader Residue........ ", tls_residue_ok);
+            row(L"TLS Registration.......... ", tls_residue_ok);
             if (ExecTelemetry.TlsHasData)
             {
-                LOG(0, L"Retained By Design: Image Carries TLS Data | Index %u, PEB Bit, TEB Slot, And LdrpTlsList Entry Stay Live\n",
+                LOG(0, L"TlsAlloc Slot %u Live | One PEB Bitmap Bit + One TEB Slot + One Heap Block | LdrpTlsList Entry = None (Never Added) | No Cross-Thread Template Spread\n",
                     ExecTelemetry.TlsIndex);
             }
             else
             {
-                LOG(0, L"Index Restored = %ls | PEB Bit Cleared = %ls | TEB Slot Restored = %ls | Loader Entry Unlinked = %ls\n",
+                LOG(0, L"Callbacks-Only Registration Unwound: Index Restored = %ls | Slot Freed = %ls | Block Scrubbed = %ls | LdrpTlsList Entry = None (Never Added)\n",
                     ExecTelemetry.TlsIndexRestored ? L"True" : L"False",
                     ExecTelemetry.TlsBitmapBitCleared ? L"True" : L"False",
-                    ExecTelemetry.TlsSlotCleared ? L"True" : L"False",
-                    ExecTelemetry.TlsLoaderEntryUnlinked ? L"True" : L"False");
+                    ExecTelemetry.TlsSlotCleared ? L"True" : L"False");
             }
         }
 
@@ -5506,9 +5509,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
     // A run that mapped the payload may still be asked to leave nothing
     // behind. A run that did not is never asked: the transcript of a run that
     // failed, or that was cancelled, is the only evidence of what happened.
-    if (g_LoadCompleted && DiscardResultLogOnSuccess())
+    // The print states the disposition that actually happened rather than the
+    // setting, so the console is the record of what is on disk.
     {
-        ameger_ui_log::DiscardResultLog();
+        const bool discarded = g_LoadCompleted && DiscardResultLogOnSuccess();
+        if (discarded)
+        {
+            ameger_ui_log::DiscardResultLog();
+        }
+        else if (g_LoadCompleted)
+        {
+            LOG(0, L"%ls[*]%ls Successful-Run Transcript Kept On Disk: %ls (DiscardResultLogOnSuccess = N)\n",
+                kYellow, kReset, g_ResultLogName.c_str());
+        }
+        else
+        {
+            LOG(0, L"%ls[*]%ls Run Transcript Kept On Disk: %ls (Failed Or Cancelled Runs Are Never Discarded)\n",
+                kYellow, kReset, g_ResultLogName.c_str());
+        }
     }
     ameger_ui_log::Clear();
 
