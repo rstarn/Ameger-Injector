@@ -18,6 +18,7 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
 | F | Implications for this injector + our live measurements | Analysis |
 | G | Open questions | — |
 | H | Sources + access log | — |
+| K | Kernel phase: K0 census crash, fix and baseline | Analysis |
 
 **Revision history**
 - 2026-10-15 (a) — full rewrite from primary sources; 7 thread bodies retrieved after 403s.
@@ -2212,3 +2213,158 @@ functions"** — where Warden modules actually come from if not the image. Until
 them, §7's module system stays a naming convention, and our next useful step is cheap and
 already half-collected: filter the **906 `PAGE_NOACCESS` regions / 18 MB** by image range
 (E1), and read the exe's own `GuardFlags` to settle D6a.
+
+---
+
+# PART K — Kernel phase: K0 census baseline (2026-10-25)
+
+**Scope:** Deliverable 5 of
+`.zcode/plans/plan-session_86022dd394981bf045848a7044c0e7b1.md` (`Driver/`: the mapped
+WDM platform and the K0 census). This part records the crash that blocked the phase, its
+root cause, the corrected contract, and the baseline procedure. It does not retroactively
+bless any measurement produced by the broken build.
+
+## K1. `--census=flt` bugcheck 0x1E — the FltEnumerateFilters ABI
+
+**Dump:** `dumpflt.dmp` (2026-10-25 12:52:07), `KMODE_EXCEPTION_NOT_HANDLED (1e)`,
+P1 `0xC0000005` (write), P2 `0xfffff8035a91a254` = `FLTMGR!FltEnumerateFilters+0x144`,
+P3 = 1, P4 = 0, process `KernelCtl.exe`. Failure bucket
+`AV_W_FLTMGR!FltEnumerateFilters`. The console run that produced it is the
+`--census=flt` invocation after the `notify`, `obp`, and `obt` runs.
+
+**What the function expects.** `fltkernel.h` and Microsoft Learn:
+
+```c
+NTSTATUS FLTAPI FltEnumerateFilters(
+    PFLT_FILTER *FilterList,
+    ULONG        FilterListSize,        // elements, not bytes
+    PULONG       NumberFiltersReturned);
+```
+
+The driver declared a **two-argument** pointer:
+
+```c
+typedef NTSTATUS (* PAMEGER_FLT_ENUMERATE)(void **FilterList, PULONG FilterCount);
+...
+status = enumerate(list, &count);
+```
+
+On x64 that is `rcx = list`, `edx = low 32 bits of &count`, and **`r8` is left
+uninitialized**. The dump's disassembly shows the parameter mapping at the entry
+(`mov r12, rcx` / `mov ebp, edx` / `mov rsi, r8`) and the two fault sites: the array store
+`mov [r12+rbx*8], rsi` at `+0x144`, and the returned-count store `mov [rsi], ebx` at
+`+0x1d6`. The earlier attempt that passed `NULL` as the list together with the garbage
+`&count` as the size wrote through `[0+index*8]` and produced the `+0x144` fault at address
+0; the later "real list" attempt still wrote the count through the uninitialized R8. Both
+are the same missing argument. The note in the old source that "there is no NULL count-query
+mode" was a misdiagnosis: the documented `(NULL, 0, &count)` form is valid.
+
+**Fix (`Driver/Source/Census.c`).**
+- Correct three-argument typedef.
+- Count-only call `enumerate(NULL, 0, &capacity)`, then one nonpaged allocation of
+  `capacity * sizeof(PVOID)` (bounded at 4096 entries), then
+  `enumerate(list, capacity, &returned)`, with one retry on `STATUS_BUFFER_TOO_SMALL`.
+- Every returned filter handle owns a rundown reference. `FltObjectDereference` is resolved
+  from the on-disk export table (RVA `0x14180` in `fltmgr.sys` 10.0.26100.9278) and called
+  for each non-NULL entry. The walker is skipped if that export cannot be resolved, rather
+  than leaking references.
+- Both function pointers are span-validated against the caller's module table; the call is
+  PASSIVE_LEVEL only.
+
+**Compiled proof (final image `cgg1w4tXL6n.sys`).**
+- `lea r8,[rsp+70h]; xor edx,edx; xor ecx,ecx; call rbx` — the count-only call.
+- `mov edx,[rsp+70h]; lea r8,[rsp+78h]; mov rcx,rax; call rbx` — the real enumeration.
+- `call rbp` inside the returned-handle loop — the deref.
+- `call qword ptr [0x180004008]` (`IoDeleteDriver`) followed by
+  `PsTerminateSystemThread` in the teardown worker.
+- Import allowlist remains `ntoskrnl.exe` only.
+
+## K2. Other defects found in the same audit (fixed)
+
+1. **Notify symbols were wrong.** The tool asked dbghelp for
+   `PspProcessNotifyRoutine` / `PspThreadNotifyRoutine`; the 26300 PDB has no such
+   symbols. kd reports `PspCreateProcessNotifyRoutine`,
+   `PspCreateProcessNotifyRoutineCount`, `PspCreateThreadNotifyRoutine`,
+   `PspCreateThreadNotifyRoutineCount`, and `PspLoadImageNotifyRoutine[Count]`.
+   ProcessNotify and ThreadNotify were therefore always reported as skipped.
+2. **Stale slots were counted.** `AmegerWalkNotifyArray` scanned all 64 array slots
+   regardless of `Count`. Unregistered callbacks leave non-zero slots, so the
+   `2026-10-25 --census=notify` "ImageNotify 2 registered, 2 foreign" was not a
+   registration count. It now scans only the first `Count` entries (clamped to 64).
+3. **Module spans were guessed.** `EnumDeviceDrivers` gives bases but not sizes; the
+   old next-base/64 MB derivation mislabels callbacks inside `nvlddmkm` (141 MB) and
+   `amdkmdag` (102 MB) as foreign and can accept unbacked VA gaps. KernelCtl now reads
+   each loaded driver's `SizeOfImage` from its own PE header on disk, falling back to
+   the next-base span only when the file cannot be read.
+4. **Teardown left residue.** It deleted the symlink and device but not the driver object
+   or the two name buffers, so a same-build re-map failed with
+   `STATUS_OBJECT_NAME_COLLISION`. It now frees both pools and calls `IoDeleteDriver` on
+   the object `IoCreateDriver` created.
+5. **Create.bat could not build on a path with spaces.** `%MSBUILD%` was unquoted; the
+   VS 18 install at `C:\Program Files (x86)\...` failed with `'C:\Program' is not
+   recognized`. Both invocations are quoted.
+6. **ABI bump.** The census request grew the `FltObjectDereference` address, so
+   `AMEGER_KERNEL_ABI_VERSION` is now `20261026`. A stale driver/tool pair is rejected by
+   the query IOCTL before any census runs.
+7. **Dispatch-table spot check was too narrow.** The five 0x50 dumps in the same corpus
+   are `IofCallDriver+0x84` dispatching through a non-code IP while `KernelCtl.exe` opened
+   the device (the faulting IP equals the fault address). The init read-back compared only
+   `IRP_MJ_CREATE`; it now compares CREATE, CLOSE and DEVICE_CONTROL and deletes the device
+   on any mismatch, so a table that does not hold this driver's handlers can never become
+   resident.
+
+## K3. Baseline: post-fix measurement (2026-10-25, operator-run, elevated)
+
+The invalid pre-fix readings above came from the broken build. The first post-fix
+elevated run used build `yt0KnNTI.sys` (seed `0xAE2EB449`, device `\\.\AJbo0PBpTw`,
+SHA-256 `c704f02106be9a1f786164fad89b379539dde56d8aa78b227d3f3ea586916d9c`).
+Confirmed readings:
+
+| Walker | Confirmed reading |
+|---|---|
+| ProcessNotify | **5 registered, 0 foreign**, declared Count = 5 |
+| ThreadNotify | **2 registered, 0 foreign**, declared Count = 2 |
+| ImageNotify | **2 registered, 0 foreign** |
+| ObCallbacks(Process) | **1 entry, 1 foreign pre-operations** |
+| ObCallbacks(Thread) | **1 entry, 1 foreign pre-operations** |
+| Minifilters | **12 registered**, Enumerate Status = `0x00000000` |
+
+- The notify counts equal their `PspCreate*NotifyRoutineCount` values — the expected
+  shape on this host.
+- **Open finding:** both Ob walkers report one registered entry whose pre-operation body
+  falls outside every loaded module's PE-exact span; the tool flags "The Kernel Baseline
+  Is Not Stock." The body's nature is not yet attributed (third-party registration vs
+  misattribution) — unconfirmed in this corpus.
+- **Mapper `--hide` gate failed:** the run printed `No hypervisor present; nothing to
+  hide`, so `hide_ok = false` and the mapper exited `-1` (`Main.cpp:1043`). The image
+  stayed resident (the mapper's `--free`/force-free path was not triggered), which is why
+  the KernelCtl runs succeeded. The hypervisor is loaded by the mapper itself — map
+  `Hypervisor.sys` first (its `Entry` runs `SVM::VirtualizeAllProcessors` and exposes the
+  vmmcall interface), then re-run the Ameger driver with `--hide`.
+- The zero-residue same-build re-map after `KernelCtl.exe --teardown` (no
+  `STATUS_OBJECT_NAME_COLLISION`) has not yet been run.
+
+## K4. Verification status
+
+Performed:
+- `Create.bat` exit 0; gates: Native subsystem, x64, `ntoskrnl.exe`-only imports,
+  non-standard section names, no plaintext device/symbol names.
+- Static disassembly of the final image for the three-argument call, the deref loop, the
+  three-slot dispatch read-back, and `IoDeleteDriver`.
+- Export-table confirmation of `FltEnumerateFilters` (RVA `0x7A110`) and
+  `FltObjectDereference` (RVA `0x14180`).
+- PDB confirmation of the `PspCreate*NotifyRoutine` symbol names on 26300.
+- Dump audit of every unique crash in the corpus: 5 x `0x50`
+  (`IofCallDriver+0x84` through a bad dispatch slot; pre-fix device-object path),
+  2 x `0x1E` (`FLTMGR!FltEnumerateFilters+0x144`; K1), 1 x `0x7E`
+  `C0000096` in `HalpWheaNativeReadMsr` on a `System` thread. The 0x7E is not
+  `KernelCtl.exe` and is outside this driver; it belongs to the earlier hypervisor/WHEA
+  surface (the Hypervisor repo's non-whitelisted-MSR emulation change targets that
+  class).
+
+Live map + census: performed by the operator 2026-10-25 (elevated), build `yt0KnNTI.sys`:
+mapper exit was not 0 — `--hide` reported `No hypervisor present` (`hide_ok=false`,
+`Main.cpp:1043`); KernelCtl QUERY + full census passed; teardown accepted. Remaining
+gates: (a) start `Hypervisor` and re-run the mapper so the mapper exits 0; (b) re-map the
+same build after teardown to prove zero residue; (c) attribute the two foreign Ob pre-op
+bodies.

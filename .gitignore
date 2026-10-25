@@ -1,5 +1,7 @@
 Build/Release/
 Build/obj/
+Driver/Build/Release/
+Driver/Build/obj/
 
 # The runtime's scratch storage. It lives under LOCALAPPDATA and is deleted on shutdown; this entry is
 # only here so a manual "install beside the source tree" layout cannot be committed by accident.
@@ -17,3 +19,5 @@ NUL
 .zed/settings.json.local
 
 *.proxy.log
+
+.freebuff
