@@ -806,6 +806,50 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	data.FunctionTable = ReCa<MANUAL_MAPPING_FUNCTION_TABLE *>(pFunctionTable);
 
+	// A3: a bare return inside ntdll, located in this process's copy. The
+	// target's ntdll sits at the same verified base, so the address is valid
+	// there too. The import stages point OutputDebugStringA/W at it so the
+	// debug-print exception is never raised; landing on a 0xC3 byte executes a
+	// complete return regardless of the instruction stream it sits inside.
+	{
+		BYTE * ods_ret = nullptr;
+		const BYTE * ntdll_base = ReCa<const BYTE *>(g_hNTDLL);
+		if (ntdll_base)
+		{
+			const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(ntdll_base);
+			if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 && dos->e_lfanew < 0x400)
+			{
+				const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(ntdll_base + dos->e_lfanew);
+				if (nt->Signature == IMAGE_NT_SIGNATURE)
+				{
+					const auto * sec = IMAGE_FIRST_SECTION(nt);
+					for (WORD i = 0; i < nt->FileHeader.NumberOfSections && !ods_ret; ++i)
+					{
+						if (!(sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+						{
+							continue;
+						}
+
+						const BYTE * start = ntdll_base + sec[i].VirtualAddress;
+						const DWORD size = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData;
+						for (DWORD j = 0; j + 8 < size; ++j)
+						{
+							if (start[j] == 0xC3)
+							{
+								ods_ret = const_cast<BYTE *>(start + j);
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		data.OdsReturnStub = ods_ret;
+		LOG(1, "[ManualMap] [*] Debug-Print Redirect Stub: %s (ntdll Ret At %p)\n",
+			ods_ret ? "Located" : "Not Found - No Import Redirection Possible", ods_ret);
+	}
+
 	LOG(2, "ShellSize      = %08X\n", MDWD(ShellSize));
 	LOG(2, "Total Size     = %08X\n", MDWD(AllocationSize));
 	LOG(2, "pArg           = %p\n", pArg);
@@ -1597,6 +1641,15 @@ NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPI
 // are macros: a lambda or an outlined helper would be emitted outside the copied
 // span and the remote copy would call into this process's text.
 
+// A3: the first-chance net for debug-print exceptions the import redirection
+// cannot cover. The redirect points the payload's own OutputDebugStringA/W
+// imports at a bare return, so its logging never raises; but a dependency the
+// shell loads (D3DCOMPILER_47 in a bare notepad, for example) can call
+// OutputDebugString from its own init on the synthetic stack, where no
+// top-level OS handler frame exists to absorb the exception. Measured
+// 2026-10-25: without this guard the target exits with DBG_PRINTEXCEPTION_C.
+// The handler continues exactly the two debug-print codes and passes
+// everything else through the chain untouched.
 LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POINTERS ExceptionInfo)
 {
 	EXCEPTION_RECORD * record = ExceptionInfo ? ExceptionInfo->ExceptionRecord : nullptr;
@@ -1606,10 +1659,6 @@ LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POI
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
 
-	// OutputDebugStringA/W raise these two codes through RaiseException on a
-	// normal, continuable exception. Continuing resumes the raise site, which
-	// is exactly what the OS does for a thread that still owns its top-level
-	// handler frame. Anything else keeps searching.
 	const DWORD code = record->ExceptionCode;
 	if (code == DBG_PRINTEXCEPTION_C || code == DBG_PRINTEXCEPTION_WIDE_C)
 	{
@@ -1695,14 +1744,23 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 	pData->pOptionalHeader	= &pData->pNtHeaders->OptionalHeader;
 	pData->pFileHeader		= &pData->pNtHeaders->FileHeader;
 
-	// A6: the hijacked thread runs on a synthetic stack with no top-level OS
-	// handler frame, so a DBG_PRINTEXCEPTION_C raised by the payload's own
-	// logging would terminate the target. The guard is installed before the
-	// first stage that can execute payload code and removed on every exit path.
+	// A3: the debug-print protection is two mechanisms. The import stages
+	// below point the payload's own OutputDebugStringA/W imports at a bare
+	// return in ntdll, so its logging never raises the exception at all; and
+	// this first-chance guard absorbs the debug-print exception for
+	// everything the redirect cannot cover - a dependency the shell loads
+	// (D3DCOMPILER_47 in a bare notepad, measured 2026-10-25: without the
+	// guard the target exits with DBG_PRINTEXCEPTION_C) calling
+	// OutputDebugString from its own init on the synthetic stack. The guard
+	// is installed before the first stage that can load or execute anything
+	// and removed on every exit path.
 	if (f->RtlAddVectoredExceptionHandler && f->RtlRemoveVectoredExceptionHandler)
 	{
 		pData->DebugPrintVehHandle = f->RtlAddVectoredExceptionHandler(1, MMI_DebugPrintVeh);
-		pData->ExecTelemetry.DebugPrintVehInstalled = pData->DebugPrintVehHandle ? TRUE : FALSE;
+		if (pData->DebugPrintVehHandle)
+		{
+			pData->ExecTelemetry.DebugPrintVehInstalled |= 0x10u;
+		}
 	}
 
 	MM_SHELL_STAGE(ImportStageCycles, f->MMIP_LoadImports(pData));
@@ -1902,21 +1960,35 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 
 			const size_t import_name_length = MMI_ImageStringLength(pData, pImport->Name);
 
-			auto * ansi_import = NewObject<ANSI_STRING>(f);
-			if (!ansi_import || !import_name_length || import_name_length > 0xFFFF)
+			// A3: the debug-print imports are pointed at a bare return in
+			// ntdll before the loader ever resolves them, so the payload's
+			// logging becomes a no-op at the call site and the
+			// DBG_PRINTEXCEPTION_C that would walk the target's VEH chain on
+			// the synthetic stack is never raised.
+			if (pData->OdsReturnStub && MMI_IsDebugPrintImport(pImport->Name, import_name_length))
 			{
-				ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
-				ErrorBreak = true;
-				break;
+				*pFuncRef = ReCa<UINT_PTR>(pData->OdsReturnStub);
+				++pData->ExecTelemetry.DebugPrintVehInstalled;
+				pData->ntRet = STATUS_SUCCESS;
 			}
+			else
+			{
+				auto * ansi_import = NewObject<ANSI_STRING>(f);
+				if (!ansi_import || !import_name_length || import_name_length > 0xFFFF)
+				{
+					ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
+					ErrorBreak = true;
+					break;
+				}
 
-			ansi_import->szBuffer	= pImport->Name;
-			ansi_import->Length		= static_cast<WORD>(import_name_length);
-			ansi_import->MaxLength	= static_cast<WORD>((ansi_import->Length + 1) * sizeof(char));
+				ansi_import->szBuffer	= pImport->Name;
+				ansi_import->Length		= static_cast<WORD>(import_name_length);
+				ansi_import->MaxLength	= static_cast<WORD>((ansi_import->Length + 1) * sizeof(char));
 
 				pData->ntRet = f->LdrGetProcedureAddress(ReCa<void *>(hDll), ansi_import, 0, ReCa<void **>(pFuncRef));
 
 				ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
+			}
 			}
 
 			if (NT_FAIL(pData->ntRet))
@@ -2114,22 +2186,33 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 				const size_t import_name_length = MMI_ImageStringLength(pData, pImport->Name);
 
-				auto * ansi_import= NewObject<ANSI_STRING>(f);
-				if (!ansi_import || !import_name_length || import_name_length > 0xFFFF)
+				// A3: the same debug-print redirection as the ordinary import
+				// path, applied to the delay-load name table.
+				if (pData->OdsReturnStub && MMI_IsDebugPrintImport(pImport->Name, import_name_length))
 				{
-					ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
-					ErrorBreak = true;
-					break;
+					pIAT->u1.Function = ReCa<UINT_PTR>(pData->OdsReturnStub);
+					++pData->ExecTelemetry.DebugPrintVehInstalled;
+					pData->ntRet = STATUS_SUCCESS;
 				}
+				else
+				{
+					auto * ansi_import= NewObject<ANSI_STRING>(f);
+					if (!ansi_import || !import_name_length || import_name_length > 0xFFFF)
+					{
+						ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
+						ErrorBreak = true;
+						break;
+					}
 
-				ansi_import->szBuffer	= pImport->Name;
-				ansi_import->Length		= static_cast<WORD>(import_name_length);
-				ansi_import->MaxLength	= static_cast<WORD>((ansi_import->Length + 1) * sizeof(char));
+					ansi_import->szBuffer	= pImport->Name;
+					ansi_import->Length		= static_cast<WORD>(import_name_length);
+					ansi_import->MaxLength	= static_cast<WORD>((ansi_import->Length + 1) * sizeof(char));
 
-				pData->ntRet = f->LdrGetProcedureAddress(ReCa<void *>(hDll), ansi_import, 0, ReCa<void **>(pIAT));
+					pData->ntRet = f->LdrGetProcedureAddress(ReCa<void *>(hDll), ansi_import, 0, ReCa<void **>(pIAT));
 
-				ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
-			}
+					ScrubFreeObject(f, ansi_import, sizeof(ANSI_STRING));
+				}
+				}
 
 			if (NT_FAIL(pData->ntRet))
 			{
@@ -2325,104 +2408,17 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 			pData->ExecTelemetry.DynamicTableInstalled = FALSE;
 		}
 
+		// A5: the dynamic function table is the only registration path. The
+		// old fallback inserted the image into the loader's inverted function
+		// table by writing ntdll's .mrdata under LdrProtectMrdata(FALSE) - a
+		// write into an ntdll-backed page in the target, with no removal API
+		// for the entry it left behind. A registration the documented path
+		// cannot make is now refused instead of bought with that write; the
+		// stage fails and the shell's cleanup releases everything it owns.
 		if (!dynamic_ok)
 		{
-
-			const DYNAMIC_NT_OFFSETS & dyno = pData->NtOffsets;
-			const DWORD os_build = pData->OSBuildNumber;
-			// The layout read below and the encoding written later are only
-			// understood for the validated build families. An unknown build
-			// fails closed here, before anything is written to the table.
-			const bool build_known = os_build != 0 && os_build <= g_Windows11_KnownMaxBuild;
-			const bool inv_ok = build_known &&
-				!!f->RtlInsertInvertedFunctionTable && !!f->LdrpInvertedFunctionTable && !!f->LdrProtectMrdata &&
-				!!f->LdrLockLoaderLock && !!f->LdrUnlockLoaderLock &&
-				dyno.InvertedEntryImageBase + sizeof(void *) <= dyno.InvertedEntrySize &&
-				dyno.InvertedEntryExceptionDirectory + sizeof(void *) <= dyno.InvertedEntrySize &&
-				dyno.InvertedEntryExceptionDirectorySize + sizeof(DWORD) <= dyno.InvertedEntrySize &&
-				dyno.KuserCookie + sizeof(DWORD) <= 0x1000 &&
-				dyno.InvertedTableCount + sizeof(DWORD) <= 0x100 && dyno.InvertedTableEntries < 0x100 &&
-				dyno.InvertedEntrySize >= 8 && dyno.InvertedEntrySize < 0x100;
-			if (!inv_ok)
-			{
-				pData->ntRet = STATUS_UNSUCCESSFUL;
-				return INJ_MM_ERR_ENABLING_SEH_FAILED;
-			}
-
-			f->RtlInsertInvertedFunctionTable(pData->pImageBase, MMI_SizeOfImage(pData));
-
-			// The count and the entries are live loader state: they are read
-			// under the loader lock, the same lock the loader itself holds
-			// when it mutates the table. LdrProtectMrdata below only guards
-			// the .mrdata write, not the reads above it. The lock is released
-			// before the fail-closed return so no early exit leaves it held.
-			ULONG inv_lock_state = 0;
-			ULONG_PTR inv_lock_cookie = 0;
-			const NTSTATUS inv_lock_status = f->LdrLockLoaderLock(NULL, &inv_lock_state, &inv_lock_cookie);
-			if (NT_FAIL(inv_lock_status))
-			{
-				pData->ntRet = inv_lock_status;
-				return INJ_MM_ERR_ENABLING_SEH_FAILED;
-			}
-
-			const BYTE * table_base = ReCa<const BYTE *>(f->LdrpInvertedFunctionTable);
-			const DWORD inv_count = *ReCa<const DWORD *>(table_base + dyno.InvertedTableCount);
-			const BYTE * entries_base = table_base + dyno.InvertedTableEntries;
-			bool inv_entry = false;
-			for (ULONG i = 0; i < inv_count; ++i)
-			{
-				const BYTE * entry = entries_base + static_cast<SIZE_T>(i) * dyno.InvertedEntrySize;
-				void * entry_base = *ReCa<void * const *>(entry + dyno.InvertedEntryImageBase);
-				if (entry_base != pData->pImageBase)
-				{
-					continue;
-				}
-				inv_entry = true;
-
-				pData->InvertedTableInstalled = 1;
-				pData->ExecTelemetry.InvertedTableInstalled = TRUE;
-				pData->ExecTelemetry.InvertedTableEntryBase = pData->pImageBase;
-				const DWORD exc_size = *ReCa<const DWORD *>(entry + dyno.InvertedEntryExceptionDirectorySize);
-				if (!exc_size)
-				{
-
-					SIZE_T FakeDirSize = 0x800 * sizeof(void *);
-					pData->ntRet = f->NtAllocateVirtualMemory(NtCurrentProcess(), &pData->pFakeSEHDirectory, 0, &FakeDirSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-					if (NT_FAIL(pData->ntRet))
-					{
-						break;
-					}
-					// The fake exception directory has to outlive this image: the
-					// inverted table entry still points at it. It is deliberately
-					// not freed here and is tracked in the map statistics instead.
-					pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pFakeSEHDirectory);
-					pData->MapStats.RetainedAllocSize = static_cast<DWORD>(FakeDirSize);
-
-					UINT_PTR stored = ReCa<UINT_PTR>(pData->pFakeSEHDirectory);
-					// 24H2 introduced RtlpImageBaseEncode for this field:
-					// ror64(cookie ^ ptr, cookie & 0x3F). Pre-24H2 builds
-					// store the pointer in the clear. Builds above the
-					// validated ceiling were refused above, so an unknown
-					// transform is never guessed at and the entry is only
-					// written in a form this build family is known to read.
-					if (os_build >= g_Windows11_24H2)
-					{
-						const DWORD cookie = *ReCa<volatile DWORD *>(ReCa<BYTE *>(static_cast<UINT_PTR>(KUSER_SHARED_DATA)) + dyno.KuserCookie);
-						stored = static_cast<UINT_PTR>(MMI_RotateRight64(cookie ^ stored, cookie & 0x3F));
-					}
-					f->LdrProtectMrdata(FALSE);
-					*ReCa<void **>(ReCa<BYTE *>(const_cast<BYTE *>(entry)) + dyno.InvertedEntryExceptionDirectory) = ReCa<void *>(stored);
-					f->LdrProtectMrdata(TRUE);
-				}
-				break;
-			}
-			f->LdrUnlockLoaderLock(NULL, inv_lock_cookie);
-
-			if (!inv_entry)
-			{
-				pData->ntRet = STATUS_UNSUCCESSFUL;
-				return INJ_MM_ERR_ENABLING_SEH_FAILED;
-			}
+			pData->ntRet = STATUS_UNSUCCESSFUL;
+			return INJ_MM_ERR_ENABLING_SEH_FAILED;
 		}
 	}
 #endif
@@ -2450,6 +2446,28 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 	}
 
 	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+
+	// A4: a TLS directory that declares neither callbacks nor data exists only
+	// to carry an index. Registering it would fabricate loader bookkeeping in
+	// the target's loader heap and touch the PEB bitmap for nothing the image
+	// can use, so the loader is left completely untouched and the stage
+	// reports through the existing "no loader entry" telemetry.
+	{
+		bool has_callbacks = false;
+		if (pTLS->AddressOfCallBacks &&
+			MMI_InImage(pData, ReCa<void *>(pTLS->AddressOfCallBacks), sizeof(void *)))
+		{
+			has_callbacks = *ReCa<void * const *>(pTLS->AddressOfCallBacks) != nullptr;
+		}
+
+		const bool has_data = pTLS->StartAddressOfRawData != 0 || pTLS->SizeOfZeroFill != 0;
+
+		if (!has_callbacks && !has_data)
+		{
+			pData->ExecTelemetry.TlsLoaderEntryAbsent = 1;
+			return INJ_ERR_SUCCESS;
+		}
+	}
 
 	{
 		const DWORD ProtRet = MMI_SetExecProtections(pData, MM_EXEC_STATE_EXECUTE);

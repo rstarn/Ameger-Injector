@@ -112,6 +112,16 @@ namespace WAIT_REASON_SAFE
 			reason == WrUserRequest || reason == WrUserDelay ||
 			reason == WrUserRequest2;
 	}
+
+	// B2: a delay wait parks the thread on a timer whose remaining time is
+	// unknowable from outside, so it is a donor of last resort: the hijack
+	// window is however long that timer still has to run. The event-driven
+	// safe waits are preferred first, and a delay wait is only taken when
+	// nothing else qualified within the probe budget.
+	__forceinline bool IsDelay(unsigned char reason)
+	{
+		return reason == UserDelay || reason == WrUserDelay;
+	}
 }
 
 typedef enum _LDR_DDAG_STATE : int

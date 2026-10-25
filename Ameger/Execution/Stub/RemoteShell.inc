@@ -16,6 +16,11 @@ SR_FP_FLAG_XSAVE EQU 1
 SR_FP_AREA EQU 128
 SR_FP_AREA_SIZE EQU 864
 SR_SAVED_RSP EQU 96
+;; A9: the victim TEB's stack bounds, saved while the shell stack is
+;; published as this thread's stack for the routine's duration. These two
+;; slots live in the reserved padding after SR_REMOTE_DATA's 96 bytes.
+SR_SAVED_STACKBASE EQU 104
+SR_SAVED_STACKLIMIT EQU 112
 
 ;; Dedicated shell stack, laid out after the state page in the same allocation.
 ;; The first 128 bytes of victim stack are still used for the register spill

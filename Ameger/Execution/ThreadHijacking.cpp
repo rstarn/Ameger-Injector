@@ -153,6 +153,21 @@ namespace
 		return std::find(excluded.begin(), excluded.end(), tid) != excluded.end();
 	}
 
+	// B4: the thread census is pure diagnostics - it opens every thread of the
+	// target once to print a table - and each of those opens is a handle-table
+	// entry an onlooker can count. It only runs when it was asked for; a quiet
+	// run performs no thread opens for the census at all.
+	bool ThreadCensusEnabled()
+	{
+		static const bool enabled = []() -> bool
+		{
+			wchar_t buffer[8] = {};
+			const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_CENSUS").get(), buffer, 4);
+			return got == 1 && buffer[0] == L'1';
+		}();
+		return enabled;
+	}
+
 	void LogThreadCensus(HANDLE hTargetProc, ProcessInformation & pi, const std::vector<DWORD> & excluded, DWORD selected_tid)
 	{
 		LOG(1, "[ThreadHijack] [*] Candidate Thread Census:\n");
@@ -350,19 +365,20 @@ namespace
 			LOG(2, "FindAcquireThread: Dynamic Offsets Not Ready, Refusing\n");
 			return 0;
 		}
-		const KTHREAD_STATE running = static_cast<KTHREAD_STATE>(g_DynamicOffsets.ThreadStateRunning);
-		const KTHREAD_STATE waiting = KTHREAD_STATE::Waiting;
-		DWORD probes = 0;
-		DWORD fallback = 0;
-		DWORD fallback_probes = 0;
-		do
+	const KTHREAD_STATE running = static_cast<KTHREAD_STATE>(g_DynamicOffsets.ThreadStateRunning);
+	const KTHREAD_STATE waiting = KTHREAD_STATE::Waiting;
+	DWORD probes = 0;
+	DWORD fallback = 0;
+	DWORD delay_fallback = 0;
+	DWORD fallback_probes = 0;
+	do
+	{
+		KWAIT_REASON reason;
+		KTHREAD_STATE state;
+		if (!processInformation.GetThreadState(state, reason))
 		{
-			KWAIT_REASON reason;
-			KTHREAD_STATE state;
-			if (!processInformation.GetThreadState(state, reason))
-			{
-				continue;
-			}
+			continue;
+		}
 
 		const DWORD candidate = processInformation.GetThreadId();
 		if (!candidate || candidate == GetCurrentThreadId() || IsExcluded(excluded, candidate))
@@ -370,49 +386,64 @@ namespace
 			continue;
 		}
 
-			if (state == running)
-			{
-				if (probes >= kMaxHandleProbes)
-				{
-					continue;
-				}
-				++probes;
-
-				if (processInformation.IsThreadWorkerThread())
-				{
-					continue;
-				}
-
-				if (out_was_running)
-				{
-					*out_was_running = true;
-				}
-				return candidate;
-			}
-
-			if (allow_waiting && !fallback && state == waiting && IsSafeWaitReason(reason))
-			{
-				if (fallback_probes >= kMaxHandleProbes)
-				{
-					continue;
-				}
-				++fallback_probes;
-
-				if (processInformation.IsThreadWorkerThread())
-				{
-					continue;
-				}
-
-				fallback = candidate;
-			}
-		}
-		while (processInformation.NextThread());
-
-		if (out_was_running)
+		if (state == running)
 		{
-			*out_was_running = false;
+			if (probes >= kMaxHandleProbes)
+			{
+				continue;
+			}
+			++probes;
+
+			if (processInformation.IsThreadWorkerThread())
+			{
+				continue;
+			}
+
+			if (out_was_running)
+			{
+				*out_was_running = true;
+			}
+			return candidate;
 		}
-		return fallback;
+
+		// B2: within the safe waits, the event-driven reasons are preferred
+		// over the delay reasons: a delay wait only wakes when its timer
+		// expires, and how long that timer still has to run cannot be known
+		// from outside. A delay wait is still taken when nothing else
+		// qualified, so the search's reach is not narrowed.
+		if (allow_waiting && state == waiting && IsSafeWaitReason(reason))
+		{
+			if (fallback_probes >= kMaxHandleProbes)
+			{
+				continue;
+			}
+			++fallback_probes;
+
+			if (processInformation.IsThreadWorkerThread())
+			{
+				continue;
+			}
+
+			if (!WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(reason)))
+			{
+				if (!fallback)
+				{
+					fallback = candidate;
+				}
+			}
+			else if (!delay_fallback)
+			{
+				delay_fallback = candidate;
+			}
+		}
+	}
+	while (processInformation.NextThread());
+
+	if (out_was_running)
+	{
+		*out_was_running = false;
+	}
+	return fallback ? fallback : delay_fallback;
 	}
 
 	struct DeferredTrampoline
@@ -586,8 +617,78 @@ namespace
 			}
 
 			SR_REMOTE_STATE state = SR_REMOTE_STATE::SR_RS_ExecutionPending;
-			if (!ScReadProcessMemory(Entry.Process, ReCa<BYTE *>(Entry.Base) + kDeferredCodePage, &state, sizeof(state), nullptr) ||
-				!RemoteRoutineSettled(state))
+			if (!ScReadProcessMemory(Entry.Process, ReCa<BYTE *>(Entry.Base) + kDeferredCodePage, &state, sizeof(state), nullptr))
+			{
+				retained.push_back(Entry);
+				continue;
+			}
+
+			// B7: a trampoline whose stub never started - state still Pending,
+			// RIP still at the stub entry, RSP still the victim's own - can be
+			// unwound from the state page itself. The saved RSP and the return
+			// target are both stored there, the hijack only ever changed RIP,
+			// and nothing was pushed. The donor is put back at its original
+			// instruction and the allocation is reclaimed instead of being
+			// carried as a permanent private region.
+			if (state == SR_REMOTE_STATE::SR_RS_ExecutionPending)
+			{
+				ULONG rewind_previous = 0;
+				const NTSTATUS rewind_suspend = ScNtSuspendThread(Entry.Thread, &rewind_previous);
+				bool rewind_reclaimed = false;
+				bool rewind_resumed = false;
+				if (!NT_FAIL(rewind_suspend) && rewind_previous == 0)
+				{
+					CONTEXT rewind{ 0 };
+					rewind.ContextFlags = CONTEXT_CONTROL;
+					if (NT_SUCCESS(ScNtGetContextThread(Entry.Thread, &rewind)))
+					{
+						const size_t state_off = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadState) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
+						const size_t return_off = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(RemoteThreadReturnTarget) - reinterpret_cast<ULONG_PTR>(RemoteThreadHijackBegin));
+						const BYTE * state_page = ReCa<const BYTE *>(Entry.Base) + kDeferredCodePage;
+						ULONG_PTR saved_rsp = 0;
+						ULONG_PTR return_target = 0;
+						if (rewind.Rip == ReCa<ULONG_PTR>(Entry.Base) &&
+							ScReadProcessMemory(Entry.Process, state_page + SR_SAVED_RSP, &saved_rsp, sizeof(saved_rsp), nullptr) &&
+							rewind.Rsp == saved_rsp &&
+							ScReadProcessMemory(Entry.Process, state_page + (return_off - state_off), &return_target, sizeof(return_target), nullptr) &&
+							return_target)
+						{
+							rewind.Rip = return_target;
+							if (NT_SUCCESS(ScNtSetContextThread(Entry.Thread, &rewind)))
+							{
+								rewind_reclaimed = true;
+							}
+						}
+					}
+					rewind_resumed = ResumeThreadWithRetry(Entry.Thread);
+				}
+				else if (!NT_FAIL(rewind_suspend))
+				{
+					// Suspended by somebody else; leave it exactly as found.
+					ResumeThreadWithRetry(Entry.Thread);
+				}
+
+				if (rewind_reclaimed && rewind_resumed)
+				{
+					LOG(2, "Deferred Trampoline Reclaimed: Stub Never Started; Donor Rewound (Base = %p)\n", Entry.Base);
+
+					ScrubRemoteRegion(Entry.Process, Entry.Base, kDeferredTrampolineSize, kScrubChunk);
+					if (VirtualFreeEx(Entry.Process, Entry.Base, 0, MEM_RELEASE))
+					{
+						CloseDeferredTrampoline(Entry);
+						continue;
+					}
+
+					LOG(2, "Deferred Trampoline Free Failed; Retained (Base = %p)\n", Entry.Base);
+					retained.push_back(Entry);
+					continue;
+				}
+
+				retained.push_back(Entry);
+				continue;
+			}
+
+			if (!RemoteRoutineSettled(state))
 			{
 				retained.push_back(Entry);
 				continue;
@@ -811,10 +912,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 								//
 								// A running thread is preferred, but a parked one is still
 								// usable: the stub is scheduled onto it either way, and the
-								// context restore path can roll it back.
+								// context restore path can roll it back. A delay wait is
+								// called out in the log because its wake time is unknown and
+								// the startup probe may roll it back into a retry.
 								sponsor_usable = true;
-								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d; Accepting Sponsor\n",
-									SponsorTidActual, static_cast<int>(wr));
+								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d (%s Wait); Accepting Sponsor\n",
+									SponsorTidActual, static_cast<int>(wr),
+									WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(wr)) ? "Delay, Wake Time Unknown" : "Event");
 							}
 							else if (sponsor_pass + 1 < kSponsorValidationPasses)
 							{
@@ -987,10 +1091,15 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	}
 
 	LOG(2, "Target Thread = %06X\n", ThreadID);
+	if (ThreadCensusEnabled())
 	{
 		ProcessInformation census_pi;
 		LogThreadCensus(hTargetProc, census_pi, excluded, ThreadID);
 		processInformation.SetProcess(hTargetProc);
+	}
+	else
+	{
+		LOG(2, "[ThreadHijack] [*] Census Skipped (Not Requested; No Thread Opens)\n");
 	}
 
 	// The chosen thread is recorded before its handle is acquired. A thread

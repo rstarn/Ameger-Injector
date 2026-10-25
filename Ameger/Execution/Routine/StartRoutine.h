@@ -30,6 +30,13 @@ using f_Routine			= DWORD(__fastcall *)(void * pArg);
 // stack window below, so a stub that did not pivot cannot pass as one that did.
 #define SR_SHELL_RSP 88
 
+// A9: the victim TEB stack bounds (StackBase, StackLimit), saved while the
+// shell stack is published as the thread's stack for the routine's duration.
+// They live in the reserved padding after SR_REMOTE_DATA's 96 bytes, which
+// the stub owns alongside SR_SAVED_RSP.
+#define SR_SAVED_STACKBASE 104
+#define SR_SAVED_STACKLIMIT 112
+
 // Dedicated shell stack geometry, mirrored from Execution/Stub/RemoteShell.inc.
 // The stack is the third page group of the same allocation: code page, state
 // page, then the stack. The first 128 bytes of victim stack are still used for

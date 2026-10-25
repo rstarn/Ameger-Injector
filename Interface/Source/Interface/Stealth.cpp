@@ -156,6 +156,7 @@ namespace stealth
         kStealthVerifyForensicPosture,
         kStealthVerifyUsermodeVectors,
         kStealthEraseHeader,
+        kStealthSurveyHostSurface,
         kStealthSurveyTraps,
         kStealthStepCount
     };
@@ -399,8 +400,10 @@ namespace stealth
             }
 
             {
-                unsigned long rx_image = 0, rx_private = 0, rx_mapped = 0;
+                unsigned long rx_image = 0, rx_private = 0, rx_mapped = 0, rx_this_load = 0;
                 unsigned long long rx_private_bytes = 0;
+                const ULONG_PTR this_load_base = ReCa<ULONG_PTR>(hRemoteBase);
+                const ULONG_PTR this_load_end = this_load_base + (wx_image ? wx_image : 0);
                 bool census_done = false;
                 LPCVOID census_cur = nullptr;
                 for (unsigned long iter = 0; iter < 100000; ++iter)
@@ -419,6 +422,11 @@ namespace stealth
                             prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY);
                         if (is_rx)
                         {
+                            const ULONG_PTR region_start = ReCa<ULONG_PTR>(census_mbi.BaseAddress);
+                            if (this_load_base && region_start >= this_load_base && region_start < this_load_end)
+                            {
+                                ++rx_this_load;
+                            }
                             if (census_mbi.Type == MEM_IMAGE)
                             {
                                 ++rx_image;
@@ -450,19 +458,26 @@ namespace stealth
                     census_done ? L"" : L" [Truncated At 100k Regions]");
                 if (rx_private)
                 {
-                    LOG(0, L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Exist Process-Wide (Incl. This Load's Image); "
-                            L"Each Is VAD-Visible With No Loader Entry\n", kYellow, kReset, kYellow, rx_private, kReset);
+                    // B1: the private-RX count is attributed by address range
+                    // rather than asserted: the regions inside this load's
+                    // image are counted separately from the ones the target
+                    // carried before the load, so the number an onlooker's
+                    // self-census would see is split into ours and theirs.
+                    const unsigned long pre_existing = rx_private > rx_this_load ? rx_private - rx_this_load : 0;
+                    LOG(0, L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Process-Wide: %ls%lu%s Belong To This Load's Image @ %p | %ls%lu%s Pre-Existing In The Target; Each Is VAD-Visible With No Loader Entry\n",
+                        kYellow, kReset, kYellow, rx_private, kReset,
+                        kYellow, rx_this_load, kReset, hRemoteBase,
+                        kYellow, pre_existing, kReset);
                 }
                 // rx_private is a process-wide census over the whole VAD, not a
                 // measurement of this load alone, so the count is presented as
                 // process-wide and the image's own share is stated separately.
                 // Staging teardown is a mapper property that is not re-checked
                 // here, so it is called out as a design assertion.
-                LOG(0, L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | Process-Wide Private-RX = %ls%lu%s "
-                        L"(This Load Contributes Up To %lu RX Section Region(s) - Inherent To Manual Map)\n",
-                        kGreen, kReset, wx_rwx ? kYellow : kGreen, wx_rwx, kReset,
-                        rx_private ? kYellow : kGreen, rx_private, kReset,
-                        static_cast<unsigned long>(wx_exec_sections));
+                LOG(0, L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | This Load's Image = %ls%lu%s Of %ls%lu%s RX Region(s) (Inherent To Manual Map)\n",
+                    kGreen, kReset, wx_rwx ? kYellow : kGreen, wx_rwx, kReset,
+                    kGreen, rx_this_load, kReset,
+                    rx_private ? kYellow : kGreen, rx_private, kReset);
                 LOG(0, L"      %ls[*]%ls Staging Regions Scrubbed/Released Is A Mapper Property, Not Re-Checked Here.\n",
                         kDim, kReset);
             }
@@ -1264,8 +1279,19 @@ namespace stealth
             }
             else
             {
-                LOG(0, L"  %ls[!]%ls Target Debug Port............ %lsUnknown%ls (Query Failed; Not Treated As Clean; Port Status 0x%08X, Flags Status 0x%08X)\n",
-                    kYellow, kReset, kYellow, kReset, static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
+                // A1/F1c posture: on the standing QUERY_LIMITED handle both
+                // debug reads are refused by rights, which is the decided
+                // trade (weaker handle, weaker probe). The refusal is named
+                // for what it is instead of being read as an unknown fault.
+                const bool denied_by_rights =
+                    dbg.portStatus == static_cast<NTSTATUS>(0xC0000022u) &&
+                    dbg.flagsStatus == static_cast<NTSTATUS>(0xC0000022u);
+                LOG(0, L"  %ls[!]%ls Target Debug Port............ %lsUnknown%ls (%ls; Port Status 0x%08X, Flags Status 0x%08X)\n",
+                    kYellow, kReset, kYellow, kReset,
+                    denied_by_rights
+                        ? L"Refused By Handle Rights - QUERY_LIMITED Posture By Decision; Not Queryable, Not Reported Clean"
+                        : L"Query Failed; Not Treated As Clean",
+                    static_cast<unsigned>(dbg.portStatus), static_cast<unsigned>(dbg.flagsStatus));
             }
         }
         {
@@ -1426,6 +1452,16 @@ namespace stealth
                 LOG(0, L"  %ls[+]%ls TLS Registration Retained: The Image Carries TLS Data, So Index %u, The PEB Bit, "
                         L"The TEB Slot, And The LdrpTlsList Entry Must Stay Live.\n",
                     kGreen, kReset, exec->TlsIndex);
+            }
+            else if (exec->TlsCallbacksConfigured == 0 && exec->TlsLoaderEntryAbsent != 0)
+            {
+                // A4: the stage skipped the loader entirely - the image's TLS
+                // directory declares neither callbacks nor data, so no LDR
+                // entry was fabricated, no PEB bitmap bit was taken, and no
+                // loader-heap churn happened.
+                LOG(0, L"  %ls[+]%ls Loader Mutation Skipped: The TLS Directory Declares No Callbacks And No Data; "
+                        L"No LDR Entry, PEB Bit, Or Loader Heap Was Ever Touched.\n",
+                    kGreen, kReset);
             }
             else if (exec->TlsCallbacksConfigured)
             {
@@ -2526,6 +2562,318 @@ namespace stealth
         }
     }
 
+    bool CapturePreLoadBaseline(DWORD pid, StealthVerifierBuffers & buffers)
+    {
+        buffers.pre_load_modules.clear();
+        buffers.pre_target_windows = 0;
+        buffers.pre_target_layered = 0;
+        if (!pid)
+        {
+            return false;
+        }
+
+        // B3: one transient module snapshot, closed immediately. The suite
+        // takes the same snapshot again after the load, and the delta between
+        // the two is what the report shows - new modules that appeared with
+        // no load event are the loader-list trace the survey hunts for.
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+        if (snap != INVALID_HANDLE_VALUE)
+        {
+            MODULEENTRY32W mod{};
+            mod.dwSize = sizeof(mod);
+            if (Module32FirstW(snap, &mod))
+            {
+                do
+                {
+                    buffers.pre_load_modules.emplace_back(mod.szModule);
+                } while (Module32NextW(snap, &mod));
+            }
+            CloseHandle(snap);
+        }
+
+        // A2: the target's window surface before anything is mapped. The
+        // styles counted are exactly the ones an EnumWindows or DWM hook in
+        // the target can key on.
+        struct WindowTally
+        {
+            DWORD pid;
+            size_t windows;
+            size_t layered;
+        } tally{ pid, 0, 0 };
+        EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+            WindowTally * t = reinterpret_cast<WindowTally *>(param);
+            DWORD owner = 0;
+            GetWindowThreadProcessId(hwnd, &owner);
+            if (owner != t->pid)
+            {
+                return TRUE;
+            }
+            ++t->windows;
+            if (GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW))
+            {
+                ++t->layered;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&tally));
+        buffers.pre_target_windows = tally.windows;
+        buffers.pre_target_layered = tally.layered;
+
+        return !buffers.pre_load_modules.empty();
+    }
+
+    // A6/B6: the host-side surfaces the target can read from outside. Every
+    // line is a measurement: the memory sizes behind the pagefile signal, the
+    // CPU's identification leaves, this process's own named kernel objects,
+    // and the persistent symbol store.
+    void StealthSurveyHostSurface(const StealthVerifierBuffers & buffers, int & step, int total)
+    {
+        ++step;
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Survey Host Surface...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+        (void)buffers;
+
+        {
+            MEMORYSTATUSEX memory{};
+            memory.dwLength = sizeof(memory);
+            if (GlobalMemoryStatusEx(&memory))
+            {
+                // C3's pagefile signal: ullTotalPageFile is the same commit
+                // limit the target reads. A commit limit that equals physical
+                // memory is the classic "no pagefile" analysis-VM tell.
+                const bool commit_equals_physical = memory.ullTotalPageFile <= memory.ullTotalPhys;
+                LOG(0, L"  %ls[%ls]%ls Memory Surface............ Physical %ls%llu MB%ls | Commit Limit %ls%llu MB%ls | In Use %ls%llu MB%ls %ls\n",
+                    commit_equals_physical ? kYellow : kGreen, commit_equals_physical ? L"!" : L"+", kReset,
+                    kGreen, memory.ullTotalPhys >> 20, kReset,
+                    commit_equals_physical ? kYellow : kGreen, memory.ullTotalPageFile >> 20, kReset,
+                    kGreen, memory.ullAvailPageFile >> 20, kReset,
+                    commit_equals_physical
+                        ? L"(Commit Limit Does Not Exceed Physical Memory - The No-Pagefile VM Tell)"
+                        : L"(Commit Limit Exceeds Physical Memory - Pagefile Present)");
+            }
+            else
+            {
+                LOG(0, L"  %ls[!]%ls Memory Surface............ GlobalMemoryStatusEx Failed (0x%08X)\n",
+                    kYellow, kReset, static_cast<unsigned>(GetLastError()));
+            }
+        }
+
+        {
+            int regs[4]{};
+            __cpuid(regs, 0);
+            char vendor[13]{};
+            memcpy(vendor + 0, &regs[1], 4);
+            memcpy(vendor + 4, &regs[3], 4);
+            memcpy(vendor + 8, &regs[2], 4);
+            __cpuid(regs, 1);
+            const bool hypervisor = (regs[2] & (1 << 31)) != 0;
+            LOG(0, L"  %ls[%ls]%ls CPU Surface.............. Vendor '%hs' | Hypervisor Present Bit %ls%s%ls %ls\n",
+                hypervisor ? kYellow : kGreen, hypervisor ? L"!" : L"+", kReset,
+                vendor,
+                hypervisor ? kYellow : kGreen, hypervisor ? L"Set" : L"Clear", kReset,
+                hypervisor
+                    ? L"(CPUID Leaf 1 ECX Bit 31 - C3's Spoofing Checklist Item)"
+                    : L"(No Hypervisor Bit)");
+        }
+
+        {
+            using NtQuerySystemInformationFn = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
+            using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+            HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+            auto query_system = ntdll ? ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation")) : nullptr;
+            auto query_object = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
+
+            size_t events = 0, sections = 0, mutants = 0;
+            size_t named_events = 0, named_sections = 0, named_mutants = 0;
+            size_t named_other = 0;
+            bool census_ok = false;
+            if (query_system && query_object)
+            {
+                std::vector<BYTE> buffer(1 << 20);
+                ULONG size = static_cast<ULONG>(buffer.size());
+                LONG status = query_system(64, buffer.data(), size, &size);
+                while (static_cast<DWORD>(status) == 0xC0000004u && buffer.size() < (32u << 20))
+                {
+                    buffer.resize(size > buffer.size() ? size : buffer.size() * 2);
+                    size = static_cast<ULONG>(buffer.size());
+                    status = query_system(64, buffer.data(), size, &size);
+                }
+
+                if (status == 0)
+                {
+                    // SystemExtendedHandleInformation layout: ULONG_PTR Count;
+                    // ULONG_PTR Reserved; then the entries. The count and the
+                    // entry base are pointer-sized, not ULONG-sized.
+                    struct HandleEntryEx
+                    {
+                        void * Object;
+                        ULONG_PTR ProcessId;
+                        void * Handle;
+                        ULONG GrantedAccess;
+                        USHORT CreatorBackTraceIndex;
+                        USHORT ObjectTypeIndex;
+                        ULONG HandleAttributes;
+                        ULONG Reserved;
+                    };
+
+                    census_ok = true;
+                    const ULONG_PTR count = *ReCa<const ULONG_PTR *>(buffer.data());
+                    const HandleEntryEx * entries = ReCa<const HandleEntryEx *>(buffer.data() + sizeof(ULONG_PTR) * 2);
+                    const size_t capacity = (buffer.size() - sizeof(ULONG_PTR) * 2) / sizeof(HandleEntryEx);
+                    const size_t total_entries = count < capacity ? static_cast<size_t>(count) : capacity;
+                    const DWORD self = GetCurrentProcessId();
+                    size_t checked = 0;
+
+                    for (size_t i = 0; i < total_entries && checked < 1024; ++i)
+                    {
+                        const HandleEntryEx & entry = entries[i];
+                        if (entry.ProcessId != self || !entry.Handle)
+                        {
+                            continue;
+                        }
+                        ++checked;
+
+                        // Each handle is duplicated before anything is asked
+                        // of it, so the enumeration's own handles are never
+                        // closed, and nothing is asked of types known to be
+                        // unsafe to query (pipes are filtered out by the type
+                        // check below rather than by hope).
+                        HANDLE duplicate = nullptr;
+                        if (!DuplicateHandle(GetCurrentProcess(), entry.Handle, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+                        {
+                            continue;
+                        }
+
+                        BYTE type_buf[128]{};
+                        ULONG returned = 0;
+                        if (query_object(duplicate, 2, type_buf, sizeof(type_buf), &returned) == 0)
+                        {
+                            const auto * type_name = ReCa<const UNICODE_STRING *>(type_buf);
+                            const wchar_t * name = type_name && type_name->szBuffer ? type_name->szBuffer : L"";
+                            const size_t name_len = type_name ? type_name->Length / sizeof(wchar_t) : 0;
+
+                            const bool is_event = name_len == 5 && wcsncmp(name, L"Event", 5) == 0;
+                            const bool is_section = name_len == 7 && wcsncmp(name, L"Section", 7) == 0;
+                            const bool is_mutant = name_len == 6 && wcsncmp(name, L"Mutant", 6) == 0;
+                            if (is_event || is_section || is_mutant)
+                            {
+                                bool named = false;
+                                BYTE name_buf[128]{};
+                                if (query_object(duplicate, 1, name_buf, sizeof(name_buf), &returned) == 0)
+                                {
+                                    const auto * object_name = ReCa<const UNICODE_STRING *>(name_buf);
+                                    named = object_name && object_name->Length != 0 && object_name->szBuffer;
+                                }
+
+                                if (is_event)
+                                {
+                                    ++events;
+                                    named_events += named ? 1 : 0;
+                                }
+                                else if (is_section)
+                                {
+                                    ++sections;
+                                    named_sections += named ? 1 : 0;
+                                }
+                                else
+                                {
+                                    ++mutants;
+                                    named_mutants += named ? 1 : 0;
+                                }
+                            }
+                        }
+                        CloseHandle(duplicate);
+                    }
+                }
+            }
+
+            const size_t named_total = named_events + named_sections + named_mutants + named_other;
+            if (census_ok)
+            {
+                LOG(0, L"  %ls[%ls]%ls Kernel Objects (This Run).. Events %ls%zu%ls (Named %ls%zu%ls) | Sections %ls%zu%ls (Named %ls%zu%ls) | Mutants %ls%zu%ls (Named %ls%zu%ls) %ls\n",
+                    named_total ? kYellow : kGreen, named_total ? L"!" : L"+", kReset,
+                    kGreen, events, kReset, named_events ? kYellow : kGreen, named_events, kReset,
+                    kGreen, sections, kReset, named_sections ? kYellow : kGreen, named_sections, kReset,
+                    kGreen, mutants, kReset, named_mutants ? kYellow : kGreen, named_mutants, kReset,
+                    named_total
+                        ? L"(Named Objects Exist - A \\BaseNamedObjects Scan Surface; Note The Loader Holds System-Named \\KnownDlls Sections)"
+                        : L"(All Unnamed - No \\BaseNamedObjects Surface)");
+            }
+            else
+            {
+                LOG(0, L"  %ls[!]%ls Kernel Objects (This Run).. Enumeration Failed; Not Reported As Clean\n",
+                    kYellow, kReset);
+            }
+        }
+
+        {
+            wchar_t root[MAX_PATH]{};
+            const DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH);
+            if (len && len < MAX_PATH)
+            {
+                // The store nests one directory per symbol name and one more
+                // per GUID (symstore layout: Symbols\<name>\<guid>\<file>), so
+                // the count walks two levels.
+                const std::wstring dir = std::wstring(root) + L"\\Symbols";
+                size_t files = 0;
+                size_t folders = 0;
+                unsigned long long bytes = 0;
+                WIN32_FIND_DATAW found{};
+                HANDLE search = FindFirstFileW((dir + L"\\*").c_str(), &found);
+                if (search != INVALID_HANDLE_VALUE)
+                {
+                    do
+                    {
+                        if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcscmp(found.cFileName, L".") == 0 || wcscmp(found.cFileName, L"..") == 0)
+                        {
+                            continue;
+                        }
+                        ++folders;
+                        const std::wstring first = dir + L"\\" + found.cFileName;
+                        WIN32_FIND_DATAW inner{};
+                        HANDLE sub = FindFirstFileW((first + L"\\*").c_str(), &inner);
+                        if (sub != INVALID_HANDLE_VALUE)
+                        {
+                            do
+                            {
+                                if (!(inner.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcscmp(inner.cFileName, L".") == 0 || wcscmp(inner.cFileName, L"..") == 0)
+                                {
+                                    continue;
+                                }
+                                const std::wstring second = first + L"\\" + inner.cFileName;
+                                WIN32_FIND_DATAW leaf{};
+                                HANDLE deep = FindFirstFileW((second + L"\\*").c_str(), &leaf);
+                                if (deep != INVALID_HANDLE_VALUE)
+                                {
+                                    do
+                                    {
+                                        if (leaf.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                                        {
+                                            continue;
+                                        }
+                                        ++files;
+                                        bytes += (static_cast<unsigned long long>(leaf.nFileSizeHigh) << 32) | leaf.nFileSizeLow;
+                                    } while (FindNextFileW(deep, &leaf));
+                                    FindClose(deep);
+                                }
+                            } while (FindNextFileW(sub, &inner));
+                            FindClose(sub);
+                        }
+                    } while (FindNextFileW(search, &found));
+                    FindClose(search);
+                }
+                LOG(0, L"  %ls[*]%ls Symbol Store............. %ls%ls%ls | %zu Folder(s), %zu File(s), %llu KB - Persistent By Design (One Download Per Machine; The Per-Run Scratch Is Deleted On Shutdown)\n",
+                    kDim, kReset,
+                    kGreen, dir.c_str(), kReset,
+                    folders, files, bytes / 1024);
+            }
+            else
+            {
+                LOG(0, L"  %ls[!]%ls Symbol Store............. LOCALAPPDATA Unresolvable\n", kYellow, kReset);
+            }
+        }
+
+        LOG(0, L"\n");
+    }
+
     void StealthSurveyTraps(HANDLE process, DWORD survey_pid, StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -2534,7 +2882,8 @@ namespace stealth
         LOG(0, L"\n");
     }
 
-    void StealthVerifyUsermodeVectors(HANDLE process, const HijackStats * process_hijack, int & step, int total)
+    void StealthVerifyUsermodeVectors(HANDLE process, const HijackStats * process_hijack,
+        DWORD survey_pid, const StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Verify Usermode Detection Vectors...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -2566,12 +2915,59 @@ namespace stealth
         }, reinterpret_cast<LPARAM>(&overlay));
         visible_windows = overlay.count;
 
+        // A2: the payload's overlay surface, measured rather than asserted.
+        // The target's top-level windows are counted now (after the load) and
+        // compared against the baseline captured before it; the layered and
+        // transparent styles are exactly what an EnumWindows/DWM hook in the
+        // target can key on. A payload that draws nothing changes nothing.
+        size_t after_windows = 0;
+        size_t after_layered = 0;
+        if (survey_pid)
+        {
+            struct TargetWindowTally
+            {
+                DWORD pid;
+                size_t windows;
+                size_t layered;
+            } target_tally{ survey_pid, 0, 0 };
+            EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+                TargetWindowTally * tally = reinterpret_cast<TargetWindowTally *>(param);
+                DWORD owner = 0;
+                GetWindowThreadProcessId(hwnd, &owner);
+                if (owner != tally->pid)
+                {
+                    return TRUE;
+                }
+                ++tally->windows;
+                if (GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW))
+                {
+                    ++tally->layered;
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&target_tally));
+            after_windows = target_tally.windows;
+            after_layered = target_tally.layered;
+        }
+
         const bool veh_ok = ProbeLocalVehPathRoundTrip();
 
         LOG(0, L"  %ls[%ls]%ls Overlay Surface............ Visible Windows Owned By This Process: %ls%d%ls %ls\n",
             visible_windows == 0 ? kGreen : kRed, visible_windows == 0 ? L"+" : L"x", kReset,
             visible_windows == 0 ? kGreen : kRed, visible_windows, kReset,
             visible_windows == 0 ? L"(None - Hidden Scratch Target, No UI Created)" : L"(DETECTED - Visible Window Present)");
+        if (survey_pid)
+        {
+            const long window_delta = static_cast<long>(after_windows) - static_cast<long>(buffers.pre_target_windows);
+            const long layered_delta = static_cast<long>(after_layered) - static_cast<long>(buffers.pre_target_layered);
+            const bool surface_clean = window_delta == 0 && layered_delta == 0;
+            LOG(0, L"  %ls[%ls]%ls Payload Window Surface.... Target-Owned Windows: %ls%zu -> %zu%ls (%ls%+ld%ls) | Layered/Transparent: %ls%zu -> %zu%ls (%ls%+ld%ls) %ls\n",
+                surface_clean ? kGreen : kYellow, surface_clean ? L"+" : L"!", kReset,
+                surface_clean ? kGreen : kYellow, buffers.pre_target_windows, after_windows, kReset,
+                window_delta == 0 ? kGreen : kYellow, window_delta, kReset,
+                surface_clean ? kGreen : kYellow, buffers.pre_target_layered, after_layered, kReset,
+                layered_delta == 0 ? kGreen : kYellow, layered_delta, kReset,
+                surface_clean ? L"(No Surface The Target Can Enumerate Was Added)" : L"(Payload Created Window Surface - EnumWindows/DWM Visible)");
+        }
         // The rows below are design statements, not measurements. They are
         // printed dim and marked [*] so they cannot be read as passed checks in
         // the same visual language as the two vectors that are actually probed.
@@ -2658,6 +3054,7 @@ namespace stealth
             true,
             true,
             isActive(INJ_ERASE_HEADER),
+            true,
             survey_game_traps,
         };
 
@@ -2791,12 +3188,16 @@ namespace stealth
 
         if (step_enabled[kStealthVerifyUsermodeVectors])
         {
-            StealthVerifyUsermodeVectors(process, ProcessHijack, step, total);
+            StealthVerifyUsermodeVectors(process, ProcessHijack, survey_pid, buffers, step, total);
         }
 
         if (step_enabled[kStealthEraseHeader])
         {
             StealthEraseHeader(process, hRemoteBase, have_local_nt, MapStats, ExecTelemetry, buffers, step, total);
+        }
+        if (step_enabled[kStealthSurveyHostSurface])
+        {
+            StealthSurveyHostSurface(buffers, step, total);
         }
         if (step_enabled[kStealthSurveyTraps])
         {
@@ -3259,6 +3660,7 @@ namespace stealth
         size_t core_regions = 0;
 
         size_t cc_bytes = 0;
+        size_t gadget_hits = 0;
         size_t sample_bytes = 0;
         size_t exec_regions_sampled = 0;
         size_t exec_regions_not_sampled = 0;
@@ -3545,6 +3947,7 @@ namespace stealth
                         SIZE_T remaining = mbi.RegionSize;
                         BYTE * addr = reinterpret_cast<BYTE *>(mbi.BaseAddress);
                         size_t region_cc = 0;
+                        size_t region_gadgets = 0;
                         size_t region_read = 0;
                         while (remaining)
                         {
@@ -3561,6 +3964,16 @@ namespace stealth
                                 {
                                     ++region_cc;
                                 }
+                                // A7: AutoDump's demand-paging touch gadget -
+                                // mov rax,[rcx]; ret. One hit in the loader's
+                                // executable region is the cheapest lead on
+                                // how a no-access page becomes readable.
+                                if (i + 3 < got &&
+                                    chunk_buf[i] == 0x48 && chunk_buf[i + 1] == 0x8B &&
+                                    chunk_buf[i + 2] == 0x01 && chunk_buf[i + 3] == 0xC3)
+                                {
+                                    ++region_gadgets;
+                                }
                             }
 
                             region_read += static_cast<size_t>(got);
@@ -3575,6 +3988,7 @@ namespace stealth
                         if (region_read)
                         {
                             owner->cc_bytes += region_cc;
+                            owner->gadget_hits += region_gadgets;
                             owner->sample_bytes += region_read;
                             ++owner->exec_regions_sampled;
                             owner->sampled = true;
@@ -3604,6 +4018,61 @@ namespace stealth
                 walk_reason = L"Walk Cap";
                 break;
             }
+        }
+
+        // B3: the loader-list delta. Modules the target did not have when the
+        // run started are exactly what a module-list diff would see: the
+        // dependencies the mapper loads for the payload appear here with no
+        // load event of their own. Our own mapped image is not in this list
+        // by design, so every name below is a dependency load.
+        if (!buffers.pre_load_modules.empty())
+        {
+            std::vector<std::wstring> appeared;
+            for (const SurveyModule & module : survey_modules)
+            {
+                bool known = false;
+                for (const std::wstring & before : buffers.pre_load_modules)
+                {
+                    if (_wcsicmp(before.c_str(), module.name.c_str()) == 0)
+                    {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known)
+                {
+                    appeared.push_back(module.name);
+                }
+            }
+
+            if (appeared.empty())
+            {
+                LOG(0, L"  %ls[+]%ls Loader-List Delta.......... +0 Module(s) Since Selection (All Dependencies Were Preloaded; The Loader List Is Unchanged)\n",
+                    kGreen, kReset);
+            }
+            else
+            {
+                std::wstring joined;
+                for (size_t i = 0; i < appeared.size() && i < 8; ++i)
+                {
+                    if (i)
+                    {
+                        joined += L", ";
+                    }
+                    joined += appeared[i];
+                }
+                if (appeared.size() > 8)
+                {
+                    joined += L", ...";
+                }
+                LOG(0, L"  %ls[!]%ls Loader-List Delta.......... +%zu Module(s) Since Selection (Loaded By The Shell; Visible To A Module-List Diff): %ls\n",
+                    kYellow, kReset, appeared.size(), joined.c_str());
+            }
+        }
+        else
+        {
+            LOG(0, L"  %ls[*]%ls Loader-List Delta.......... No Pre-Load Baseline (Delta Not Computable This Run)\n",
+                kDim, kReset);
         }
 
         // The report. Every count states the range it was measured over, so a
@@ -3687,6 +4156,9 @@ namespace stealth
                     kGreen, kReset,
                     kGreen, cc_pct, kReset,
                     kGreen, entry.exec_regions_sampled, kReset, kGreen, entry.exec_regions, kReset);
+                LOG(0, L"      %ls%ls%zu%ls Hit(s) In The Sampled Executable Region(s) (The Demand-Paging Touch Gadget; A Non-Zero Count Is The Lead For Watching A No-Access Page Turn Readable)\n",
+                    StageField(L"Gadget:", 12).c_str(),
+                    entry.gadget_hits ? kYellow : kGreen, entry.gadget_hits, kReset);
                 LOG(0, L"      %ls%lsThis Module's Image Range Only%ls\n",
                     StageField(L"Scope:", 12).c_str(), kDim, kReset);
             }
@@ -3694,6 +4166,109 @@ namespace stealth
             {
                 LOG(0, L"      %lsNo Executable Region Of This Module Was Readable\n",
                     StageField(L"INT3:", 12).c_str());
+            }
+
+            // A7: the loader's own loader state, read from its remote image.
+            // Its import surface is what the encrypted IAT replaces and its
+            // TLS callback count is the G4 survey gap; both are read here so
+            // the loader stops being the least-surveyed module in the target.
+            if (entry.has_encrypted_core && !entry.is_main && process)
+            {
+                BYTE loader_dos[sizeof(IMAGE_DOS_HEADER)]{};
+                SIZE_T got = 0;
+                if (ReadProcessMemory(process, ReCa<LPCVOID>(entry.module->base), loader_dos, sizeof(loader_dos), &got) && got == sizeof(loader_dos))
+                {
+                    const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(loader_dos);
+                    if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 && dos->e_lfanew < 0x10000)
+                    {
+                        BYTE loader_nt_buf[sizeof(IMAGE_NT_HEADERS64)]{};
+                        if (ReadProcessMemory(process, ReCa<BYTE *>(entry.module->base) + dos->e_lfanew, loader_nt_buf, sizeof(loader_nt_buf), &got) && got == sizeof(loader_nt_buf))
+                        {
+                            const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(loader_nt_buf);
+                            if (nt->Signature == IMAGE_NT_SIGNATURE)
+                            {
+                                const ULONGLONG base = entry.module->base;
+                                const ULONGLONG image_end = base + nt->OptionalHeader.SizeOfImage;
+
+                                {
+                                    const IMAGE_DATA_DIRECTORY & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+                                    size_t descriptors = 0;
+                                    wchar_t first_name[64]{};
+                                    bool name_read = false;
+                                    if (dir.VirtualAddress && dir.VirtualAddress < nt->OptionalHeader.SizeOfImage)
+                                    {
+                                        IMAGE_IMPORT_DESCRIPTOR desc{};
+                                        for (DWORD walk = 0; walk < 128; ++walk)
+                                        {
+                                            const ULONGLONG at = base + dir.VirtualAddress + static_cast<ULONGLONG>(walk) * sizeof(desc);
+                                            if (!ReadProcessMemory(process, ReCa<LPCVOID>(at), &desc, sizeof(desc), &got) || got != sizeof(desc) || !desc.Name)
+                                            {
+                                                break;
+                                            }
+                                            ++descriptors;
+                                            if (descriptors == 1 && desc.Name < nt->OptionalHeader.SizeOfImage)
+                                            {
+                                                char narrow[64]{};
+                                                if (ReadProcessMemory(process, ReCa<LPCVOID>(base + desc.Name), narrow, sizeof(narrow) - 1, &got) && got)
+                                                {
+                                                    narrow[got < sizeof(narrow) - 1 ? got : sizeof(narrow) - 1] = '\0';
+                                                    MultiByteToWideChar(CP_UTF8, 0, narrow, -1, first_name, 64);
+                                                    name_read = first_name[0] != L'\0';
+                                                }
+                                            }
+                                            if (desc.Characteristics == 0 && desc.FirstThunk == 0 && desc.ForwarderChain == 0 && desc.TimeDateStamp == 0)
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    LOG(0, L"      %ls%ls%zu%ls Descriptor(s)%ls%ls\n",
+                                        StageField(L"Imports:", 12).c_str(),
+                                        kGreen, descriptors, kReset,
+                                        name_read ? L" | First: " : L"",
+                                        name_read ? first_name : L"");
+                                }
+
+                                {
+                                    const IMAGE_DATA_DIRECTORY & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+                                    size_t callbacks = 0;
+                                    bool counted = false;
+                                    if (dir.VirtualAddress && dir.Size >= sizeof(IMAGE_TLS_DIRECTORY64) &&
+                                        dir.VirtualAddress + sizeof(IMAGE_TLS_DIRECTORY64) <= nt->OptionalHeader.SizeOfImage)
+                                    {
+                                        IMAGE_TLS_DIRECTORY64 tls{};
+                                        if (ReadProcessMemory(process, ReCa<LPCVOID>(base + dir.VirtualAddress), &tls, sizeof(tls), &got) && got == sizeof(tls) && tls.AddressOfCallBacks)
+                                        {
+                                            counted = true;
+                                            if (tls.AddressOfCallBacks >= base && tls.AddressOfCallBacks < image_end)
+                                            {
+                                                ULONGLONG array_buf[64]{};
+                                                const SIZE_T span = static_cast<SIZE_T>(image_end - tls.AddressOfCallBacks);
+                                                const SIZE_T want = (sizeof(array_buf) < span) ? sizeof(array_buf) : span;
+                                                if (ReadProcessMemory(process, ReCa<LPCVOID>(tls.AddressOfCallBacks), array_buf, want, &got) && got)
+                                                {
+                                                    for (size_t i = 0; i < got / sizeof(ULONGLONG); ++i)
+                                                    {
+                                                        if (array_buf[i] == 0 || array_buf[i] == 0xFFFFFFFF)
+                                                        {
+                                                            break;
+                                                        }
+                                                        ++callbacks;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    LOG(0, L"      %ls%ls%ls%ls\n",
+                                        StageField(L"TLS:", 12).c_str(),
+                                        kGreen,
+                                        counted ? (callbacks ? std::to_wstring(callbacks).c_str() : L"Directory Present, Zero Callbacks") : L"None (No TLS Directory In Remote Headers)",
+                                        kReset);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if (entry.exec_regions_not_sampled)

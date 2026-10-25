@@ -425,10 +425,27 @@ struct StealthVerifierBuffers
     size_t survey_max_regions = 0;
     size_t survey_max_mb = 0;
     size_t survey_max_sample_regions = 0;
+
+    // B3/A2: the pre-load baseline of the target's loader list and window
+    // surface, taken before anything is mapped, so the verification suite
+    // reports the delta the load actually left rather than an assertion.
+    std::vector<std::wstring> pre_load_modules;
+    size_t pre_target_windows = 0;
+    size_t pre_target_layered = 0;
 };
 
 namespace stealth
 {
+    // B2: the measured TSC frequency, calibrated against the performance
+    // counter; 0.0 when the calibration is unavailable.
+    double MeasureTscHz();
+
+    // B3/A2: captures the target's module list and window surface before the
+    // load. One transient module snapshot (closed immediately) and one window
+    // walk; the suite takes the same measurements again afterwards and the
+    // report shows the delta.
+    bool CapturePreLoadBaseline(DWORD pid, StealthVerifierBuffers & buffers);
+
     // Runs the post-injection verification suite. Returns true only when every
     // enabled check passed; a fault inside the verifier is caught and reported as
     // a failure rather than being allowed to escape.

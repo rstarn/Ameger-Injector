@@ -65,6 +65,23 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
   "Load Config Size: 320 Bytes" reproduced, and D6a Reading A confirmed. **F4c:** the donor
   handle owner is screened by name before that owner is opened; 399 owners were skipped in
   the verification run and the donor came from `svchost.exe` rather than `lsass.exe`.
+- 2026-10-25 (f) — **the mitigation pass: every open usermode vector in this file and in
+  the gap review was fixed, measured, or recorded, and two of this file's own claims were
+  corrected by the runs.** The corrections: **F1b's "a clean process has zero private-RX"
+  baseline does not hold for the target** — a fresh, un-injected `Overwatch.exe` carries
+  2 private-RX regions of its own (measured 2026-10-25, PID 14616: 4 process-wide, this
+  load contributed exactly 2); the notepad-derived baseline is retired for attribution
+  purposes and the census now attributes by address range. **F4's "No handler installed in
+  the target" is a two-mechanism rule again** — the payload's `OutputDebugStringA/W`
+  imports are redirected to a bare `ret` in ntdll (never raised at all), and a
+  first-chance guard covers dependency-internal debug-print exceptions after the
+  redirect-only variant was *measured* killing a bare notepad (exit code `0x40010006` =
+  `DBG_PRINTEXCEPTION_C`, via `D3DCOMPILER_47`'s init). The F1c handle-rights decision is
+  made (`0x1010` standing, escalation only on a refused census probe, debug-port reports
+  UNKNOWN by name). The full ledger is **Part F6**.
+  Structural shape reproduced a **third** time in the same pass: 916/917 executable/
+  no-access region pairing (F2c said 899/900, F2c-2 said 884/885 — the ratio holds to one
+  apart across three sessions while the absolute counts move with paging).
 
 Every claim below is tagged `[SRC]` (a source says it), `[MY]` (my deduction), or
 `[UNV]` (unverified / disputed). Thread authors are not authoritative; several are
@@ -1396,7 +1413,16 @@ explicitly and adds the free-address-space / in-image split, so the ambiguity ca
 | Remote import descriptors (terminator-capped) | 39 descriptors, multi-import | the counter + 3-way print (1 = OP shape, 0 = packed/heap-trampoline, N = Eidolon absent) |
 | Remote exports (single 40B RPM, no name walk) | 64 funcs / 0 names (ordinal-only) | read-back vs read-back |
 | Remote TLS callbacks (in-image-only, cap 64) | 2 configured, terminator found | the walk + out-of-image refusal rule |
-| VAD RX census (full `VirtualQueryEx` walk, cap 100k) | image-RX 110 / private-RX 0 / mapped-RX 0 | a clean process has **zero** private-RX — any private-RX is VAD-visible with no loader entry |
+| VAD RX census (full `VirtualQueryEx` walk, cap 100k) | image-RX 110 / private-RX 0 / mapped-RX 0 | a clean *notepad* has **zero** private-RX — any private-RX is VAD-visible with no loader entry |
+
+**CORRECTION (2026-10-25) — the notepad baseline does not transfer to the target.** A
+fresh, un-injected `Overwatch.exe` was measured carrying **2 private-RX regions of its
+own** (4 process-wide after this load, of which the load's image accounted for exactly
+2 — `.text` and the protected section — by address-range attribution). The "zero
+private-RX" row above stays as the notepad control it was measured on; it must not be
+quoted as the game's baseline. Attribution on the target now splits private-RX into
+*this load's image* vs *pre-existing* by address range, so the delta is what a Warden
+self-census would newly see, not the raw count.
 
 Notepad is the negative control: multi-import, no VEH, no debugger, nothing injected. The
 Overwatch run above is the positive case, and the two differ exactly where they should.
@@ -1433,6 +1459,17 @@ footprint than `0x1010` against a Warden that, per C3, probes `NtOpenProcess` an
 handle table. "Report UNKNOWN rather than clean" was a *better* posture. The fallback order
 should now be an explicit choice — either drop to `0x1010` before the debug probes (and
 report UNKNOWN), or keep `0x0410` and accept the extra right knowingly.
+
+**DECIDED (2026-10-25):** the standing verification handle is `0x1010`
+(`PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ`). It is opened first, and a
+`VirtualQueryEx` probe is run against it immediately; only if the census cannot run on the
+limited right is `0x0410` opened as the escalation, and the report names which posture was
+taken by reading the granted mask back off the handle. The debug-port probes report
+**UNKNOWN** on the limited right — the refusal (`STATUS_ACCESS_DENIED` on both classes) is
+named in the output as "refused by handle rights, QUERY_LIMITED posture by decision;
+not queryable, not reported clean" — so the probe's absence is a recorded trade, never an
+accident. C3's `NtOpenProcess`/handle-table probing now sees the weaker mask for the whole
+run in the common case.
 
 **Also corrected in the same pass:** the suite's "DllMain ms" figure was produced by
 dividing a cycle delta by a hard-coded 3.2 GHz. The divisor is now measured at run time
@@ -1474,6 +1511,20 @@ only the PowerShell prototype did.
 - **No handler installed in the target.** Our VEH work is a *read-only PEB survey* plus a
   local add/remove self-test. Note C5's own point: **adding a VEH is itself a chain
   artefact** — Warden's handler sees our handler in the list.
+  **UPDATE (2026-10-25, revised same day after a measured regression): the debug-print
+  protection is now two mechanisms, and the standing rule is "one first-chance guard,
+  installed for the shell window only, plus an import redirection."** The shell points the
+  payload's own `OutputDebugStringA/W` imports (ordinary and delay-load) at a bare `ret`
+  in ntdll, so its logging never raises the exception at all; and a first-chance VEH
+  absorbs `DBG_PRINTEXCEPTION_C`/`_WIDE_C` for everything the redirect cannot cover. The
+  redirect-only variant was tried and **measured to kill the target**: a bare notepad
+  (which does not preload `D3DCOMPILER_47.dll`) exited with code `0x40010006` — literally
+  `DBG_PRINTEXCEPTION_C` — when the dependency's own init called `OutputDebugString` on
+  the synthetic stack. A dependency's internal ODS cannot be redirected without patching
+  a system module (a write to a non-our page, refused), so the guard is load-bearing and
+  the C5 chain-window trade is accepted knowingly: chain entry for the shell window vs a
+  terminated target. The launcher's failure hint now names this exit code when the
+  target dies mid-load.
 - **Scan-only.** `ScrubRemoteRegion` exists to clean *our own* staging pages, and now
   correctly restores their protection (F2).
 - **`.eid` bytes — skip.** The encrypted core is now *identified* structurally (by its
@@ -1489,18 +1540,27 @@ only the PowerShell prototype did.
 
 - **The runtime does mutate the target's loader state, and always has.** The TLS stage
   fabricates an `LDR_DATA_TABLE_ENTRY` and an `LDR_DDAG_NODE` out of the target's own
-  loader heap and calls `LdrpHandleTlsData` on them. That is not a game-backed page, but it
-  is a write into the target's loader bookkeeping, and it is on by default
+  loader heap and calls `LdrpHandleTlsData` on them. That is not a game-backed page, but
+  it is a write into the target's loader bookkeeping, and it is on by default
   (`ExecuteTLS = Y`). "No writes to game-backed pages" is true; "the target is untouched
   apart from its own mapped image" would not be.
+  **UPDATE (2026-10-25): the mutation is now conditional.** A TLS directory that declares
+  neither callbacks nor data skips the loader entirely — no fabricated entry, no PEB
+  bitmap bit, no loader-heap churn; the skip is reported through the existing
+  "no loader entry" telemetry. For images that *do* carry data (the current payload),
+  the registration is retained by design; that case is unchanged and inherent.
 - **The payload is not exception-covered, on purpose.** `EnableExceptions = N` means
   `RtlAddFunctionTable` is never called for the payload, so its unwind information is not
   registered and a fault in the payload lands in **Warden's** VEH handler. That is the
   right trade for stealth — no new chain entry — and the wrong trade for robustness, and it
   is a deliberate configuration rather than an oversight. The suite names it ("First-Chance
-  Gap"). The dormant alternative path is not harmless: it inserts the image into the
-  loader's inverted function table and writes into ntdll's `.mrdata` under
-  `LdrProtectMrdata(FALSE)`, which is a write into an ntdll-backed page in the target.
+  Gap"). **The dormant alternative path is gone (2026-10-25):** the old fallback that
+  inserted the image into the loader's inverted function table by writing ntdll's
+  `.mrdata` under `LdrProtectMrdata(FALSE)` is removed; `RtlAddFunctionTable` (the
+  documented dynamic table) is the only registration path, and a registration it cannot
+  make fails the stage rather than being bought with an ntdll-backed write. Note the
+  first-chance exposure itself is invariant to this flag: Warden's VEH runs before SEH
+  dispatch either way, so the real risk is the payload faulting at all.
 
 ## F4a. NEW (2026-10-21) — the launcher runs elevated, so it never sees the environment it was started in
 
@@ -1783,7 +1843,7 @@ again next patch.
    be misread.
 6. ~~`0xCC` census scoped per module~~ → **CLOSED 2026-10-21: it was always per-module.**
    The report now names the range it was measured over.
-7. Loader decoy-import count — 31 / 13 / 41 across the OP's own three statements. Uncounted.
+7. Loader decoy-import count — 31 / 13 / 41 across the OP's own three statements. **MEASURED 2026-10-25: 37 descriptor(s), first KERNEL32.dll** (read from the loader's remote image; `Imports:` row, live PID 15924). None of the OP's three numbers match; the count is now per-run data.
 8. The global pointer table (`0x4ACxxx` family) — present? populated? in which image?
 9. Eidolon XOR entry RVA — expect it to have moved again (C2: moved twice in 2025).
 10. The five unclassified strings — find a **consumer**, or retire them (D11).
@@ -1800,6 +1860,10 @@ again next patch.
 15. **The region-shape lead (E1a)** — 894 executable regions and 895 no-access regions inside
     one image, paired almost one to one. Settle it the way AutoDump does: find the touch
     gadget (`48 8B 01 C3`) in the loader and watch a no-access page become readable.
+    **Counted 2026-10-25 (live PID 15924): 15 hit(s) in `Overwatch.exe`'s sampled exec
+    regions, 1 in the loader's** - the pattern exists in both images; the next step is
+    correlating a hit address with a no-access page turning readable. Fourth session
+    pairing: 912/913.
 
 ---
 
@@ -1920,6 +1984,44 @@ zero `PE` remnants, and the verification gate passed with zero RWX regions.
 
 ---
 
+# PART F6 — Mitigation ledger (2026-10-25)
+
+Every usermode vector named in this file or found in the 2026-10-25 gap review, and what
+became of it. "Fixed" means the code changed; "measured" means the suite now reports it
+dynamically; "recorded" means it is a known trade that this file owns.
+
+| # | Vector | Status | What changed |
+|---|--------|--------|--------------|
+| F1c | Target handle rights | **Fixed** | `0x1010` standing handle, opened first; `0x0410` only on a refused census probe; the granted mask is read back off the handle and printed; the debug-port refusal is named as the posture, not an unknown fault. |
+| F3 | Overlay/input surfaces | **Fixed + measured** | Confirmation uses **two channels, chosen at runtime**: when a console is attached (a direct, non-polymorphic launch) the console input buffer is read (scan codes; no session key-state reads); when there is no console — the normal flow, because the polymorphic child is created with `CREATE_NO_WINDOW` — the session key state is read, which is the console-less mechanism the architecture requires. The transcript names the channel used. (Measured the hard way on 2026-10-25 at 08:07: a console-only check aborted the live run at the confirmation phase in 93 ms.) The payload's own surface is *measured*: target-owned top-level windows and layered/transparent styles are counted before the load and after it, and the delta is printed (`Payload Window Surface`, `+N` — notepad runs measured both +1 and +0). DWM/clipboard internals of the payload remain payload-side. |
+| F4/C5 | VEH chain artefact | **Fixed (two mechanisms), regression measured** | The payload's `OutputDebugStringA/W` imports are redirected to a bare `ret` in ntdll (its own logging never raises), **and** a first-chance VEH guards the shell window for dependency-internal ODS — the redirect alone was measured killing a bare notepad with exit code `0x40010006` (`DBG_PRINTEXCEPTION_C`) when the shell loaded `D3DCOMPILER_47`. Both mechanisms report through one packed telemetry field; the failure hint names the exit code. |
+| F4 | TLS loader mutation | **Fixed (conditional) + measured** | A TLS directory with no callbacks and no data skips the loader entirely (no LDR entry, no PEB bit, no heap churn); the skip prints through the "no loader entry" telemetry. Images with data keep the by-design retention. |
+| F4 | First-chance gap | **Fixed (fallback) + recorded** | The inverted-function-table fallback (the `.mrdata` write) is removed; `RtlAddFunctionTable` is the only path and fails closed. The gap itself is recorded as invariant to the flag (Warden's VEH is first-chance either way). |
+| F3 | Pagefile signal | **Measured** | New host-surface step reports physical memory, commit limit, and the no-pagefile-VM tell verdict from `GlobalMemoryStatusEx` — the same numbers the target reads. |
+| F3 | CPUID leaves | **Measured** | Vendor string and leaf-1 hypervisor bit reported dynamically (C3's spoofing checklist item). |
+| F3 | `\BaseNamedObjects` scan | **Measured** | This process's own kernel objects are enumerated by type and name-checked: Events/Sections/Mutants counts with named counts — all-unnamed is the design, and the count proves it per run. MDL-backed shared memory remains outside usermode reach (recorded, not fixable from here). |
+| F3 | WINTRUST/sfc | **Recorded** | Target-side integrity scope; no injector-side surface. Unchanged. |
+| G4 | Loader un-surveyed | **Measured** | The census now reads the loader's remote image: import descriptor count with the first module name, TLS callback count, and the demand-paging touch gadget (`48 8B 01 C3`) hit count in its sampled executable regions. G4's remaining gap is the loader's VEH attribution, which needs the chain walk D9 calls contested. |
+| B1 | Mapped image = private-RX signature | **Measured + recorded** | Inherent to manual mapping. The VAD census now attributes by address range: "N private-RX process-wide: M belong to this load's image @ base, K pre-existing in the target." The fresh-game baseline of 2 own private-RX regions is recorded above (F1b correction). |
+| OP §11.3 | Donor-thread stall timing | **Fixed (policy) + measured** | Donor preference now ranks event-driven safe waits above delay waits (a delay wait's remaining timer is unknowable; the 2026-10-24 WrUserDelay sponsor failure and the 922 ms wake of the 2026-10-25 run are both this shape). The result table reports the stall window (wall ms vs shell CPU ms at the measured TSC) with a verdict against the target's own "delta > expected × 2" heuristic at 15–16 ms granularity. |
+| A9 | Synthetic stack vs TEB bounds | **Fixed (measured 2026-10-25 08:16)** | The stub pivoted RSP onto the 1 MB shell stack but left the TEB describing the victim’s stack, so `__chkstk`, the exception dispatcher’s exhaustion evaluation and any first-chance handler judged stack state against the wrong region — the live target exited with `0xC00000FD` (`STATUS_STACK_OVERFLOW`) mid-shell (notepad survived only because it carries no first-chance VEH). The stub now saves the victim’s `StackBase`/`StackLimit` into the state page, publishes the shell stack’s bounds for the routine’s duration, and restores the victim bounds ahead of the exit pops. The failure hint names this exit code. |
+| B3 | Dependencies in the loader list | **Measured (live)** | A pre-load module baseline is captured at selection (one transient snapshot); the census diffs it afterwards and prints `Loader-List Delta: +N` with the names. **Live 2026-10-25 (PID 15924): +3 — `inputhost.dll`, `xinput1_4.dll`, `D3DCOMPILER_47.dll`** — the trace is real on the game, not only on a bare notepad (+7..+16 there); the names are printed per run. |
+| B4 | Launcher handle footprint | **Fixed** | Candidate working sets come from one `NtQuerySystemInformation` snapshot — zero handles opened on candidates (was: `0x0410` per candidate). The runtime's thread census (one open per target thread, diagnostic-only) is gated behind `AMEGER_CENSUS`, which the launcher sets only for verbose/full-census runs; a quiet run opens no target thread for it. The sponsor pre-open keeps its minimal `INJ_THREAD_HIJACK_ACCESS` (required). |
+| B5 | Transcript breaks polymorphism | **Fixed** | The transcript name is random per run (same generator shape as the launcher's own), so no stable-name artifact links runs. Still always written; failed runs still keep it. |
+| B6 | Symbol infrastructure | **Recorded + fixed (bug)** | Machine-wide store persists by design (one download per machine beats one per run) and is now reported (file count/size). The scratch-dir NUL bug (`kAlphabet` modulo) that leaked un-deletable scratch directories ~13% of runs is fixed with a guarded constant. |
+| B7 | Untracked remote residue | **Fixed** | Rolled-back pending timeouts reclaim everything host-side (image scrubbed+freed, staging freed, duplicated event handle closed in the target) and retry the next donor. The deferred-trampoline reaper now also *rewinds* never-started stubs (state Pending, RIP at the entry, RSP untouched — the saved RSP and return target are in the state page) and frees the 1 MB+ allocation instead of carrying it forever. `SR_HT_ERR_RECOVERY_REQUIRED` keeps the conservative hand-off (that donor may still be inside the stub), and the retained allocation is reported in map stats. |
+| B8 | Self-copy crash window | **Fixed** | The retry path deletes its own copy before `TerminateProcess` (previously the copy outlived a terminated parent and relied on the child); the child's parent-path deletion remains as backup. |
+| G2 | "JAM payload functions" | **Open** | Still the biggest unknown; nothing new to add. |
+| F5/15 | Touch-gadget hunt | **Partially measured** | The census counts `48 8B 01 C3` candidates in the loader's executable region per run; correlating a hit with a no-access page turning readable (the AutoDump experiment) is the next step and needs the live target. |
+
+The verification suite gained one step (`Survey Host Surface`) and dynamic rows in five
+others; every new line prints a measured value with its verdict computed from the
+measurement, in the suite's existing template. The build pipeline's gates all pass on the
+changed runtime (syscall prologues, indirect tails, W^X sequences, merged shell, export
+shuffle, embedded hash).
+
+---
+
 # PART G — Open questions
 
 1. ~~Is Part E true?~~ — **NO. Retracted** (E0). Our runtime census measured 1,199,181 `0xCC`
@@ -1932,9 +2034,10 @@ zero `PE` remnants, and the verification gate passed with zero RWX regions.
    observations, largely wrong explanations, and a disputed provenance.
 4. **Where does Warden live on the current build?** (B1) `betsit` self-identifies as Blizzard.
    Still unresolved, but our coverage is much better than it was: the loader is now
-   identified, censused and located by its encrypted core (F2b). What is still missing is
-   the loader's *import table, TLS array and VEH state* - we have censused its regions and
-   measured its single executable region, but not its loader state.
+   identified, censused and located by its encrypted core (F2b), and since 2026-10-25 its
+   import descriptors, TLS callback count and touch-gadget candidates are read per run
+   (F6). What is still missing is the loader's *VEH attribution* - which handler in the
+   chain belongs to it - and that needs the chain walk D9 calls contested.
 5. ~~What are the 906 `PAGE_NOACCESS` regions?~~ - **CLOSED (E1a, F2c).** They are inside the
    main image: 900 of them, against 899 executable regions in the same image, with
    13,302 more in free address space. The census now reports the split, and the
@@ -1949,8 +2052,9 @@ zero `PE` remnants, and the verification gate passed with zero RWX regions.
    import table lists 13 DLLs; §5.4 lists 41.) The loader's `.eid` is now located and
    measured, but its contents are not read.
 9. ~~Current `.eid` size, trampoline base, loader TLS count?~~ - **`.eid` size: DONE,**
-   4,672 KB in `Overwatch_loader.dll` (F2b). The trampoline base and the loader's TLS
-   count are still not measured.
+   4,672 KB in `Overwatch_loader.dll` (F2b). **Loader TLS count: DONE 2026-10-25 — 2
+   callbacks** (`TLS:` row, remote array read, live PID 15924). The trampoline base
+   (`0x4ACxxx` family) is still not measured.
 10. **Is the Battle.net Identity file still 56 bytes?** Where are CPUID leaves read now? Is
     kdmapper still undetected? All single-source, all stale. **HWID family excluded by
     instruction (F4)** - listed for completeness only, no work proposed.

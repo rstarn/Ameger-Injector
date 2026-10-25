@@ -1339,13 +1339,68 @@ namespace
         {
             return ConfirmationResult::Proceed;
         }
+
+        // A2: two confirmation channels, chosen by what this process actually
+        // has. The polymorphic child is created with CREATE_NO_WINDOW, so in
+        // the normal flow there is no console at all and confirmation reads
+        // the session async key state - the console-less mechanism this
+        // launcher was built on. When a console is attached (a direct,
+        // non-polymorphic launch), the console input buffer is read instead:
+        // scan codes in, no session key-state reads out.
+        const bool have_console = InterfaceConsolePresent();
+
+        if (have_console)
+        {
+            LOG(0, L"%ls[+]%ls Press HOME To Inject, END To Cancel. (Console Input; No Async Key-State Polling)\n", kGreen, kReset);
+        }
+        else
+        {
+            LOG(0, L"%ls[*]%ls No Console Attached (Polymorphic Child): Confirmation Via Session Key State.\n", kDim, kReset);
+            LOG(0, L"%ls[+]%ls Press HOME To Inject, END To Cancel.\n", kGreen, kReset);
+        }
+        fflush(stdout);
+
+        if (have_console)
+        {
+            // Extended keys arrive from _getch as a 0 or 0xE0 prefix followed
+            // by the scan code; HOME is 0x47 and END is 0x4F.
+            for (;;)
+            {
+                while (_kbhit())
+                {
+                    const int key = _getch();
+                    if (key == 0 || key == 224)
+                    {
+                        if (!_kbhit())
+                        {
+                            continue;
+                        }
+                        const int scan = _getch();
+                        if (scan == 0x47)
+                        {
+                            StealthBeep(1600, 70);
+                            return ConfirmationResult::Proceed;
+                        }
+                        if (scan == 0x4F)
+                        {
+                            StealthBeep(320, 120);
+                            return ConfirmationResult::Cancelled;
+                        }
+                    }
+                    else if (key == 'q' || key == 'Q' || key == 27)
+                    {
+                        StealthBeep(320, 120);
+                        return ConfirmationResult::Cancelled;
+                    }
+                }
+                Sleep(25);
+            }
+        }
+
         while ((GetAsyncKeyState(VK_HOME) & 0x8000) || (GetAsyncKeyState(VK_END) & 0x8000))
         {
             Sleep(10);
         }
-
-        LOG(0, L"%ls[+]%ls Press HOME To Inject, END To Cancel.\n", kGreen, kReset);
-        fflush(stdout);
 
         bool home_was_down = false;
         bool end_was_down = false;
@@ -1648,9 +1703,16 @@ wchar_t name[48]{};
                     }
                     return WAIT_REASON_SAFE::IsSafe(reason);
                 };
+                // B2: within the safe waits, the event-driven reasons are
+                // preferred over the delay reasons. A delay wait only wakes
+                // when its timer expires and the remaining time is unknowable
+                // from outside, so it is taken only when no event-driven
+                // candidate qualified in the same walk.
                 auto score_walk = [&](DWORD avoid_tid, bool allow_wait) -> bool
                 {
                     bool found = false;
+                    bool delay_found = false;
+                    DWORD delay_tid = 0;
                     for (ULONG index = 0; index < thread_count; ++index)
                     {
                         const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SYSTEM_THREAD_INFORMATION);
@@ -1673,11 +1735,28 @@ wchar_t name[48]{};
                             continue;
                         }
 
+                        const bool delay_wait = thread_state == 5 && WAIT_REASON_SAFE::IsDelay(thread_reason);
+                        if (delay_wait)
+                        {
+                            if (!delay_found || tid < delay_tid)
+                            {
+                                delay_tid = tid;
+                                delay_found = true;
+                            }
+                            continue;
+                        }
+
                         if (!found || tid < best_tid)
                         {
                             best_tid = tid;
                             found = true;
                         }
+                    }
+
+                    if (!found && delay_found)
+                    {
+                        best_tid = delay_tid;
+                        found = true;
                     }
                     return found;
                 };
@@ -2995,34 +3074,70 @@ wchar_t name[48]{};
         return found;
     }
 
-    // The working set of a process, used only to tell a main instance apart
-    // from the helpers that run beside it under the same image name.
-    //
-    // K32GetProcessMemoryInfo fails on a handle that carries only
-    // PROCESS_QUERY_LIMITED_INFORMATION; it needs PROCESS_QUERY_INFORMATION
-    // and PROCESS_VM_READ. The read right is asked for here and nowhere else,
-    // and a process that refuses it simply reports a working set of zero
-    // rather than being dropped from the candidate list.
-    SIZE_T WorkingSetSize(DWORD pid)
+    // B4: the working set of every process, from one system snapshot and with
+    // no handle opened on any candidate. The old probe opened
+    // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ on every same-named
+    // candidate - a handle-table entry an onlooker could count - to ask a
+    // question the kernel answers for the whole system in a single query.
+    bool SnapshotWorkingSets(std::vector<std::pair<DWORD, SIZE_T>> & out)
     {
-        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-        if (!process)
-        {
-            process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        }
-        if (!process)
-        {
-            return 0;
-        }
-        FileHandleGuard guard(process);
+        out.clear();
 
-        PROCESS_MEMORY_COUNTERS counters{};
-        counters.cb = sizeof(counters);
-        if (!K32GetProcessMemoryInfo(process, &counters, sizeof(counters)))
+        using NtQuerySystemInformationFn = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
+        NtQuerySystemInformationFn query = nullptr;
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll)
         {
-            return 0;
+            query = ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
         }
-        return static_cast<SIZE_T>(counters.WorkingSetSize);
+        if (!query)
+        {
+            return false;
+        }
+
+        std::vector<BYTE> buffer(1 << 20);
+        ULONG size = static_cast<ULONG>(buffer.size());
+        LONG status = query(5, buffer.data(), size, &size);
+        while (static_cast<DWORD>(status) == 0xC0000004u)
+        {
+            const ULONG grow = size > buffer.size() ? size : static_cast<ULONG>(buffer.size() * 2);
+            if (grow > (16u << 20))
+            {
+                return false;
+            }
+            buffer.resize(grow);
+            size = grow;
+            status = query(5, buffer.data(), size, &size);
+        }
+        if (status != 0)
+        {
+            return false;
+        }
+
+        size_t offset = 0;
+        for (;;)
+        {
+            if (offset + sizeof(SYSTEM_PROCESS_INFORMATION) > buffer.size())
+            {
+                break;
+            }
+
+            const auto * proc = ReCa<const SYSTEM_PROCESS_INFORMATION *>(buffer.data() + offset);
+            const DWORD pid = static_cast<DWORD>(ReCa<ULONG_PTR>(proc->UniqueProcessId) & 0xFFFFFFFF);
+            if (pid)
+            {
+                out.emplace_back(pid, proc->WorkingSetSize);
+            }
+
+            if (proc->NextEntryOffset < 8)
+            {
+                break;
+            }
+
+            offset += proc->NextEntryOffset;
+        }
+
+        return !out.empty();
     }
 
     // The process under the given image name that can actually be written to.
@@ -3039,6 +3154,20 @@ wchar_t name[48]{};
             return 0;
         }
 
+        std::vector<std::pair<DWORD, SIZE_T>> working_sets;
+        const bool have_working_sets = SnapshotWorkingSets(working_sets);
+        const auto working_set_of = [&](DWORD pid) -> SIZE_T
+        {
+            for (const auto & entry : working_sets)
+            {
+                if (entry.first == pid)
+                {
+                    return entry.second;
+                }
+            }
+            return 0;
+        };
+
         DWORD best = 0;
         SIZE_T best_working_set = 0;
         for (DWORD pid : candidates)
@@ -3048,12 +3177,22 @@ wchar_t name[48]{};
             {
                 continue;
             }
-            const SIZE_T working_set = WorkingSetSize(pid);
+            const SIZE_T working_set = have_working_sets ? working_set_of(pid) : 0;
             if (!best || working_set > best_working_set)
             {
                 best = pid;
                 best_working_set = working_set;
             }
+        }
+
+        if (best && candidates.size() > 1)
+        {
+            LOG(0, L"  %ls[*]%ls Working Set Via System Snapshot (0 Candidate Handles Opened): Best = %lu, %llu KB Of %zu Candidate(s), Snapshot %ls\n",
+                kDim, kReset,
+                static_cast<unsigned long>(best),
+                static_cast<unsigned long long>(best_working_set / 1024),
+                candidates.size(),
+                have_working_sets ? L"Read" : L"Failed (Tie-Broken By First Candidate)");
         }
 
         if (best)
@@ -3571,7 +3710,7 @@ DWORD BuildFlags(const WizardConfig & config)
         }
     }
 
-    void PrintFailureHint(DWORD code)
+    void PrintFailureHint(DWORD code, DWORD adv_code = 0)
     {
         if (code == INJ_ERR_OUT_OF_MEMORY_EXT)
         {
@@ -3619,6 +3758,29 @@ DWORD BuildFlags(const WizardConfig & config)
         else if (code == SR_ERR_TARGET_EXITED)
         {
             LOG(0, L"Reason: The Target Process Exited During Loading.\n");
+            // The runtime reports the target's own exit code as the advanced
+            // code on this path. An exit code equal to a debug-print
+            // exception is the measured signature of an OutputDebugString
+            // call that went unhandled on the hijacked thread's synthetic
+            // stack (2026-10-25: a bare notepad loading D3DCOMPILER_47 died
+            // with exactly 0x40010006 before the guard covered dependencies).
+            if (adv_code == 0x40010006u || adv_code == 0x40010082u)
+            {
+                LOG(0, L"  The Target Exited With DBG_PRINTEXCEPTION_C (0x%08X): An OutputDebugString Call Went\n",
+                    static_cast<unsigned>(adv_code));
+                LOG(0, L"  Unhandled During The Load. The Shell's Debug-Print Guard Absorbs These For The\n");
+                LOG(0, L"  Window It Covers; One Raised After The Shell Exited (Or Before The Guard Installed)\n");
+                LOG(0, L"  Reached The Target's Own Chain Unhandled.\n");
+            }
+            else if (adv_code == 0xC00000FDu)
+            {
+                LOG(0, L"  The Target Exited With STATUS_STACK_OVERFLOW (0xC00000FD): A Stack Evaluation Ran\n");
+                LOG(0, L"  Against Bounds That Did Not Describe The Stack The Shell Was On. The Stub Now Publishes\n");
+                LOG(0, L"  The Shell Stack As The Thread's Stack (TEB StackBase/StackLimit) For The Routine's\n");
+                LOG(0, L"  Duration And Restores The Victim Bounds Before Returning; If This Recurs On A Build\n");
+                LOG(0, L"  That Already Carries That Fix, The Remaining Candidates Are A First-Chance Handler In\n");
+                LOG(0, L"  The Target Recursing On The Shell Stack Or Genuine Stack Exhaustion In The Load.\n");
+            }
         }
         else if (code == SR_HT_ERR_REMOTE_PENDING_TIMEOUT)
         {
@@ -4096,6 +4258,15 @@ DWORD BuildFlags(const WizardConfig & config)
             SetEnvironmentVariableW(L"AMEGER_DONOR_OWNER_BLOCKLIST",
                 config.donor_owner_blocklist.c_str());
         }
+
+        // B4: the thread census is diagnostic-only and every thread it opens
+        // is a handle-table entry an onlooker can count. It runs only when
+        // the operator asked for a verbose trace or the full census; a quiet
+        // run opens no target thread for it at all.
+        if (config.verbose_trace || FullThreadCensusEnabled())
+        {
+            SetEnvironmentVariableW(L"AMEGER_CENSUS", L"1");
+        }
         g_DiscardResultLogOnSuccess = config.discard_result_log_on_success;
         g_TestMode = config.test_mode;
         g_AutoConfirm = config.auto_confirm;
@@ -4230,6 +4401,17 @@ DWORD BuildFlags(const WizardConfig & config)
             return 1;
         }
 
+        // B3/A2: the pre-load baseline of the target's loader list and window
+        // surface, captured before anything is mapped. The verification suite
+        // measures the same surfaces again afterwards and reports the delta.
+        StealthVerifierBuffers buffers;
+        {
+            const bool baseline_ok = stealth::CapturePreLoadBaseline(target.pid, buffers);
+            Trace::Note(L"Pre-Load Baseline: %zu Module(s), %zu Window(s) (%zu Layered) %ls",
+                buffers.pre_load_modules.size(), buffers.pre_target_windows, buffers.pre_target_layered,
+                baseline_ok ? L"(Captured)" : L"(Module Snapshot Failed; Window Baseline Still Taken)");
+        }
+
         HijackContext Context{};
         Context.TargetPid = target.pid;
         Context.TargetName = target.name;
@@ -4295,13 +4477,26 @@ DWORD BuildFlags(const WizardConfig & config)
 
         HANDLE targetHandle = nullptr;
         {
-            // The debug-port probes in the verification suite need the broader
-            // query right; the limited right stays as the fallback for targets
-            // that refuse PROCESS_QUERY_INFORMATION.
-            targetHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            // F1c, decided: the standing verification handle carries the
+            // limited query right, which is everything the census and the
+            // remote reads need. The stronger PROCESS_QUERY_INFORMATION is
+            // opened only when the census provably cannot run on the limited
+            // right, so the handle table shows the weaker mask for the whole
+            // run in the common case. The debug-port probes report UNKNOWN on
+            // the limited right rather than paying for the stronger one.
+            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            if (targetHandle)
+            {
+                MEMORY_BASIC_INFORMATION probe{};
+                if (!VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
+                {
+                    CloseHandle(targetHandle);
+                    targetHandle = nullptr;
+                }
+            }
             if (!targetHandle)
             {
-                targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+                targetHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
             }
         }
         FileHandleGuard targetHandleGuard(targetHandle);
@@ -4309,6 +4504,42 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             LOG(0, L"  %ls[!]%ls Could Not Open The Target For Read-Only Verification (0x%08X).\n",
                 kYellow, kReset, GetLastError());
+        }
+        else
+        {
+            // Result-based report of the posture that was actually taken: the
+            // granted mask is read back off the handle rather than assumed
+            // from the order of the two opens above. PUBLIC_OBJECT_BASIC_
+            // INFORMATION starts with Attributes; GrantedAccess is the second
+            // ULONG.
+            ULONG granted = 0;
+            {
+                using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+                HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                auto query = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
+                if (query)
+                {
+                    // PUBLIC_OBJECT_BASIC_INFORMATION is ~96 bytes on x64; a
+                    // short buffer is refused outright rather than partially
+                    // filled, so the full size is passed and only the first
+                    // two ULONGs (Attributes, GrantedAccess) are read.
+                    ULONG basic[32]{};
+                    ULONG returned = 0;
+                    if (query(targetHandle, 0, basic, sizeof(basic), &returned) == 0 && returned >= sizeof(ULONG) * 2)
+                    {
+                        granted = basic[1];
+                    }
+                }
+            }
+            const bool granted_read = granted != 0;
+            const bool limited = !granted_read || (granted & PROCESS_QUERY_INFORMATION) == 0;
+            LOG(0, L"  %ls[+]%ls Verification Handle: Granted 0x%08lX (%ls) | Census %ls\n",
+                kGreen, kReset,
+                static_cast<unsigned long>(granted),
+                limited ? L"Query-Limited | VM Read" : L"Full Query | VM Read",
+                granted_read
+                    ? (limited ? L"Probe OK On The Limited Right" : L"Escalated After Limited-Right Refusal")
+                    : L"Probe OK; Mask Readback Failed");
         }
 
         const DWORD flags = BuildFlags(config);
@@ -4373,7 +4604,19 @@ DWORD BuildFlags(const WizardConfig & config)
                 LOG(0, L"%ls[x]%ls TEST MODE - This Was A Test Run Against A Scratch Target, Not The Configured Process.%ls\n",
                     kYellow, kReset, kReset);
             }
-            PrintFailureHint(result);
+            // The advanced code is fetched before the hint so the hint can
+            // name the target's own exit code (the debug-print exception
+            // signature) when the target died mid-load.
+            DWORD failure_adv = 0;
+            if (runtime.get_last_error_info)
+            {
+                LAST_ERROR_INFO failure_detail{};
+                if (runtime.get_last_error_info(&failure_detail) == INJ_ERR_SUCCESS)
+                {
+                    failure_adv = failure_detail.AdvErrorCode;
+                }
+            }
+            PrintFailureHint(result, failure_adv);
 
             if (runtime.get_last_error_info)
             {
@@ -4465,9 +4708,10 @@ DWORD BuildFlags(const WizardConfig & config)
                 static_cast<unsigned long long>(ExecTelemetry.ExceptionStageCycles),
                 static_cast<unsigned long long>(ExecTelemetry.TlsStageCycles),
                 static_cast<unsigned long long>(ExecTelemetry.TlsCallbackStageCycles));
-            Trace::Note(L"Completion Event: Signaled = %u | Status = 0x%08X | Debug-Print Guard = %u | TLS Data = %u | Index = %u | Restored = %u | Bit Cleared = %u | Slot Restored = %u | Entry Unlinked = %u",
+            Trace::Note(L"Completion Event: Signaled = %u | Status = 0x%08X | Debug-Print Guard = %ls | ODS Imports Redirected = %u | TLS Data = %u | Index = %u | Restored = %u | Bit Cleared = %u | Slot Restored = %u | Entry Unlinked = %u",
                 ExecTelemetry.CompletionEventSignaled, (unsigned)ExecTelemetry.CompletionEventStatus,
-                ExecTelemetry.DebugPrintVehInstalled,
+                (ExecTelemetry.DebugPrintVehInstalled & 0x10u) ? L"Yes" : L"No",
+                ExecTelemetry.DebugPrintVehInstalled & 0xFu,
                 ExecTelemetry.TlsHasData, ExecTelemetry.TlsIndex,
                 ExecTelemetry.TlsIndexRestored, ExecTelemetry.TlsBitmapBitCleared,
                 ExecTelemetry.TlsSlotCleared, ExecTelemetry.TlsLoaderEntryUnlinked);
@@ -4481,7 +4725,6 @@ DWORD BuildFlags(const WizardConfig & config)
         if (targetHandle)
         {
 
-            StealthVerifierBuffers buffers;
             {
                 const std::wstring runtime_path = RuntimePath(config.dll_dir, config.runtime_name);
                 buffers.runtime_path_known = !runtime_path.empty();
@@ -4865,21 +5108,52 @@ DWORD BuildFlags(const WizardConfig & config)
         }
 
         {
+            // A3: the packed field decodes into its two mechanisms. Bit 0x10
+            // is the first-chance guard that absorbs debug-print exceptions
+            // raised by freshly loaded dependencies on the synthetic stack;
+            // the low nibble counts the payload's own OutputDebugStringA/W
+            // imports redirected to a bare ntdll return, which never raise
+            // at all.
             const bool debug_print_guard_read = runtime.get_last_exec_telemetry != nullptr;
-            const bool debug_print_guard_ok = ExecTelemetry.DebugPrintVehInstalled != 0;
-            row(L"Debug-Print Guard......... ", debug_print_guard_read ? debug_print_guard_ok : true);
+            const unsigned ods_redirects = ExecTelemetry.DebugPrintVehInstalled & 0xFu;
+            const bool veh_installed = (ExecTelemetry.DebugPrintVehInstalled & 0x10u) != 0;
+            const bool debug_print_guard_ok = veh_installed || ods_redirects != 0;
+            row(L"Debug-Print Protection... ", debug_print_guard_read ? debug_print_guard_ok : true);
             if (!debug_print_guard_read)
             {
                 LOG(0, L"Not Reported (The Runtime DLL Exposes No Exec-Telemetry Export)\n");
             }
-            else if (debug_print_guard_ok)
-            {
-                LOG(0, L"VEH Registered Before Payload Code | DBG_PRINTEXCEPTION_C/WIDE Resumed On The Shell Stack | Removed Before Staging Release\n");
-            }
             else
             {
-                LOG(0, L"Not Installed (Debug-Print Guard Was Not Registered For This Run)\n");
+                LOG(0, L"%lsGuard %ls | %u Payload ODS Import(s) Redirected To An ntdll Ret (Never Raised)\n",
+                    veh_installed ? L"[+]" : L"[!]",
+                    veh_installed
+                        ? L"VEH Installed For Dependency Debug-Print Exceptions (Absorbed, Removed On Exit)"
+                        : L"Not Installed (Entry Points Unavailable - Dependency ODS Would Be Unhandled)",
+                    ods_redirects);
             }
+        }
+
+        // B2: the donor's stall window, measured rather than asserted. The
+        // wall time is what the hijacked thread was suspended-and-redirected
+        // for; the shell's own CPU cost is read back from its cycle counter
+        // against the measured TSC frequency. The verdict follows the
+        // target's own timing heuristic (delta > expected x 2) at the
+        // measured 15-16 ms tick granularity.
+        if (ThreadExec.Attempted)
+        {
+            const double tsc_hz = stealth::MeasureTscHz();
+            const double shell_ms = tsc_hz > 0
+                ? (static_cast<double>(ThreadExec.RoutineCyclesDelta) * 1000.0 / tsc_hz)
+                : 0.0;
+            const DWORD stall_ms = ThreadExec.ExecMs;
+            const wchar_t * stall_verdict =
+                stall_ms < 35 ? L"Below 2x The Measured 16 ms Tick Granularity - Sub-Heuristic Window" :
+                stall_ms < 500 ? L"Coarse-Window Visible (GetTickCount64 Heuristic Range)" :
+                L"Long Stall (Donor Wake Latency Dominated)";
+            row(L"Donor Stall Window........ ", stall_ms < 35);
+            LOG(0, L"%lu ms Wall | Shell CPU = %.2f ms | Verdict: %ls\n",
+                static_cast<unsigned long>(stall_ms), shell_ms, stall_verdict);
         }
 
         const bool lock_attempted = exec_telemetry_read &&
@@ -4931,20 +5205,31 @@ DWORD BuildFlags(const WizardConfig & config)
             (unsigned)ThreadExec.ExecMs);
 
         {
-            const bool shell_pivot_ok = ThreadExec.ShellStackResumeCount > 0 &&
+            // Two independent facts, reported separately: whether the pivot
+            // RSP the stub wrote back falls inside the dedicated stack, and
+            // whether a poll ever caught the thread executing on it. A fast
+            // shell legitimately outruns the poll (the completion event fires
+            // before any sample lands on the Executing state), so the row's
+            // pass/fail is the address check; the observation count is stated
+            // as the confidence level it is.
+            const bool pivot_in_window =
                 ThreadExec.ShellStackTop >= ThreadExec.ShellStackBase &&
                 ThreadExec.ShellStackTop < ThreadExec.ShellStackBase + ThreadExec.ShellStackSize;
-            row(L"Shell Stack Isolation..... ", shell_pivot_ok);
+            const bool pivot_observed = ThreadExec.ShellStackResumeCount > 0;
+            row(L"Shell Stack Isolation..... ", pivot_in_window);
             if (!ThreadExec.ShellStackSize)
             {
                 LOG(0, L"Not Reported (No Hijack Staging This Run)\n");
             }
             else
             {
-                LOG(0, L"Dedicated %u-Byte Stack | Pivot RSP = 0x%llX (%s) | Victim Stack Spill = %u Bytes | Shell Stack Observations = %u\n",
+                LOG(0, L"Dedicated %u-Byte Stack | Pivot RSP = 0x%llX (%s) | %s | Victim Stack Spill = %u Bytes | Shell Stack Observations = %u\n",
                     ThreadExec.ShellStackSize,
                     static_cast<unsigned long long>(ThreadExec.ShellStackTop),
-                    shell_pivot_ok ? L"Inside Window" : L"Outside Window",
+                    pivot_in_window ? L"Inside Window" : L"Outside Window",
+                    pivot_observed
+                        ? L"Independently Observed Executing On The Shell Stack"
+                        : L"Not Independently Observed (Completion Outran The Poll; The Pivot Value Itself Was Read Back)",
                     ThreadExec.VictimStackBytes,
                     ThreadExec.ShellStackResumeCount);
             }
@@ -5066,36 +5351,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     const int retryIndex = GetRetryIndex();
 
-    // The transcript is named after the configuration, so that it sits next to
-    // the file that produced it. When the configuration cannot be found or
-    // read there is no name to take, and the name of the launcher itself is
-    // used instead: a run that failed to find its configuration is exactly the
-    // run that has to be read afterwards, so it must still leave a record.
+    // B5: the transcript carries a random stem for every run, in the same
+    // shape as the launcher's own per-build name. A stable stem would give
+    // the per-build-polymorphic launcher one predictable, linkable disk
+    // artifact: a same-named file beside a self-deleting copy, re-created on
+    // every run and holding the full forensic detail of the load. The random
+    // name keeps the record (it is always written, and a failed run always
+    // keeps it) while removing the cross-run link; the console and the
+    // transcript header both name the file, so finding it costs nothing.
     const std::wstring config_path = ConfigurationPath();
     {
         std::wstring stem;
-
-        const size_t slash = config_path.find_last_of(L"\\/");
-        const size_t dot = config_path.find_last_of(L'.');
-        if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash + 1))
+        for (int attempt = 0; attempt < 8 && stem.empty(); ++attempt)
         {
-            const size_t start = (slash == std::wstring::npos) ? 0 : slash + 1;
-            stem = config_path.substr(start, dot - start);
-        }
-        else
-        {
-            std::wstring own;
-            if (GetOwnExePath(own))
+            if (!MakeRandomExeFileName(stem))
             {
-                const size_t own_slash = own.find_last_of(L"\\/");
-                std::wstring name = (own_slash == std::wstring::npos) ? own : own.substr(own_slash + 1);
-                const size_t own_dot = name.find_last_of(L'.');
-                if (own_dot != std::wstring::npos)
-                {
-                    name = name.substr(0, own_dot);
-                }
-                stem = name;
+                stem.clear();
+                continue;
             }
+            const size_t dot = stem.find_last_of(L'.');
+            stem = dot == std::wstring::npos ? stem : stem.substr(0, dot);
         }
 
         if (!stem.empty())
@@ -5111,6 +5386,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
                 g_ResultLogName = stem + L".log";
             }
         }
+        else
+        {
+            // The random generator failed, which it does not in practice; a
+            // deterministic fallback still leaves a record, and the transcript
+            // says which run it belongs to in its header either way.
+            g_ResultLogName = L"ameger-run.log";
+        }
+
+        LOG(0, L"%ls[*]%ls Transcript Name Is Random Per Run: %ls\n", kDim, kReset, g_ResultLogName.c_str());
     }
 
     ameger_ui_log::ResetResultLog();
@@ -5233,6 +5517,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         const int nextRetry = retryIndex + 1;
         if (SpawnFreshRetryProcess(nextRetry))
         {
+            // B8: this process is about to be terminated without running its
+            // own exit path, so its self-copy is deleted here rather than
+            // left to a path that will never execute. The child still deletes
+            // the parent path it was handed as a backup; if it crashes before
+            // that, the copy is already gone.
+            DeleteOwnSelfCopyIfChild();
             TerminateInterface(result);
         }
     }

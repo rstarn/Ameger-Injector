@@ -204,13 +204,14 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	// waiting for the next poll tick. The handle is closed by the shell.
 	DWORD CompletionEventSignaled = 0;
 	NTSTATUS CompletionEventStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
-	// A6: 1 when the shell registered its vectored handler for the two
-	// debug-print exception codes. OutputDebugString raises DBG_PRINTEXCEPTION_C
-	// unconditionally on current builds; the OS top-level handler frame that
-	// normally absorbs it does not exist on the hijacked thread's synthetic
-	// stack, so this guard is what keeps DllMain from terminating the target.
-	// The block is copied a word at a time and must stay free of padding, so the
-	// four-byte group has an even number of members.
+	// A3: packed debug-print protection state. Bit 0x10 = the first-chance
+	// VEH guard is installed (the net for debug-print exceptions raised by
+	// freshly loaded dependencies on the synthetic stack - without it the
+	// target exits with DBG_PRINTEXCEPTION_C, measured 2026-10-25). The low
+	// nibble counts the OutputDebugStringA/W imports (ordinary and
+	// delay-load) redirected to a bare return in ntdll, so the payload's own
+	// logging never raises the exception at all and never reaches the
+	// target's VEH chain.
 	DWORD DebugPrintVehInstalled = 0;
 };
 

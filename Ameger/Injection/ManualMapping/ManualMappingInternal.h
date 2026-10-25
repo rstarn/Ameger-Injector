@@ -147,7 +147,17 @@ namespace MMAP_NATIVE
  	{
  		ALIGN HINSTANCE	hRet		= NULL;
  		ALIGN HANDLE	CompletionEvent = nullptr;
- 		ALIGN PVOID		DebugPrintVehHandle = nullptr;
+		// A3: a bare `ret` inside ntdll, located by the host in this process's
+		// copy. The target's ntdll sits at the same verified base, so the
+		// address is valid there too. OutputDebugStringA/W imports are pointed
+		// at it so the payload's own debug-print calls never raise.
+		ALIGN PVOID		OdsReturnStub = nullptr;
+		// A3: the first-chance net for debug-print exceptions raised by code
+		// the redirect cannot cover - a freshly loaded dependency's internal
+		// OutputDebugString on the synthetic stack. Measured 2026-10-25:
+		// notepad exited with DBG_PRINTEXCEPTION_C (0x40010006) when the
+		// shell loaded D3DCOMPILER_47 and only the redirect was in place.
+		ALIGN PVOID		DebugPrintVehHandle = nullptr;
  		ALIGN DWORD		Flags		= NULL;
 		// The host-validated OS build. The shell uses it to select the
 		// exception-table encoding that this build family actually stores.
@@ -381,7 +391,26 @@ __forceinline size_t MMI_ImageStringLength(const MMAP_NATIVE::MANUAL_MAPPING_DAT
 	return length == maximum ? 0 : length;
 }
 
+// A3: identifies the two debug-print exports by length and byte-immediate
+// comparison. No string literals and no static arrays: this helper is
+// inlined into the copied shell, where a data reference would point outside
+// the copied span. "OutputDebugStringA" and "OutputDebugStringW" are both 18
+// characters.
+__forceinline bool MMI_IsDebugPrintImport(const char * name, size_t length) noexcept
+{
+	if (!name || length != 18)
+	{
+		return false;
+	}
+
+	return name[0] == 'O' && name[1] == 'u' && name[2] == 't' && name[3] == 'p' && name[4] == 'u' && name[5] == 't'
+		&& name[6] == 'D' && name[7] == 'e' && name[8] == 'b' && name[9] == 'u' && name[10] == 'g'
+		&& name[11] == 'S' && name[12] == 't' && name[13] == 'r' && name[14] == 'i' && name[15] == 'n' && name[16] == 'g'
+		&& (name[17] == 'A' || name[17] == 'W');
+}
+
 __forceinline bool MMI_IsApisetName(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const char * text)
+
 {
 	static const char kApi[] = { 'a', 'p', 'i', '-', 'm', 's', '-' };
 	static const char kExt[] = { 'e', 'x', 't', '-', 'm', 's', '-' };

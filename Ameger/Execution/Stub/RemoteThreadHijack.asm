@@ -70,6 +70,22 @@ ELSE
 ENDIF
     mov r10, rsp
     mov [rbx+SR_SHELL_RSP], r10
+    ;; A9: publish the shell stack as this thread's stack while the routine
+    ;; runs. The pivot changed RSP but the TEB still describes the victim's
+    ;; stack, so every consumer of the TEB bounds - __chkstk in large frames,
+    ;; the exception dispatcher's exhaustion evaluation, any first-chance
+    ;; handler in the target - judged stack state against a region this
+    ;; thread is no longer running on. Measured 2026-10-25: the target exited
+    ;; with STATUS_STACK_OVERFLOW (0xC00000FD) mid-shell until the bounds
+    ;; followed the pivot.
+    mov r10, gs:[08h]
+    mov [rbx+SR_SAVED_STACKBASE], r10
+    mov r10, gs:[10h]
+    mov [rbx+SR_SAVED_STACKLIMIT], r10
+    lea r10, [rbx + SR_SHELL_STACK_TOP]
+    mov gs:[08h], r10
+    lea r10, [rbx + SR_SHELL_STACK_BASE]
+    mov gs:[10h], r10
     ;; Caller-owned shadow space for the routine being called. RSP is
     ;; 16-byte aligned here, so the call leaves the callee at 8 mod 16.
     sub rsp, 20h
@@ -158,6 +174,14 @@ ENDIF
 StubFpRestoreFallback:
     fxrstor64 [r10]
 StubFpRestoreDone:
+
+    ;; A9: the victim's own stack bounds go back before anything returns to
+    ;; the victim's frame; the restore is placed with the other state-page
+    ;; reads, ahead of the pops that reload the victim registers.
+    mov r10, [rbx+SR_SAVED_STACKBASE]
+    mov gs:[08h], r10
+    mov r10, [rbx+SR_SAVED_STACKLIMIT]
+    mov gs:[10h], r10
 
 
 
