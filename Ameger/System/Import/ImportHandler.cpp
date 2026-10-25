@@ -126,6 +126,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	}
 
 	LOG(1, "Native OS Module Loaded At %p\n", g_hNTDLL);
+
 	// The resolved build number selects which loader layout the shell may
 	// assume. The launcher prints it because a mismatch here is the usual
 	// cause of a mapping failure on an unexpected Windows build.
@@ -142,10 +143,40 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 		return INJ_ERR_KERNEL32_MISSING;
 	}
-	// kernel32 is only checked for presence. The loader internals that the
-	// remote shell needs all live in ntdll, and the shell calls them
-	// directly rather than going through kernel32.
-	(void)hK32;
+
+	// A10: the TLS API entries live in kernel32 on current builds (verified
+	// against the on-disk export tables: ntdll does not export them), so they
+	// resolve by name against kernel32. They are the registration path the
+	// remote shell's TLS stage now depends on.
+	{
+		struct ExportEntry
+		{
+			const char * name;
+			void ** target;
+		};
+
+		const ExportEntry tls_exports[] =
+		{
+			{ "TlsAlloc",	ReCa<void **>(&NATIVE::TlsAlloc) },
+			{ "TlsSetValue",	ReCa<void **>(&NATIVE::TlsSetValue) },
+			{ "TlsFree",	ReCa<void **>(&NATIVE::TlsFree) },
+		};
+
+		for (const ExportEntry & entry : tls_exports)
+		{
+			*entry.target = ReCa<void *>(GetProcAddress(hK32, entry.name));
+			if (!*entry.target)
+			{
+				INIT_ERROR_DATA(error_data, INJ_ERR_GET_PROC_ADDRESS_FAIL);
+
+				LOG(1, "Failed To Resolve kernel32 Export %s\n", entry.name);
+
+				return INJ_ERR_GET_PROC_ADDRESS_FAIL;
+			}
+
+			LOG(1, "kernel32 Export %s At %p\n", entry.name, *entry.target);
+		}
+	}
 
 	LOG(1, "Waiting For Native Symbol Parser To Finish Initialization\n");
 

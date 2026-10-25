@@ -111,6 +111,11 @@ namespace MMAP_NATIVE
 		ALIGN NT_FUNC_LOCAL(LdrpInvertedFunctionTable);
 		ALIGN NT_FUNC_LOCAL(LdrpTlsList);
 
+		// A10: the TLS API the registration goes through. ntdll exports.
+		ALIGN NT_FUNC_LOCAL(TlsAlloc);
+		ALIGN NT_FUNC_LOCAL(TlsSetValue);
+		ALIGN NT_FUNC_LOCAL(TlsFree);
+
 		ALIGN f_MMI_FUNCTION MMP_Shell					= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadImports			= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadDelayImports		= nullptr;
@@ -131,15 +136,16 @@ namespace MMAP_NATIVE
 		bool IsValid() const
 		{
 			return NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory && NtSetEvent && NtClose &&
-		memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
-		LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
-		RtlAnsiStringToUnicodeString &&
-		LdrpPreprocessDllName &&
-		RtlAddFunctionTable && LdrpHandleTlsData &&
-		RtlAddVectoredExceptionHandler && RtlRemoveVectoredExceptionHandler &&
-		LdrLockLoaderLock && LdrUnlockLoaderLock &&
-		LdrpDereferenceModule &&
-		LdrpHeap && LdrpTlsList;
+			memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
+			LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
+			RtlAnsiStringToUnicodeString &&
+			LdrpPreprocessDllName &&
+			RtlAddFunctionTable && LdrpHandleTlsData &&
+			RtlAddVectoredExceptionHandler && RtlRemoveVectoredExceptionHandler &&
+			LdrLockLoaderLock && LdrUnlockLoaderLock &&
+			LdrpDereferenceModule &&
+			TlsAlloc && TlsSetValue && TlsFree &&
+			LdrpHeap && LdrpTlsList;
 		}
 	};
 
@@ -202,28 +208,17 @@ namespace MMAP_NATIVE
 		ALIGN DWORD					CachedSectionCount	= 0;
 		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
-		// The TLS directory and the fabricated loader nodes are handed from the
-		// TLS setup stage to the TLS callback stage through this block.
- 		ALIGN void *	TlsDirectory	= nullptr;	
- 		ALIGN void *	TlsDummyLdr		= nullptr;	
- 		ALIGN void *	TlsDdagNode		= nullptr;	
-		// Exact allocation sizes of the two fabricated loader blocks. The TLS
-		// callback stage zeroes each block before returning it to the loader
-		// heap, and a vtable-free free cannot recover these sizes later.
-		ALIGN DWORD	TlsDummyLdrSize		= 0;
-		ALIGN DWORD	TlsDdagNodeSize		= 0;
-		// A1: what the loader registration set. TlsIndexPrior is the image's
-		// _tls_index before registration and is restored when the registration
-		// is undone; TlsDataLive marks a data-bearing TLS block whose index,
-		// bit, slot and loader entry must all stay alive.
-		ALIGN DWORD	TlsIndex			= 0;
-		ALIGN DWORD	TlsIndexPrior		= 0;
-		ALIGN DWORD	TlsDataLive			= 0;
-		ALIGN DWORD	TlsExpectedIndex	= 0;
-		ALIGN DWORD64	TlsBitmapBefore		= 0;
-		ALIGN DWORD64	TlsBitmapAfter		= 0;
-		ALIGN ULONG_PTR	TlsSlotBefore		= 0;
-		ALIGN ULONG_PTR	TlsSlotAfter		= 0;
+		// A10: what the TLS registration set and what a failure unwind has to
+		// give back. TlsDirectory hands the directory from the setup stage to
+		// the callback stage; TlsIndex is the TlsAlloc slot patched into the
+		// image's _tls_index; TlsIndexPrior is that variable's pre-patch value;
+		// TlsBlock/TlsBlockSize are the template block on the loader heap that
+		// this thread's slot points at.
+ 		ALIGN void *	TlsDirectory	= nullptr;
+		ALIGN DWORD	TlsIndex		= 0;
+		ALIGN DWORD	TlsIndexPrior	= 0;
+		ALIGN void *	TlsBlock		= nullptr;
+		ALIGN DWORD	TlsBlockSize	= 0;
 		// Everything the shell learned about its own execution is copied back
 		// into this block for the host to read.
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};

@@ -2448,10 +2448,9 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
 
 	// A4: a TLS directory that declares neither callbacks nor data exists only
-	// to carry an index. Registering it would fabricate loader bookkeeping in
-	// the target's loader heap and touch the PEB bitmap for nothing the image
-	// can use, so the loader is left completely untouched and the stage
-	// reports through the existing "no loader entry" telemetry.
+	// to carry an index. Registering it would take a PEB bitmap bit for
+	// nothing the image can use, so the stage is skipped and the "no loader
+	// entry" telemetry carries the fact.
 	{
 		bool has_callbacks = false;
 		if (pTLS->AddressOfCallBacks &&
@@ -2477,253 +2476,101 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 		}
 	}
 
-	const DWORD ldr_size = pData->NtOffsets.LdrEntrySize ? pData->NtOffsets.LdrEntrySize : sizeof(LDR_DATA_TABLE_ENTRY_WIN11);
-	const DWORD ldr_base_off = pData->NtOffsets.LdrEntryDllBase ? pData->NtOffsets.LdrEntryDllBase : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DllBase));
-	const DWORD ldr_image_off = pData->NtOffsets.LdrEntrySizeOfImage ? pData->NtOffsets.LdrEntrySizeOfImage : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, SizeOfImage));
-	const DWORD ddag_off = pData->NtOffsets.LdrEntryDdagNode ? pData->NtOffsets.LdrEntryDdagNode : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DdagNode));
-	const DWORD ddag_state_off = pData->NtOffsets.LdrDdagNodeState ? pData->NtOffsets.LdrDdagNodeState : static_cast<DWORD>(offsetof(LDR_DDAG_NODE_WIN11, State));
-	const DWORD ddag_size = pData->NtOffsets.LdrDdagNodeSize ? pData->NtOffsets.LdrDdagNodeSize : sizeof(LDR_DDAG_NODE_WIN11);
-
-	if (!ldr_size || ldr_size > 0x1000 || ldr_base_off + sizeof(void *) > ldr_size)
+	// A10: the registration no longer goes anywhere near the loader's module
+	// bookkeeping. The old stage fabricated an LDR_DATA_TABLE_ENTRY and a DDAG
+	// node on the loader heap, called LdrpHandleTlsData under the loader lock,
+	// and left a permanent entry on LdrpTlsList - which also meant the loader
+	// copied this payload's TLS template into the TEB slot of every thread the
+	// target created from then on. The index now comes from TlsAlloc, the
+	// template block is allocated on the loader heap and installed in this
+	// thread's slot with TlsSetValue, and the image's _tls_index is patched to
+	// match. What the registration touches, in total: one PEB TlsBitmap bit,
+	// this thread's TEB slot, and one heap block. No loader list entry, no
+	// loader-heap churn beyond that block, no cross-thread spread.
+	if (!f->TlsAlloc || !f->TlsSetValue || !f->TlsFree || !f->RtlAllocateHeap || !f->LdrpHeap || !*f->LdrpHeap)
 	{
+		pData->ntRet = STATUS_ENTRYPOINT_NOT_FOUND;
 		return INJ_MM_ERR_HEAP_ALLOC;
 	}
-	void * pDummyLdrRaw = NewBytes(f, ldr_size);
-	if (!pDummyLdrRaw)
-	{
-		return INJ_MM_ERR_HEAP_ALLOC;
-	}
-	WritePtrField(pDummyLdrRaw, ldr_base_off, pData->pImageBase);
-	if (ldr_image_off + sizeof(ULONG) <= ldr_size)
-	{
-		*ReCa<ULONG *>(ReCa<BYTE *>(pDummyLdrRaw) + ldr_image_off) = MMI_SizeOfImage(pData);
-	}
-	// The loader keeps its own bookkeeping for every module. TLS handling
-	// needs a plausible loader entry, so a minimal one is fabricated.
-	void * pDdagRaw = nullptr;
-	if (ddag_off + sizeof(void *) <= ldr_size && ddag_state_off + sizeof(int) <= ddag_size && ddag_size <= 0x800)
-	{
-		pDdagRaw = NewBytes(f, ddag_size);
-		if (!pDdagRaw)
-		{
-			DeleteObject(f, pDummyLdrRaw);
 
-			return INJ_MM_ERR_HEAP_ALLOC;
-		}
-
-		*ReCa<int *>(ReCa<BYTE *>(pDdagRaw) + ddag_state_off) = static_cast<int>(LdrModulesReadyToInit);
-			// The DDAG node describes the state of the load. It claims the
-			// modules are ready to initialise, which is what the TLS path
-			// expects to see, and its module list points at itself so that
-			// the loader's own walks terminate.
-		WritePtrField(pDdagRaw, offsetof(LDR_DDAG_NODE_WIN11, Modules), pDdagRaw);
-		WritePtrField(pDdagRaw, offsetof(LDR_DDAG_NODE_WIN11, Modules) + sizeof(void *), pDdagRaw);
-
-		WritePtrField(pDummyLdrRaw, ddag_off, pDdagRaw);
-	}
-
-	auto * pDummyLdr = ReCa<LDR_DATA_TABLE_ENTRY *>(pDummyLdrRaw);
-
-	// A1: the registration writes three pieces of process state - the image's
-	// _tls_index, a PEB TLS bitmap bit, and this thread's TEB slot - plus an
-	// entry on LdrpTlsList. The whole sequence runs under the loader lock, and
-	// the pre-state is sampled inside that lock, so the loader cannot allocate
-	// a different index between the snapshot and the call.
-	pData->TlsDirectory	= pTLS;
-	pData->TlsDummyLdr	= pDummyLdrRaw;
-	pData->TlsDdagNode	= pDdagRaw;
-	pData->TlsDummyLdrSize = ldr_size;
-	pData->TlsDdagNodeSize = pDdagRaw ? ddag_size : 0;
-
-	// TLS data means the loader may have handed slots in other threads a
-	// pointer into the TLS template. Such a registration is retained whole;
-	// only a callbacks-only block (no template) is safe to undo.
-	const bool tls_has_data = pTLS->EndAddressOfRawData > pTLS->StartAddressOfRawData ||
-		pTLS->SizeOfZeroFill != 0;
-	pData->TlsDataLive = tls_has_data ? 1 : 0;
-	pData->ExecTelemetry.TlsHasData = tls_has_data ? 1u : 0u;
-
+	// The image's _tls_index variable is the one piece the registration cannot
+	// substitute: without patching it, the payload's __tls_get_value reads
+	// whatever slot the raw image happens to carry.
 	DWORD * const pTlsIndex = (pTLS->AddressOfIndex &&
 		MMI_InImage(pData, ReCa<void *>(pTLS->AddressOfIndex), sizeof(DWORD)))
 		? ReCa<DWORD *>(pTLS->AddressOfIndex) : nullptr;
-
-	const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x30));
-	const ULONG_PTR peb = teb ? *ReCa<ULONG_PTR *>(teb + 0x60) : 0;
-	DWORD * tls_bitmap = nullptr;
-	ULONG_PTR * tls_slots = nullptr;
-	if (peb && pData->NtOffsets.PebTlsBitmapBits &&
-		pData->NtOffsets.PebTlsBitmapBits + 2 * sizeof(ULONG) <= 0x400)
+	if (!pTlsIndex)
 	{
-		tls_bitmap = ReCa<DWORD *>(peb + pData->NtOffsets.PebTlsBitmapBits);
-	}
-	if (teb && pData->NtOffsets.TebTlsSlots &&
-		pData->NtOffsets.TebTlsSlots + 64 * sizeof(void *) <= 0x2000)
-	{
-		tls_slots = ReCa<ULONG_PTR *>(teb + pData->NtOffsets.TebTlsSlots);
+		return INJ_MM_ERR_INVALID_PE_IMAGE;
 	}
 
-	ULONG lock_state = 0;
-	ULONG_PTR lock_cookie = 0;
-	pData->ExecTelemetry.TlsLockStatus = f->LdrLockLoaderLock(NULL, &lock_state, &lock_cookie);
-	if (NT_FAIL(pData->ExecTelemetry.TlsLockStatus))
+	const DWORD index = f->TlsAlloc();
+	if (index == TLS_OUT_OF_INDEXES)
 	{
-		ScrubFreeObject(f, pDdagRaw, ddag_size);
-		ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
-
-		pData->TlsDirectory	= nullptr;
-		pData->TlsDummyLdr	= nullptr;
-		pData->TlsDdagNode	= nullptr;
-		pData->TlsDummyLdrSize = 0;
-		pData->TlsDdagNodeSize = 0;
-
-		return INJ_MM_ERR_LOADER_LOCK_FAILED;
+		pData->ntRet = STATUS_UNSUCCESSFUL;
+		return INJ_MM_ERR_HEAP_ALLOC;
 	}
 
-	pData->TlsIndexPrior = pTlsIndex ? *pTlsIndex : 0;
-	pData->TlsBitmapBefore = tls_bitmap
-		? (static_cast<DWORD64>(tls_bitmap[0]) | (static_cast<DWORD64>(tls_bitmap[1]) << 32))
-		: 0;
-	pData->TlsExpectedIndex = 0xFFFFFFFF;
-	pData->TlsSlotBefore = 0;
-	pData->TlsSlotAfter = 0;
-	if (!tls_has_data && tls_bitmap)
+	// The per-thread block the payload's slot will point at: the raw template
+	// followed by the zero fill, on the loader's heap, 16-byte aligned, in the
+	// same shape the loader's own allocation would have.
+	const ULONGLONG raw_start = pTLS->StartAddressOfRawData;
+	const ULONGLONG raw_end = pTLS->EndAddressOfRawData;
+	SIZE_T raw_span = raw_end > raw_start ? static_cast<SIZE_T>(raw_end - raw_start) : 0;
+	if (raw_span && !MMI_InImage(pData, ReCa<void *>(raw_start), raw_span))
 	{
-		// LdrpHandleTlsData takes the lowest clear index. Recording that index
-		// before the call is what makes the pre-state of both the bit and the
-		// slot knowable without sampling the whole TLS table afterwards.
-		for (DWORD bit = 0; bit < 64; ++bit)
-		{
-			if (!(tls_bitmap[bit >> 5] & (1u << (bit & 31))))
-			{
-				pData->TlsExpectedIndex = bit;
-				if (tls_slots)
-				{
-					pData->TlsSlotBefore = tls_slots[bit];
-				}
-				break;
-			}
-		}
+		f->TlsFree(index);
+		return INJ_MM_ERR_INVALID_PE_IMAGE;
 	}
 
-	pData->ntRet = f->LdrpHandleTlsData(pDummyLdr);
-
-	if (NT_SUCCESS(pData->ntRet))
+	SIZE_T block_size = raw_span + pTLS->SizeOfZeroFill;
+	block_size = (block_size + 0xF) & ~static_cast<SIZE_T>(0xF);
+	if (!block_size)
 	{
-		pData->TlsIndex = pTlsIndex ? *pTlsIndex : 0;
-		pData->ExecTelemetry.TlsIndex = pData->TlsIndex;
-		pData->TlsBitmapAfter = tls_bitmap
-			? (static_cast<DWORD64>(tls_bitmap[0]) | (static_cast<DWORD64>(tls_bitmap[1]) << 32))
-			: 0;
-		if (tls_slots && pData->TlsIndex < 64)
-		{
-			pData->TlsSlotAfter = tls_slots[pData->TlsIndex];
-		}
-
-		const DWORD assigned = pData->TlsIndex;
-		const DWORD assigned_bit = assigned < 64 ? (1u << (assigned & 31)) : 0;
-		const bool bit_now_set = assigned_bit && tls_bitmap &&
-			(tls_bitmap[assigned >> 5] & assigned_bit) != 0;
-
-		// A1: a callbacks-only block owns no TLS template, so its registration
-		// is pure loader residue. While the loader lock is still held, find the
-		// entry LdrpHandleTlsData just inserted, return it to the loader heap,
-		// and rewind the index, the PEB bit and this thread's slot. A block
-		// with live TLS data keeps the whole registration: the loader's copy of
-		// the template and the assigned slot may already be referenced by
-		// another thread, and removing the entry would make those dangling.
-		if (!tls_has_data && bit_now_set &&
-			assigned == pData->TlsExpectedIndex &&
-			pTlsIndex && tls_bitmap && tls_slots && f->LdrpTlsList &&
-			pData->NtOffsets.TlsEntrySize >= sizeof(LIST_ENTRY) + sizeof(void *) &&
-			pData->NtOffsets.TlsEntrySize < 0x1000 &&
-			pData->NtOffsets.TlsEntryModuleEntry + sizeof(void *) <= pData->NtOffsets.TlsEntrySize)
-		{
-			BYTE * tls_entry = nullptr;
-			bool entry_found = false;
-			bool entry_unlinked = false;
-
-			auto node = f->LdrpTlsList->Flink;
-			ULONG guard = 0;
-			while (node && node != f->LdrpTlsList && guard++ < 0x4000)
-			{
-				auto entry_bytes = ReCa<BYTE *>(node);
-				node = node->Flink;
-				if (ReadPtrField(entry_bytes, pData->NtOffsets.TlsEntryModuleEntry) == pDummyLdr)
-				{
-					entry_found = true;
-					auto links = ReCa<LIST_ENTRY *>(entry_bytes);
-					if (links->Blink && links->Flink)
-					{
-						links->Blink->Flink = links->Flink;
-						links->Flink->Blink = links->Blink;
-						entry_unlinked = true;
-						tls_entry = entry_bytes;
-					}
-					break;
-				}
-			}
-
-			// Either the entry was detached, or the walk reached the head of
-			// the list without finding one. In both cases no loader bookkeeping
-			// references the registration any more. A broken list or a node
-			// that cannot be detached leaves everything in place instead.
-			const bool list_clear = entry_unlinked || (!entry_found && node == f->LdrpTlsList);
-			if (list_clear)
-			{
-				if (!entry_found)
-				{
-					pData->ExecTelemetry.TlsLoaderEntryAbsent = 1;
-				}
-
-				if (entry_unlinked)
-				{
-					ScrubFreeObject(f, tls_entry, pData->NtOffsets.TlsEntrySize);
-					pData->ExecTelemetry.TlsLoaderEntryUnlinked = 1;
-				}
-
-				*pTlsIndex = pData->TlsIndexPrior;
-				pData->ExecTelemetry.TlsIndexRestored = 1;
-
-				tls_bitmap[assigned >> 5] &= ~assigned_bit;
-				pData->ExecTelemetry.TlsBitmapBitCleared = 1;
-
-				tls_slots[assigned] = pData->TlsSlotBefore;
-				pData->ExecTelemetry.TlsSlotCleared = 1;
-
-				ScrubFreeObject(f, pDdagRaw, ddag_size);
-				ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
-				pDdagRaw = nullptr;
-				pDummyLdrRaw = nullptr;
-				pDummyLdr = nullptr;
-
-				pData->TlsDummyLdr = nullptr;
-				pData->TlsDdagNode = nullptr;
-				pData->TlsDummyLdrSize = 0;
-				pData->TlsDdagNodeSize = 0;
-			}
-		}
+		block_size = 0x10;
+	}
+	if (block_size > 0x400000)
+	{
+		f->TlsFree(index);
+		return INJ_MM_ERR_HEAP_ALLOC;
 	}
 
-	pData->ExecTelemetry.TlsUnlockStatus = f->LdrUnlockLoaderLock(NULL, lock_cookie);
-
-	if (NT_FAIL(pData->ExecTelemetry.TlsUnlockStatus))
+	void * block = f->RtlAllocateHeap(*f->LdrpHeap, 0, block_size);
+	if (!block)
 	{
-		return INJ_MM_ERR_LOADER_LOCK_FAILED;
+		f->TlsFree(index);
+		pData->ntRet = STATUS_UNSUCCESSFUL;
+		return INJ_MM_ERR_HEAP_ALLOC;
 	}
 
-	if (NT_FAIL(pData->ntRet))
+	f->RtlZeroMemory(block, block_size);
+	if (raw_span)
 	{
-		ScrubFreeObject(f, pDdagRaw, ddag_size);
-		ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
-
-		pData->TlsDirectory	= nullptr;
-		pData->TlsDummyLdr	= nullptr;
-		pData->TlsDdagNode	= nullptr;
-		pData->TlsDummyLdrSize = 0;
-		pData->TlsDdagNodeSize = 0;
-
-		return static_cast<DWORD>(pData->ntRet);
+		f->memmove(block, ReCa<void *>(raw_start), raw_span);
 	}
+
+	if (!f->TlsSetValue(index, block))
+	{
+		ScrubFreeObject(f, block, block_size);
+		f->TlsFree(index);
+		pData->ntRet = STATUS_UNSUCCESSFUL;
+		return INJ_MM_ERR_HEAP_ALLOC;
+	}
+
+	const DWORD prior_index = *pTlsIndex;
+	*pTlsIndex = index;
+
+	pData->TlsDirectory	= pTLS;
+	pData->TlsIndex		= index;
+	pData->TlsIndexPrior	= prior_index;
+	pData->TlsBlock		= block;
+	pData->TlsBlockSize	= static_cast<DWORD>(block_size);
+
+	pData->ExecTelemetry.TlsIndex = index;
+	pData->ExecTelemetry.TlsHasData = (raw_span != 0 || pTLS->SizeOfZeroFill != 0) ? 1u : 0u;
+	// The loader list was never touched under this scheme, so "no loader entry
+	// exists" is its standing truth rather than an outcome.
+	pData->ExecTelemetry.TlsLoaderEntryAbsent = 1;
 
 	return INJ_ERR_SUCCESS;
 }
@@ -2732,9 +2579,9 @@ DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPP
 {
 	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->TlsDirectory);
 	// Without a TLS directory there is nothing to run; the image simply has no
-	// TLS callbacks. The fabricated loader entry is not required here: a
-	// callbacks-only registration is undone by the TLS setup stage before this
-	// stage starts, and a data-bearing one is retained by that stage.
+	// TLS callbacks. The registration is a TlsAlloc slot plus one heap block
+	// under the A10 scheme, and both are owned by the setup stage's failure
+	// unwind, not by this stage.
 	if (!pTLS)
 	{
 		return INJ_ERR_SUCCESS;
@@ -2818,12 +2665,12 @@ DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPP
 		pData->ExecTelemetry.TlsCallbacksFailed = 0;
 	}
 
-	// Registration cleanup belongs to MMI_HandleTLS: it runs under the loader
-	// lock, where the loader entry can be detached without racing a thread
-	// that is starting up, and it only rewinds callbacks-only registrations.
-	// No diagnostic may be emitted here either: this function lives in the
-	// copied remote-shell span and LOG resolves to a host .text routine
-	// outside it. What happened is published through ExecTelemetry instead.
+	// The registration is owned by MMI_CleanUp: the TlsAlloc slot, the heap
+	// block this thread's slot points at, and the image's patched _tls_index
+	// all unwind there, after every stage that can still read TLS. No
+	// diagnostic may be emitted here: this function lives in the copied
+	// remote-shell span and LOG resolves to a host .text routine outside it.
+	// What happened is published through ExecTelemetry instead.
 	pData->TlsDirectory = nullptr;
 	return tls_result;
 }
@@ -3590,6 +3437,34 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 
 	auto f = pData->FunctionTable;
 
+	// A10: the TlsAlloc registration unwinds here, after every stage that can
+	// still read TLS (the detach above included). Order matters: the image's
+	// _tls_index is restored first so nothing can look the slot up again, then
+	// the block is scrubbed and freed, then the slot itself is released.
+	if (pData->TlsDirectory && pData->TlsBlockSize && pData->TlsBlock && pData->TlsIndex != 0 && pData->TlsIndex != TLS_OUT_OF_INDEXES)
+	{
+		auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->TlsDirectory);
+		if (pTLS->AddressOfIndex &&
+			MMI_InImage(pData, ReCa<void *>(pTLS->AddressOfIndex), sizeof(DWORD)))
+		{
+			*ReCa<DWORD *>(pTLS->AddressOfIndex) = pData->TlsIndexPrior;
+			pData->ExecTelemetry.TlsIndexRestored = 1;
+		}
+
+		ScrubFreeObject(f, pData->TlsBlock, pData->TlsBlockSize);
+		pData->TlsBlock = nullptr;
+		pData->TlsBlockSize = 0;
+
+		if (f->TlsFree(pData->TlsIndex))
+		{
+			pData->ExecTelemetry.TlsBitmapBitCleared = 1;
+		}
+		pData->ExecTelemetry.TlsSlotCleared = 1;
+
+		pData->TlsIndex = 0;
+		pData->TlsDirectory = nullptr;
+	}
+
 	// M7: if DllMain attached, detach before dependencies are unloaded and the
 	// image is freed, so payload resources do not outlive the image.
 	if (pData->ExecTelemetry.DllMainResult && pData->ExecTelemetry.DllMainCyclesDelta != 0 &&
@@ -3705,6 +3580,9 @@ MANUAL_MAPPING_FUNCTION_TABLE::MANUAL_MAPPING_FUNCTION_TABLE()
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpHeap);
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpInvertedFunctionTable);
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpTlsList);
+	NT_FUNC_CONSTRUCTOR_INIT(TlsAlloc);
+	NT_FUNC_CONSTRUCTOR_INIT(TlsSetValue);
+	NT_FUNC_CONSTRUCTOR_INIT(TlsFree);
 }
 
 void ResetMapStats()

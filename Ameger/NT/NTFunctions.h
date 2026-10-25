@@ -60,6 +60,12 @@ using f_NtQueryInformationProcess = NTSTATUS (__stdcall *)
 	ULONG				*	SizeOut
 );
 
+// A10: the TLS registration uses the ntdll TLS API rather than the loader's
+// module bookkeeping. These are real ntdll exports, resolved by name.
+using f_TlsAlloc = DWORD(WINAPI *)(void);
+using f_TlsSetValue = BOOL(WINAPI *)(DWORD dwTlsIndex, void * lpTlsValue);
+using f_TlsFree = BOOL(WINAPI *)(DWORD dwTlsIndex);
+
 using f_NtQuerySystemInformation = NTSTATUS	(__stdcall *)
 (
 	SYSTEM_INFORMATION_CLASS		SIC,
