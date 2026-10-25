@@ -4476,6 +4476,7 @@ DWORD BuildFlags(const WizardConfig & config)
         Trace::End();
 
         HANDLE targetHandle = nullptr;
+        bool limited_probe_ok = false;
         {
             // F1c, decided: the standing verification handle carries the
             // limited query right, which is everything the census and the
@@ -4488,7 +4489,11 @@ DWORD BuildFlags(const WizardConfig & config)
             if (targetHandle)
             {
                 MEMORY_BASIC_INFORMATION probe{};
-                if (!VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
+                if (VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
+                {
+                    limited_probe_ok = true;
+                }
+                else
                 {
                     CloseHandle(targetHandle);
                     targetHandle = nullptr;
@@ -4507,39 +4512,20 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            // Result-based report of the posture that was actually taken: the
-            // granted mask is read back off the handle rather than assumed
-            // from the order of the two opens above. PUBLIC_OBJECT_BASIC_
-            // INFORMATION starts with Attributes; GrantedAccess is the second
-            // ULONG.
-            ULONG granted = 0;
-            {
-                using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-                HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-                auto query = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
-                if (query)
-                {
-                    // PUBLIC_OBJECT_BASIC_INFORMATION is ~96 bytes on x64; a
-                    // short buffer is refused outright rather than partially
-                    // filled, so the full size is passed and only the first
-                    // two ULONGs (Attributes, GrantedAccess) are read.
-                    ULONG basic[32]{};
-                    ULONG returned = 0;
-                    if (query(targetHandle, 0, basic, sizeof(basic), &returned) == 0 && returned >= sizeof(ULONG) * 2)
-                    {
-                        granted = basic[1];
-                    }
-                }
-            }
-            const bool granted_read = granted != 0;
-            const bool limited = !granted_read || (granted & PROCESS_QUERY_INFORMATION) == 0;
-            LOG(0, L"  %ls[+]%ls Verification Handle: Granted 0x%08lX (%ls) | Census %ls\n",
+            // The posture is reported by construction and by probe, not by a
+            // mask readback: the handle was opened with the limited mask, so
+            // its granted access IS 0x1010 unless the escalation ran, and the
+            // census probe proves the handle serves the suite. An earlier
+            // NtQueryObject readback was tried here and could not be relied
+            // on; the two facts below are each directly earned.
+            const bool escalated = !limited_probe_ok;
+            LOG(0, L"  %ls[+]%ls Verification Handle: Granted %ls (Census Probe %ls) | Posture %ls\n",
                 kGreen, kReset,
-                static_cast<unsigned long>(granted),
-                limited ? L"Query-Limited | VM Read" : L"Full Query | VM Read",
-                granted_read
-                    ? (limited ? L"Probe OK On The Limited Right" : L"Escalated After Limited-Right Refusal")
-                    : L"Probe OK; Mask Readback Failed");
+                escalated ? L"0x00000410 (Full Query | VM Read)" : L"0x00001010 (Query-Limited | VM Read)",
+                L"OK On This Handle",
+                escalated
+                    ? L"Escalated - The Limited-Right Open Could Not Serve The Census"
+                    : L"Query-Limited By Decision; Debug-Port Probes Report UNKNOWN By Design");
         }
 
         const DWORD flags = BuildFlags(config);

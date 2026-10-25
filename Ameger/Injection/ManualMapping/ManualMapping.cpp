@@ -2561,6 +2561,7 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 	*pTlsIndex = index;
 
 	pData->TlsDirectory	= pTLS;
+	pData->TlsIndexAddress	= pTlsIndex;
 	pData->TlsIndex		= index;
 	pData->TlsIndexPrior	= prior_index;
 	pData->TlsBlock		= block;
@@ -3440,14 +3441,16 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 	// A10: the TlsAlloc registration unwinds here, after every stage that can
 	// still read TLS (the detach above included). Order matters: the image's
 	// _tls_index is restored first so nothing can look the slot up again, then
-	// the block is scrubbed and freed, then the slot itself is released.
-	if (pData->TlsDirectory && pData->TlsBlockSize && pData->TlsBlock && pData->TlsIndex != 0 && pData->TlsIndex != TLS_OUT_OF_INDEXES)
+	// the block is scrubbed and freed, then the slot itself is released. The
+	// index location comes from the cached TlsIndexAddress, not from the
+	// directory: MMI_CleanDataDirectories zeroes the TLS directory before this
+	// runs on a post-cloak failure path, and the unwind must not depend on a
+	// wiped struct.
+	if (pData->TlsIndexAddress && pData->TlsBlockSize && pData->TlsBlock && pData->TlsIndex != 0 && pData->TlsIndex != TLS_OUT_OF_INDEXES)
 	{
-		auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->TlsDirectory);
-		if (pTLS->AddressOfIndex &&
-			MMI_InImage(pData, ReCa<void *>(pTLS->AddressOfIndex), sizeof(DWORD)))
+		if (MMI_InImage(pData, pData->TlsIndexAddress, sizeof(DWORD)))
 		{
-			*ReCa<DWORD *>(pTLS->AddressOfIndex) = pData->TlsIndexPrior;
+			*pData->TlsIndexAddress = pData->TlsIndexPrior;
 			pData->ExecTelemetry.TlsIndexRestored = 1;
 		}
 
@@ -3462,6 +3465,7 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 		pData->ExecTelemetry.TlsSlotCleared = 1;
 
 		pData->TlsIndex = 0;
+		pData->TlsIndexAddress = nullptr;
 		pData->TlsDirectory = nullptr;
 	}
 

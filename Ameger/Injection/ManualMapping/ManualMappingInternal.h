@@ -210,11 +210,15 @@ namespace MMAP_NATIVE
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
 		// A10: what the TLS registration set and what a failure unwind has to
 		// give back. TlsDirectory hands the directory from the setup stage to
-		// the callback stage; TlsIndex is the TlsAlloc slot patched into the
-		// image's _tls_index; TlsIndexPrior is that variable's pre-patch value;
+		// the callback stage; TlsIndexAddress caches the in-image _tls_index
+		// location because MMI_CleanDataDirectories zeroes the directory
+		// before MMI_CleanUp runs, and the unwind must not depend on a wiped
+		// struct; TlsIndex is the TlsAlloc slot patched into the image's
+		// _tls_index; TlsIndexPrior is that variable's pre-patch value;
 		// TlsBlock/TlsBlockSize are the template block on the loader heap that
 		// this thread's slot points at.
  		ALIGN void *	TlsDirectory	= nullptr;
+		ALIGN DWORD *	TlsIndexAddress	= nullptr;
 		ALIGN DWORD	TlsIndex		= 0;
 		ALIGN DWORD	TlsIndexPrior	= 0;
 		ALIGN void *	TlsBlock		= nullptr;
