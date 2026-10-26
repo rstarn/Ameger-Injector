@@ -28,27 +28,30 @@ static std::wstring StripAnsiEscapes(const wchar_t * text)
     clean.reserve(len);
     for (size_t i = 0; text[i]; ++i)
     {
-        if (text[i] == L'\x1b' && text[i + 1] == L'[')
+        const bool has_next = (i + 1 <= len);
+        const bool has_third = (i + 2 <= len);
+
+        if (text[i] == L'\x1b' && has_next && text[i + 1] == L'[')
         {
             size_t j = i + 2;
-            while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
+            while (j <= len && text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
                 text[j] == L'<' || text[j] == L'=' || text[j] == L'>' || text[j] == L'?' || text[j] == L'!'))
             {
                 ++j;
             }
-            while (text[j] >= L' ' && text[j] <= L'/')
+            while (j <= len && text[j] >= L' ' && text[j] <= L'/')
             {
                 ++j;
             }
-            if (text[j] >= L'@' && text[j] <= L'~')
+            if (j <= len && text[j] >= L'@' && text[j] <= L'~')
             {
                 i = j;
                 continue;
             }
         }
-        else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
+        else if (text[i] == L'\x1b' && has_next && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
         {
-            if (text[i + 2])
+            if (has_third && text[i + 2])
             {
                 i += 2;
                 continue;

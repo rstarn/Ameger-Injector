@@ -52,8 +52,14 @@ std::wstring g_SymbolCacheRoot;
 	{
 		sym_ntdll_native.Interrupt();
 
-		SetEvent(g_hInterruptEvent);
-		SetEvent(g_hInterruptImport);
+		if (g_hInterruptEvent)
+		{
+			SetEvent(g_hInterruptEvent);
+		}
+		if (g_hInterruptImport)
+		{
+			SetEvent(g_hInterruptImport);
+		}
 
 		JoinAsyncWorker(sym_ntdll_native_ret);
 		JoinAsyncWorker(import_handler_ret);
