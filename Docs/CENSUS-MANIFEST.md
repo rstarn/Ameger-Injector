@@ -1,4 +1,17 @@
-﻿# TASK-001 Census Manifest
+﻿> **Census reflects TASK-001 state. Mapper has moved since.**
+>
+> Hashes below were recorded at commit 6d20e98 (baseline-001-post).
+> Ameger-Mapper has advanced past cce43c1 ("Improve logging output
+> formatting and consistency"), which modified Provider.hpp and
+> Driver.cpp. Hash comparisons against those two Mapper rows will
+> diverge for benign reasons. Injector-side rows remain accurate as
+> of baseline-003-post (65d591d) unless Injector has moved again.
+>
+> Current Mapper truth lives in
+> `git -C D:\Ameger\Mapper\Mapper log` and in
+> `Docs/RISK-REGISTER.md`.
+
+# TASK-001 Census Manifest
 
 One row per file. sha12 = first 12 hex of SHA-256.
 
