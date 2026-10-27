@@ -1,3 +1,19 @@
+> **Superseded for R2, R3, and R5.** The R2, R3, and R5 sections
+> below were written before the code was re-read for TASK-003 and
+> are factually wrong on three points:
+>
+>   - R2: `FindHijackThread` is already bounded by `kMaxHandleProbes`
+>     on both the running and waiting paths and prefers event-driven
+>     over delay waits. It is not a P1.
+>   - R3: the staging leak on `SR_HT_ERR_RECOVERY_REQUIRED` is a
+>     documented, intentional trade-off, not an oversight.
+>   - R5: the pin check already refuses a missing, empty, or
+>     mismatching `PayloadSha256` at `Main.cpp:3428-3436`.
+>
+> The authoritative post-remediation register is
+> `Docs/RISK-REGISTER.md`. This file is kept unmodified as the
+> historical record of what TASK-002 believed.
+
 # TASK-002 Risk Design Proposals
 
 This document proposes designs for risks R1 through R5 in `Docs/RISK-CODE-EXCERPTS.md`. It is prose-only and does not change any source file.
