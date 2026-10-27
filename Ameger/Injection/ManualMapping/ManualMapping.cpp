@@ -530,6 +530,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	data.Flags = remote_flags;
 	data.OSBuildNumber = os_build;
 
+	if (g_DynamicOffsetsReady.load(std::memory_order_acquire) == 0)
+	{
+		LOG(1, "[ManualMap] [!] Dynamic Offsets Not Resolved. The Mapping Will Fall Back To Static Layout Constants Validated By static_assert Against The Build This Binary Was Compiled Against. If The Running Windows Build Differs, Every Loader-List Read Uses Wrong Offsets. This Is A Loud Fallback, Not A Refusal.\n");
+	}
+
 	if (!g_DynamicOffsetsReady.load(std::memory_order_acquire))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
