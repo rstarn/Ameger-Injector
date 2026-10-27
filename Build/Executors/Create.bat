@@ -143,6 +143,20 @@ REM .code$NN part into a single section. That has to be checked on the raw linke
 REM BuildPE.ps1 randomises every section name a few lines below, so by the end of the build the
 REM section is no longer called .code and the check could not find it. This is the one content
 REM check that cannot be a byte scan, because an unmerged link still passes every pattern scan.
+REM ========================================================
+REM BUILD ORDER INVARIANT - DO NOT REORDER
+REM
+REM   :verify_mmap_sections MUST run against the pre-mutation DLL.
+REM   BuildPE.ps1 randomizes every section name on the very next
+REM   step; after that, the merged .code section has been renamed
+REM   and this check cannot find it. Reordering the two lines
+REM   silently breaks the one content check that cannot be a byte
+REM   scan.
+REM
+REM   The same applies to :verify before BuildPE.ps1 runs. Any
+REM   step that locates a section by name must run before the
+REM   first mutation.
+REM ========================================================
 call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
 if errorlevel 1 goto :verify_error
 echo.
