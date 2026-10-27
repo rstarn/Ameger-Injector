@@ -947,12 +947,14 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			allocation_guard.release();
 			remote_event_owned = false;
 
-			// If that donor never runs after all, nothing in the target will
-			// free these. The image - the artifact a census would see - is
-			// recorded in the map statistics so the leak stays visible through
-			// the telemetry export even though the host no longer owns the
-			// memory; the staging allocation shares the shell's fate and is
-			// reported by the same base until it settles.
+		// If that donor never runs after all, nothing in the target will
+		// free these two allocations, and the host has released both
+		// guards. MAP_STATS has only one (base, size) pair, so only the
+		// image base is recorded. The staging allocation at pAllocBase is
+		// the same order of magnitude (image_span plus staging overhead)
+		// and is reported under the same size, but its base is not
+		// separately tracked. This is a known telemetry limitation, not a
+		// description of what the struct holds.
 			{
 				MAP_STATS Retained{ };
 				Retained.RetainedAllocBase = ReCa<ULONG_PTR>(image_base);
