@@ -10,7 +10,7 @@ PENDING.
 | R1 | P0 | PENDING (TASK-004) | `Mapper/Provider/Provider.hpp`, `Mapper/Provider/Driver.cpp` | Client-side bounds already applied on disk (see TASK-004 for the commit). Kernel handler inside the embedded `PdFwKrnl` binary remains unchecked; source-level fix is out of reach. |
 | R2 | P3 | CLOSED (not a defect) | `Ameger/Execution/ThreadHijacking.cpp` `FindHijackThread` | Bounded by `kMaxHandleProbes` on both running and waiting paths; prefers event-driven over delay waits; excludes worker threads. Census overstated as P1. |
 | R3 | P2 | DOCUMENTED (deliberate trade) | `Ameger/Injection/ManualMapping/ManualMapping.cpp` | `leak_staging = true` on `SR_HT_ERR_RECOVERY_REQUIRED` is intentional; the remote shell may still own its allocation. `MAP_STATS` records only the image base. Comment corrected in TASK-003. |
-| R4 | P1 | MITIGATED (loud fallback) | `Ameger/NT/Windows11.h`, `Ameger/Injection/ManualMapping/ManualMapping.cpp` | `static_assert`s in `Windows11.h` remain the compile-time ABI guard. `MMAP_NATIVE::ManualMap` now logs when `g_DynamicOffsetsReady == 0`. |
+| R4 | P1 | CLOSED (already fail-closed) | `Ameger/NT/Windows11.h`, `Ameger/Injection/ManualMapping/ManualMapping.cpp` | `static_assert`s in `Windows11.h` remain the compile-time ABI guard. `MMAP_NATIVE::ManualMap` already returns `INJ_ERR_ADVANCED_NOT_DEFINED` when `g_DynamicOffsetsReady == 0`; the earlier "silent fallback" characterization in RISK-DESIGN-PROPOSALS.md was a misreading of the code. |
 | R5 | CLOSED | CLOSED (already correct) | `Interface/Source/Main.cpp:3428-3436` | Pin refuses empty, missing, or mismatching `PayloadSha256`. Design proposal was a misreading. |
 | R6 | P2 | DOCUMENTED | `Build/Executors/Create.bat` | Build-order invariant documented inline. Not a code change. |
 | R7 | P2 | GUARDED | `Ameger/Core/Utility/Tools/Tools.cpp:241` | `static_assert(kAlphabetChars == 62, ...)` guards the invariant. |
@@ -26,5 +26,4 @@ PENDING.
   they do not stop an in-bounds-looking pair that points into a sensitive
   kernel page. Closing requires the driver handler to validate (not
   source-reachable) or a pre-IOCTL remap wrapper (larger change).
-- **R4 unsupported builds.** The loud log surfaces the fallback but does
-  not prevent it. A full fail-closed requires a build-number allowlist.
+
