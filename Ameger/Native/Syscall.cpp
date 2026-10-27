@@ -231,6 +231,25 @@ namespace
 		return false;
 	}
 
+	// A forwarder is either "jmp [rip+disp32]" (FF 25 <disp32>) or "jmp rel32"
+	// (E9 <rel32>). Both are legitimate export-forwarding shapes present in
+	// ntdll. A hooked stub, an inline patch, or any export whose layout differs
+	// from the uniform stub stride breaks the interpolation assumption.
+	bool StubIsForwarder(const BYTE * Code, DWORD Available)
+	{
+		if (!Code || Available < 6)
+		{
+			return false;
+		}
+
+		if (Code[0] == 0xFF && Code[1] == 0x25)
+		{
+			return true;
+		}
+
+		return Code[0] == 0xE9;
+	}
+
 	bool BoundedRead(const BYTE * Base, DWORD Rva, SIZE_T Size, DWORD ImageSize)
 	{
 		if (!Base || !ImageSize)
@@ -833,19 +852,73 @@ DWORD SyscallResolveAll()
 				// The export table is ordered by address and the service numbers
 				// increase with it, so the distance between two healthy neighbours
 				// divided by their service-number gap gives the byte stride of one
-				// service slot. The missing entry's service number is then its
-				// offset from the lower neighbour in service slots.
-				if (span_rva > 0 && span_service > 0 && (span_rva % static_cast<DWORD>(span_service)) == 0)
+			// service slot. The missing entry's service number is then its
+			// offset from the lower neighbour in service slots.
+
+			// Before trusting the stride, confirm the uniform-stub assumption holds:
+			// every export whose function RVA falls strictly between the two healthy
+			// neighbours must itself be a healthy stub. A forwarder thunk (FF 25 / E9)
+			// occupies fewer bytes than the uniform stride and so breaks the stride
+			// math (verified on ntdll 10.0.26100.9549: 3 of 488 considered ranges
+			// contained a forwarder, 2 of which were stride-broken), so forwarders are
+			// refused rather than accepted. A hooked stub, an inline patch, or any
+			// export with a different layout also breaks the stride; refuse to
+			// interpolate and leave the SSN unset (kServiceUnknown) so the wrapper
+			// fails loudly on use rather than calling the wrong syscall.
+			DWORD offending_rva = 0;
+			bool intervening_uniform = true;
+			for (DWORD k = 0; k < Export->NumberOfFunctions; ++k)
+			{
+				const DWORD mid_rva = Functions[k];
+				if (mid_rva <= Lower->Rva || mid_rva >= Upper->Rva)
 				{
-					const DWORD stride_bytes = span_rva / static_cast<DWORD>(span_service);
-					const DWORD offset_calls = (Rva - Lower->Rva) / stride_bytes;
-					const int Reconstructed = static_cast<int>(Lower->Service) + static_cast<int>(offset_calls);
-					if (Reconstructed > 0 && Reconstructed <= 0xFFFF)
-					{
-						g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
-						g_Resolution[i].Reconstructed = true;
-						SC_LOG_INFO("Recovered %s Via SSN 0x%04X + %u | Distance: 0x%X Bytes | Stride %u Bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
-					}
+					continue;
+				}
+
+				// An intervening export that cannot be read is refused rather than
+				// silently skipped: an unreadable RVA between two healthy endpoints
+				// is exactly the case that breaks the stride assumption.
+				if (!BoundedRead(Ntdll, mid_rva, kStubProbeSize, ImageSize))
+				{
+					intervening_uniform = false;
+					offending_rva = mid_rva;
+					break;
+				}
+
+				DWORD mid_service = 0;
+				if (!StubLooksHealthy(Ntdll + mid_rva, ImageSize - mid_rva, mid_service))
+				{
+					intervening_uniform = false;
+					offending_rva = mid_rva;
+					break;
+				}
+			}
+
+			if (span_rva > 0 && span_service > 0 && (span_rva % static_cast<DWORD>(span_service)) == 0)
+			{
+				if (!intervening_uniform)
+				{
+					g_Resolution[i].Reconstructed = false;
+					// Retain StubIsForwarder for the log: it tells the operator whether
+					// the offending export is a forwarder (FF 25 / E9), which is the
+					// common stride-breaking case on recent ntdll.
+					const bool offending_is_forwarder =
+						StubIsForwarder(Ntdll + offending_rva, ImageSize - offending_rva);
+					SC_LOG_INFO("Refusing Interpolation For %s: An Intervening Export At 0x%X Is Not A Healthy Stub (%s); Left Unresolvable",
+						kSyscallNames[i], offending_rva,
+						offending_is_forwarder ? "a forwarder" : "not a forwarder");
+					break;
+				}
+
+				const DWORD stride_bytes = span_rva / static_cast<DWORD>(span_service);
+				const DWORD offset_calls = (Rva - Lower->Rva) / stride_bytes;
+				const int Reconstructed = static_cast<int>(Lower->Service) + static_cast<int>(offset_calls);
+				if (Reconstructed > 0 && Reconstructed <= 0xFFFF)
+				{
+					g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
+					g_Resolution[i].Reconstructed = true;
+					SC_LOG_INFO("Recovered %s Via SSN 0x%04X + %u | Distance: 0x%X Bytes | Stride %u Bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
+				}
 				}
 			}
 

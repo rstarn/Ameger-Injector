@@ -1067,6 +1067,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		LOG(1, "[ManualMap] [x] DllMain: Result = 0 (False) | Win32 = 0x%08X | Cycles = %llu -- Payload Refused To Initialize\n",
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
+		LOG(1, "[ManualMap] DllMain: LastError = 0x%08X | Before = 0x%08X | Set By Payload = %s\n",
+			data.ExecTelemetry.DllMainLastWin32Error,
+			data.ExecTelemetry.DllMainLastWin32ErrorBefore,
+			(data.ExecTelemetry.DllMainLastWin32Error != data.ExecTelemetry.DllMainLastWin32ErrorBefore) ? "yes" : "no");
 	}
 	else
 	{
@@ -2720,6 +2724,18 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPI
 
 	f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + MMI_EntryPoint(pData));
 	const unsigned __int64 dll_t0 = __rdtsc();
+	DWORD dll_win32_before = 0;
+	{
+		const DWORD teb_last_error = pData->NtOffsets.TebLastErrorValue;
+		if (teb_last_error && teb_last_error + sizeof(DWORD) <= 0x2000)
+		{
+			const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x30));
+			if (teb)
+			{
+				dll_win32_before = *ReCa<DWORD *>(ReCa<BYTE *>(teb) + teb_last_error);
+			}
+		}
+	}
 	const BOOL dll_result = DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_ATTACH, nullptr);
 	const unsigned __int64 dll_t1 = __rdtsc();
 	// The payload's DllMain is called with the image base as its instance
@@ -2740,6 +2756,7 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPI
 	}
 	pData->ExecTelemetry.DllMainResult = dll_result;
 	pData->ExecTelemetry.DllMainLastWin32Error = dll_win32;
+	pData->ExecTelemetry.DllMainLastWin32ErrorBefore = dll_win32_before;
 	pData->ExecTelemetry.DllMainCyclesDelta = (dll_t1 >= dll_t0) ? (dll_t1 - dll_t0) : 0;
 	if (!dll_result)
 	{

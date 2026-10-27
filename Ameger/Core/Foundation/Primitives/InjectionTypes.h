@@ -172,6 +172,7 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	ULONG LoaderLockState = 0;
 	BOOL DllMainResult = FALSE;
 	DWORD DllMainLastWin32Error = 0;
+	DWORD DllMainLastWin32ErrorBefore = 0;
 	DWORD TlsCallbacksConfigured = 0;
 	DWORD TlsCallbacksExecuted = 0;
 	DWORD TlsCallbacksFailed = 0;
@@ -213,9 +214,14 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	// logging never raises the exception at all and never reaches the
 	// target's VEH chain.
 	DWORD DebugPrintVehInstalled = 0;
+	// Second reserved word: DllMainLastWin32ErrorBefore made the trailing
+	// four-byte group an odd word count, which would force 4 bytes of
+	// trailing padding; this word keeps the group even so the block stays
+	// padding-free and can still be published a word at a time.
+	DWORD Reserved2 = 0;
 };
 
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 26 * sizeof(DWORD),
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 28 * sizeof(DWORD),
 	"the telemetry block must have no padding, because it is published a word at a time");
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0,
 	"the telemetry block is published a word at a time, so its size must be a whole number of words");
