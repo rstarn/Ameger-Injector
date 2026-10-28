@@ -75,7 +75,7 @@ if ($Check -eq "Embed") {
         $pos = $found + 4
     }
 
-    Write-Ok ("Embedded Runtime Hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " Dwords In Order (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Embedded Runtime Hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " Dwords In Order")
     exit 0
 }
 
@@ -110,7 +110,7 @@ if ($Check -eq "PayloadHash") {
         Write-Fail ("Payload Hash Mismatch: Expected " + $pin + ", Got " + $actual + " (" + (Get-Painted $script:C_Dim $Path) + ")")
         exit 1
     }
-    Write-Ok ("Payload SHA-256 = " + (Get-Painted $script:C_Green $actual) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Payload SHA-256 = " + (Get-Painted $script:C_Green $actual))
     exit 0
 }
 
@@ -166,7 +166,7 @@ if ($Check -eq "DeployedPin") {
         Write-Fail ("Deployed Config Pin Mismatch: Config Pins " + $pin + ", Deployed Payload Is " + $ExpectPin + " (" + (Get-Painted $script:C_Dim $Path) + ")")
         exit 1
     }
-    Write-Ok ("Deployed Config Pin = " + (Get-Painted $script:C_Green $pin) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Deployed Config Pin = " + (Get-Painted $script:C_Green $pin))
     exit 0
 }
 
@@ -215,7 +215,7 @@ if ($Check -eq "ConfigKeys") {
             exit 1
         }
     }
-    Write-Ok ("Deployed Config Carries Per-Build Keys: PayloadName, RuntimeName, ExportMap, DllDir (" + (Get-Painted $script:C_Dim $Path) + ")")
+    Write-Ok ("Deployed Config Carries Per-Build Keys: PayloadName, RuntimeName, ExportMap, DllDir")
     exit 0
 }
 
@@ -234,5 +234,5 @@ for ($i = 0; $i -lt $expected.Length; $i++) {
         exit 1
     }
 }
-Write-Ok ("Encrypted Config Magic = " + (Get-Painted $script:C_Green $Magic) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+Write-Ok ("Encrypted Config Magic = " + (Get-Painted $script:C_Green $Magic))
 exit 0

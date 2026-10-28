@@ -88,19 +88,13 @@ if ($Check -eq "Stub") {
     }
     Write-Ok ("Syscall Stub Prologues Present (A=$pA B=$pB)")
 
-    $tI = Get-ByteMatches $data $tailIndirect
-    if ($tI -lt 1) {
-        Write-Fail "Syscall Stub Indirect Tail (FF 25) Missing; The Pool Is Not Using Gadget Indirection"
-        exit 1
-    }
-    Write-Ok ("Syscall Stub Indirect Tail Present ($tI Match)")
-
     $movE = Get-ByteMatches $data $movEaxImm32
     if ($movE -lt 1) {
         Write-Fail "mov eax, imm32 Opcode (B8) Missing; The SSN Load Would Be Inert"
         exit 1
     }
     Write-Ok ("Syscall SSN Load Opcode Present ($movE Match)")
+    Write-Host ""
 
     $prologueCount = Get-ByteMatches $data $healthyPrologue
     if ($prologueCount -lt 1) {
@@ -109,9 +103,17 @@ if ($Check -eq "Stub") {
     }
     Write-Ok ("Resolver Prologue Constant Present (" + $prologueCount + " Match)")
 
+    $tI = Get-ByteMatches $data $tailIndirect
+    if ($tI -lt 1) {
+        Write-Fail "Syscall Stub Indirect Tail (FF 25) Missing; The Pool Is Not Using Gadget Indirection"
+        exit 1
+    }
+    Write-Ok ("Syscall Stub Indirect Tail Present ($tI Match)")
+
     $syscallOp = [int[]](0x0F, 0x05)
     $opCount = Get-ByteMatches $data $syscallOp
     Write-Ok ("Syscall Opcode Resolver Probe Present (" + $opCount + " Match)")
+    Write-Host ""
 }
 
 if ($Check -eq "Payload") {
@@ -128,6 +130,7 @@ if ($Check -eq "Payload") {
         exit 1
     }
     Write-Ok "Raw-Payload Transfer Path Removed (Keystream Constants Absent)"
+    Write-Host ""
 
     # Positive attestation for the split: the host-map log marker, the per-stage
     # timing marker, and the completion-event marker all live in the new code.
@@ -168,8 +171,9 @@ if ($Check -eq "Stealth") {
         Write-Host ("  [*] W^X Static Heuristic: " + $rwx + " Adjacent mov r9d,0x40 Sequence(s); Source Review Confirms No PAGE_EXECUTE_READWRITE Protect Request. Live Verifier Is Authoritative.")
     }
     Write-Ok ("W^X Protect Sequences Present (RX = " + $rx + " | NOACCESS = " + $na + " | RWX = " + $rwx + ")")
+    Write-Host ""
 
-    Write-Host ("  " + (Get-Painted $script:C_Dim "Static Verification Only; Live Properties Are Checked By The Runtime Verify Tool"))
+    Write-Host ("  " + (Get-Painted $script:C_Dim "Static Verification Only; Live Properties Are Checked By The Runtime Verify Tool."))
 }
 
 if ($Check -eq "MmapSections") {
@@ -257,7 +261,7 @@ if ($Check -eq "MmapSections") {
         Write-Fail "Merged .code Section Is Writable; W^X Regression In The Staged Image"
         exit 1
     }
-    Write-Ok ("Merged Shell Section Is Execute+Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")
+    Write-Ok ("Merged Shell Section Is Execute + Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")
 }
 
 exit 0

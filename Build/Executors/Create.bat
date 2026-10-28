@@ -43,8 +43,8 @@ set "PAYLOAD_ASSET=%ROOT%\Assets\DLL\Jlov.dll"
 set "PAYLOAD_PROTECTED=%ROOT%\Assets\DLL\Jlov.protected.dll"
 set "PAYLOAD_DEST="
 set "RUNTIME_STOCK_DLL=%DEPS_RELEASE%\Ameger Injector - x64.dll"
-set "LIBRARY_PROJ=%ROOT%\Interface\Template\AmegerInjector.vcxproj"
-set "INTERFACE_PROJ=%ROOT%\Interface\Template\AmegerInjectorInterface.vcxproj"
+set "LIBRARY_PROJ=%ROOT%\Interface\Template\Injector.vcxproj"
+set "INTERFACE_PROJ=%ROOT%\Interface\Template\InjectorInterface.vcxproj"
 set "OUT64=%OUT_ROOT%"
 set "LIBRARY64_OBJ=%CACHE_RUNTIME%"
 set "INTERFACE64_OBJ=%CACHE_INTERFACE%"
@@ -84,7 +84,6 @@ if errorlevel 1 goto :clean_error
 call :prepare_cache
 if errorlevel 1 goto :clean_error
 echo   %C_GREEN%[+]%C_RESET% Clean Layout Prepared In %C_GREEN%%RELEASE_CACHE%%C_RESET%.
-echo.
 echo.
 call :generate_names
 if errorlevel 1 goto :names_error
@@ -157,6 +156,7 @@ REM   The same applies to :verify before BuildPE.ps1 runs. Any
 REM   step that locates a section by name must run before the
 REM   first mutation.
 REM ========================================================
+echo.
 call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
 if errorlevel 1 goto :verify_error
 echo.
@@ -218,6 +218,7 @@ echo.
 echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Deploying Release Binaries...
 echo.
 echo   %C_GREEN%[+]%C_RESET% Runtime Binaries Are In %C_GREEN%%OUT_ROOT%%C_RESET%.
+echo.
 call :deploy_payload
 if errorlevel 1 goto :payload_error
 call :protect_config
@@ -239,16 +240,20 @@ if not exist "%INTERFACE_EXE%" (
 )
 call :verify "%INTERFACE_EXE%" "x64 Interface"
 if errorlevel 1 goto :verify_error
+echo.
 call :verify_embed
 if errorlevel 1 goto :verify_content_error
 call :verify_config_magic
 if errorlevel 1 goto :verify_content_error
+echo.
 call :verify_deployed_pin
 if errorlevel 1 goto :verify_content_error
 call :verify_config_keys
 if errorlevel 1 goto :verify_content_error
+echo.
 call :verify "%RUNTIME_DLL%" "x64 runtime"
 if errorlevel 1 goto :verify_error
+echo.
 call :verify_syscall_stub
 if errorlevel 1 goto :verify_content_error
 call :verify_syscall_payload
@@ -268,9 +273,7 @@ call :remove_import_artifacts "%DLL_DIR%"
 if errorlevel 1 goto :cleanup_error
 call :sweep_artifacts
 if errorlevel 1 goto :cleanup_error
-echo.
 echo   %C_GREEN%[+]%C_RESET% Cache Groups = Runtime, Injector.
-echo.
 echo.
 
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :refuse_unmutated
@@ -288,8 +291,8 @@ echo.
 echo Build Completed Successfully.
 echo.
 echo Cache = %C_GREEN%%RELEASE_CACHE%%C_RESET%
-echo Payload = %C_GREEN%%PAYLOAD_DEST%%C_RESET%
 echo Interface x64 = %C_GREEN%%INTERFACE_EXE%%C_RESET%
+echo Payload = %C_GREEN%%PAYLOAD_DEST%%C_RESET%
 echo Runtime DLL = %C_GREEN%%RUNTIME_DLL%%C_RESET%
 
 echo.
@@ -378,10 +381,10 @@ if /i "%EXE_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%DLLDIR_NAME%"=="%CONFIG_NAME%" exit /b 1
 echo   %C_GREEN%[+]%C_RESET% PayloadName = %C_GREEN%%PAYLOAD_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% RuntimeName = %C_GREEN%%RUNTIME_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% LogName     = %C_GREEN%%CONFIG_NAME%.log%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigMagic = %C_GREEN%%CONFIG_MAGIC%%C_RESET%
 echo.
 exit /b 0
@@ -407,6 +410,7 @@ if not defined EXPORT_MAP (
   echo   %C_RED%Error: Runtime Export Rename Produced No Map; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
+echo.
 echo   %C_GREEN%[+]%C_RESET% Runtime Exports Renamed (Map Captured).
 exit /b 0
 
@@ -564,6 +568,7 @@ if errorlevel 1 (
   echo   %C_RED%Error: Config Encryption Failed; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
+echo.
 echo   %C_GREEN%[+]%C_RESET% Config Encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 exit /b 0
 
@@ -623,6 +628,7 @@ if not defined PAYLOAD_IS_PREPARED (
   echo   %C_YELLOW%[+]%C_RESET% Prepared payload deployed; master pin left pristine.%C_RESET%
 )
 echo   %C_GREEN%[+]%C_RESET% Payload deployed: %C_GREEN%%PAYLOAD_DEST%%C_RESET%
+echo.
 exit /b 0
 
 :write_section_manifest

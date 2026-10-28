@@ -56,8 +56,8 @@ if not exist "%PROTECT_EXE%" (
 echo [%C_GREEN%1%C_RESET%/%C_GREEN%3%C_RESET%] Preparing...
 echo.
 echo   %C_GREEN%[+]%C_RESET% Release = %C_GREEN%%OUT_ROOT%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% Stages = %STAGE_DIR%
 echo   %C_GREEN%[+]%C_RESET% Runtime =   %C_YELLOW%Skipped By Design (Manual-Mapped)%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Stages = %STAGE_DIR%
 echo.
 echo.
 
@@ -105,11 +105,11 @@ if /i "%EXE_RESULT%"=="failed" goto :stage_failed
 echo Protection Completed Successfully.
 echo.
 if defined PAYLOAD_DEST (
-  echo   Payload      = %C_GREEN%%PAYLOAD_DEST%%PAYLOAD_NAME%%C_RESET%
+  echo   Payload       = %C_GREEN%%PAYLOAD_DEST%%PAYLOAD_NAME%%C_RESET%
 ) else if defined PAYLOAD_NAME (
-  echo   Payload      = %C_GREEN%%OUT_ROOT%\%PAYLOAD_NAME%%C_RESET%
+  echo   Payload       = %C_GREEN%%OUT_ROOT%\%PAYLOAD_NAME%%C_RESET%
 ) else (
-  echo   Payload      = %C_YELLOW%Deployed Name State Unavailable; See The Payload Stage Above%C_RESET%
+  echo   Payload       = %C_YELLOW%Deployed Name State Unavailable; See The Payload Stage Above%C_RESET%
 )
 if defined EXE_NAME (
   echo   Interface x64 = %C_GREEN%%OUT_ROOT%\%EXE_NAME%.exe%C_RESET%

@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "Launcher.h"
+#include "../../Ameger/Kernel/Client.h"
 
 namespace
 {
@@ -20,6 +21,7 @@ namespace
     constexpr wchar_t kChildMarker[] = L"--ameger-child";
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
     constexpr wchar_t kParentPathMarker[] = L"--ameger-parent-path=";
+    constexpr wchar_t kResetMarker[] = L"--reset";
 
     class StdoutParkGuard
     {
@@ -5445,6 +5447,88 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         }
     }
 
+    // --reset: ask a mapped driver to unmap itself (free image, driver object,
+    // and the pool anchor block), then exit without running the injection wizard.
+    {
+        const std::wstring cmd = GetCommandLineW();
+        if (cmd.find(kResetMarker) != std::wstring::npos)
+        {
+            Kernel::KernelClient resetClient;
+            const bool ok = resetClient.Reset();
+            if (ok)
+            {
+                LOG(0, L"%ls[*]%ls [Base] Reset Complete\n", kGreen, kReset);
+            }
+            else
+            {
+                LOG(0, L"%ls[-]%ls [Base] Reset Failed\n", kRed, kReset);
+            }
+            return ok ? 0 : 1;
+        }
+    }
+
+    // The kernel client is initialized automatically (no --kernel gate) right after
+    // the launcher is elevated and the config is loaded: load the offsets, map and
+    // start Base.sys through the mapper engine (linked from Mapper.lib),
+    // ping the driver over the shared ring buffer, then shut it down. The run then
+    // continues into the injection wizard in user-mode.
+    {
+        const std::wstring kDriverSys  = L"D:\\Ameger\\Mapper\\Base\\Release\\Base.sys";
+        const std::wstring kOffsetsIni = L"D:\\Ameger\\Mapper\\Build\\Release\\Offsets.ini";
+
+        // 1. Elevation gate. The launcher ships with RequireAdministrator, so verify
+        //    the token is elevated before touching kernel memory.
+        bool elevated = false;
+        {
+            HANDLE token = nullptr;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+            {
+                TOKEN_ELEVATION elevation{};
+                DWORD returned = 0;
+                if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned))
+                {
+                    elevated = elevation.TokenIsElevated != 0;
+                }
+                CloseHandle(token);
+            }
+        }
+        if (!elevated)
+        {
+            PrintError(L"The kernel client requires an elevated launcher; re-run elevated.");
+        }
+
+        // 2. Instantiate the kernel client.
+        Kernel::KernelClient client;
+
+        // 3. Map and start the driver through the linked mapper engine. Initialize
+        //    loads the offsets itself.
+        LOG(0, L"%ls[*]%ls [Base] Initializing...\n", kGreen, kReset);
+        const bool init_ok = client.Initialize(kDriverSys, kOffsetsIni);
+
+        if (!init_ok)
+        {
+            LOG(0, L"%ls[-]%ls [Base] Kernel Client Failed To Initialize\n", kRed, kReset);
+            LOG(0, L"%ls[-]%ls [Base] Provider Load Failed (NTSTATUS = 0x%08X)\n", kRed, kReset,
+                client.GetLastStatus());
+            // Continue in user-mode only: the wizard still runs, the kernel path is skipped.
+        }
+        else
+        {
+            LOG(0, L"%ls[*]%ls [Base] Mapped At Base 0x%016llX\n", kGreen, kReset,
+                static_cast<unsigned long long>(client.GetDriverBase()));
+
+            // 4. Ping the driver over the shared ring buffer; measure the heartbeat.
+            client.Ping();
+            LOG(0, L"%ls[*]%ls [Base] Ping Sent. Heartbeat = %u, Status = 0x%08X\n",
+                kGreen, kReset, client.GetHeartbeat(), client.GetLastCommandStatus());
+
+            // 5. Ask the driver to tear down and release both user-mode buffers.
+            const bool driver_confirmed = client.Shutdown();
+            LOG(0, L"%ls[*]%ls [Base] Driver Confirmed Shutdown: %s\n",
+                kGreen, kReset, driver_confirmed ? L"True" : L"False");
+        }
+    }
+
     Runtime runtime;
     int result = 1;
     try
@@ -5546,7 +5630,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     return result;
 }
-
-
 
 

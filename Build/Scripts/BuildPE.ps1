@@ -476,6 +476,7 @@ try {
                 if ($r -like "*Skipped*") { $tint = $script:C_Yellow; $skipped++ }
                 else { $applied++ }
                 Write-Host ("    " + (Get-StepCounter $s.N $total) + " " + (Get-Painted $tint $r))
+                if ($s.N -eq 2 -or $s.N -eq 5 -or $s.N -eq 7 -or $s.N -eq 9) { Write-Host "" }
             } catch {
                 $failedSteps++
                 $failed = $true

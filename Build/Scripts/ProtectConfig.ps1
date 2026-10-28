@@ -196,21 +196,23 @@ if ($pairs.Count -gt 0) {
     $before = $text
     $text = Set-IniKeys $text $pairs
     if ($text -ne $before) { $modified = $true }
-    foreach ($k in @("PayloadName", "RuntimeName", "ExportMap", "DllDir")) {
+    foreach ($k in @("RuntimeName", "PayloadName", "ExportMap", "DllDir")) {
         if ($pairs.ContainsKey($k)) {
             $val = $pairs[$k]
             if ($k -eq "ExportMap") {
 
                 $entries = $val -split ','
-                Write-Host ("ProtectConfig: {0} =" -f $k.PadRight(12))
+                Write-Host ("ProtectConfig: {0} =" -f $k.PadRight(13))
                 foreach ($entry in $entries) {
                     $parts = $entry -split '='
                     if ($parts.Count -eq 2) {
                         Write-Host ("  {0} = {1}" -f $parts[0].PadRight(20), ("" + $parts[1]))
                     }
                 }
+                Write-Host ""
             } else {
-                Write-Host ("ProtectConfig: {0} = {1}" -f $k.PadRight(12), ("" + $val))
+                Write-Host ("ProtectConfig: {0} = {1}" -f $k.PadRight(13), ("" + $val))
+                if ($k -eq "PayloadName") { Write-Host "" }
             }
         }
     }

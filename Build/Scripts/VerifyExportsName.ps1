@@ -59,5 +59,5 @@ if ($found.Count -gt 0) {
     Write-Host "FAIL: stable export names present: $($found -join ', ')"
     exit 1
 }
-Write-Host "OK: $numNames exports, no stable Core* names"
+Write-Host "  OK: $numNames exports, no stable Core names"
 exit 0
