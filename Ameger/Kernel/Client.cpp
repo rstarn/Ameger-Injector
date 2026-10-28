@@ -124,7 +124,7 @@ namespace Kernel
         LOG(0, L"[Base] Attempting Reconnect To Existing Driver...\n");
         if (TryReconnect())
         {
-            LOG(0, L"[Base] Reconnect Succeeded (No Remap)\n");
+            LOG(0, L"[Base] Reconnected Successfully\n");
             return true;
         }
         LOG(0, L"[Base] No Existing Driver Found; Mapping Fresh\n");
