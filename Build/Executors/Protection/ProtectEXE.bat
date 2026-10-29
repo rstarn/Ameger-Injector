@@ -191,12 +191,6 @@ if not defined BASELINE (
   echo   %C_RED%         Refusing To Guess Whether The Launcher Is Already Protected.%C_RESET%
   goto :vmp_check_cleanup
 )
-REM The VMProtect probe is a PowerShell script carried as base64 so that batch never has to parse a
-REM stray parenthesis from the PowerShell grammar. certutil decodes it to a unique temp .ps1, which is
-REM run and then removed. The probe reads the target's PE section table and reports any section absent
-REM from the recorded baseline as a VMP_PRESENT line. VMP_PROBE_OK is set only when the probe ran and
-REM produced a readable result; callers must treat an unset VMP_PROBE_OK as "unknown", never as
-REM "not protected", or a broken probe would silently re-virtualize an already-protected binary.
 set "VMP_CHK=%TEMP%\amg_vmpchk_%RANDOM%%RANDOM%"
 set "VMP_CHK_B64=%VMP_CHK%.b64"
 set "VMP_CHK_PS1=%VMP_CHK%.ps1"

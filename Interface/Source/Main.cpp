@@ -1,7 +1,6 @@
 #include "PCH.h"
 
 #include "Launcher.h"
-#include "../../Ameger/Kernel/Client.h"
 
 namespace
 {
@@ -14,14 +13,13 @@ namespace
 
     constexpr int kMaxLaunchAttempts = 3;
     constexpr int kResultRetryable = 3;
-    // The payload mapped successfully but the verification gate did not run or
-    // did not pass. This is not a load failure and must never be retried: a
-    // retry would inject a second copy into the same target.
+
+
+
     constexpr int kResultMappedUnverified = 4;
     constexpr wchar_t kChildMarker[] = L"--ameger-child";
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
     constexpr wchar_t kParentPathMarker[] = L"--ameger-parent-path=";
-    constexpr wchar_t kResetMarker[] = L"--reset";
 
     class StdoutParkGuard
     {
@@ -186,28 +184,28 @@ namespace
 
     bool FileExists(const std::wstring & path);
 
-    // Whether the run transcript is removed once a run has succeeded. The
-    // default is to keep it: the record of what a successful load did is the
-    // one worth having. The setting comes from the configuration file, because
-    // the launcher runs elevated and an elevated process does not inherit its
-    // parent's environment.
+
+
+
+
+
     bool g_DiscardResultLogOnSuccess = false;
 
-    // Whether this run was a test run. It is recorded so that the launcher
-    // can mark the run as a test run in the places that are outside the
-    // wizard, such as the final notification.
+
+
+
     bool g_TestMode = false;
 
-    // Whether the payload was actually mapped into the target. The exit code
-    // is not the same thing: a run that the operator cancelled also exits
-    // with zero, and a cancelled run has nothing to show for itself, so its
-    // transcript must not be treated as the record of a successful load.
+
+
+
+
     bool g_LoadCompleted = false;
 
-    // Whether the operator asked for the "begin load?" confirmation to be
-    // answered for them. It comes from the configuration file, because the
-    // launcher runs elevated and an elevated process does not inherit its
-    // parent's environment.
+
+
+
+
     bool g_AutoConfirm = false;
 
     bool DiscardResultLogOnSuccess()
@@ -217,8 +215,8 @@ namespace
             return true;
         }
         wchar_t buffer[8] = {};
-        // The decrypted name is kept as an object, not as a pointer into it:
-        // the temporary's destructor wipes its buffer when it goes away.
+
+
         const auto name = XOR_STR_W(L"AMEGER_DISCARD_RESULT_LOG");
         const DWORD got = GetEnvironmentVariableW(name.get(), buffer, 4);
         return got == 1 && buffer[0] == L'1';
@@ -336,10 +334,10 @@ namespace
             }
             rest = (i < cmd.size()) ? cmd.substr(i) : std::wstring();
         }
-        // Each pass removes the markers this launcher owns from the argument
-        // string, and the pass repeats until a pass changes nothing. The
-        // length is what decides whether anything was removed, so no separate
-        // "did I erase something" flag is needed.
+
+
+
+
         for (;;)
         {
             const size_t before = rest.size();
@@ -574,11 +572,11 @@ namespace
         return true;
     }
 
-    // Whether a file is one of the randomly named copies this tool makes.
-    // The stem is what identifies it: MakeRandomExeFileName produces eight to
-    // twelve letters and digits followed by the extension, and the first
-    // character is always a letter. The length is measured on the stem
-    // because the extension is not part of what makes the name random.
+
+
+
+
+
     bool IsDeletableSelfCopy(const std::wstring & own_path, const std::wstring & candidate)
     {
         const size_t own_slash = own_path.find_last_of(L"\\/");
@@ -626,9 +624,9 @@ namespace
         return true;
     }
 
-    // Removes the randomly named copy this process is running from. Only a
-    // process that was launched with the child marker is a copy this tool
-    // made; the operator's own file is never touched.
+
+
+
     void DeleteOwnSelfCopyIfChild()
     {
         if (!HasMarker(GetCommandLineW(), kChildMarker))
@@ -646,8 +644,8 @@ namespace
             return;
         }
 
-        // The image file is opened with delete sharing, so this marks the
-        // copy for removal while the process is still running.
+
+
         if (DeleteFileW(own.c_str()))
         {
             LOG(0, L"  %ls[+]%ls The Temporary Copy Was Removed.\n", kGreen, kReset);
@@ -1251,9 +1249,9 @@ namespace
         return true;
     }
 
-    // A size that may be zero, which means "no limit". A malformed value
-    // leaves the existing setting alone rather than silently removing a
-    // limit that was there on purpose.
+
+
+
     size_t ParseConfigSize(const std::wstring & text, size_t current)
     {
         unsigned long long parsed = 0;
@@ -1323,11 +1321,11 @@ namespace
 
     ConfirmationResult ConfirmBeforeDetection()
     {
-        // The confirmation is skipped when the operator asked for it to be.
-        // The request comes from the configuration file as well as from the
-        // environment, because the launcher runs elevated and an elevated
-        // process does not inherit its parent's environment: an environment
-        // variable set by the operator would never be seen here.
+
+
+
+
+
         wchar_t auto_confirm[8] = {};
         if (GetEnvironmentVariableW(L"AMEGER_AUTO_CONFIRM", auto_confirm, 8) == 1 && auto_confirm[0] == L'1')
         {
@@ -1342,13 +1340,13 @@ namespace
             return ConfirmationResult::Proceed;
         }
 
-        // A2: two confirmation channels, chosen by what this process actually
-        // has. The polymorphic child is created with CREATE_NO_WINDOW, so in
-        // the normal flow there is no console at all and confirmation reads
-        // the session async key state - the console-less mechanism this
-        // launcher was built on. When a console is attached (a direct,
-        // non-polymorphic launch), the console input buffer is read instead:
-        // scan codes in, no session key-state reads out.
+
+
+
+
+
+
+
         const bool have_console = InterfaceConsolePresent();
 
         if (have_console)
@@ -1364,8 +1362,8 @@ namespace
 
         if (have_console)
         {
-            // Extended keys arrive from _getch as a 0 or 0xE0 prefix followed
-            // by the scan code; HOME is 0x47 and END is 0x4F.
+
+
             for (;;)
             {
                 while (_kbhit())
@@ -1629,13 +1627,13 @@ wchar_t name[48]{};
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50);
     static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Threads) == 0x100);
 
-    // Advisory donor pre-selection for the sponsor pre-open. This is the
-    // launcher-side copy of the runtime's donor policy (FindHijackThread and
-    // FindHijackThreadToolhelp in Ameger/Execution/ThreadHijacking.cpp):
-    // whatever it picks is re-validated by the runtime before use, but the
-    // two implementations express the same preference order - running before
-    // safe-wait, loader workers excluded, exe-start threads preferred - and
-    // must be moved together.
+
+
+
+
+
+
+
     DWORD PickHijackThreadTid(DWORD target_pid, DWORD exclude_tid)
     {
         if (!target_pid)
@@ -1705,11 +1703,11 @@ wchar_t name[48]{};
                     }
                     return WAIT_REASON_SAFE::IsSafe(reason);
                 };
-                // B2: within the safe waits, the event-driven reasons are
-                // preferred over the delay reasons. A delay wait only wakes
-                // when its timer expires and the remaining time is unknowable
-                // from outside, so it is taken only when no event-driven
-                // candidate qualified in the same walk.
+
+
+
+
+
                 auto score_walk = [&](DWORD avoid_tid, bool allow_wait) -> bool
                 {
                     bool found = false;
@@ -1907,11 +1905,11 @@ wchar_t name[48]{};
         return _wcsicmp(value.c_str(), expected) == 0;
     }
 
-    // Locates the encrypted configuration beside the executable. The directory
-    // is scanned once per run: the result cannot change while the process is
-    // alive, and every caller reaching the same answer by re-walking the
-    // directory would only widen the window in which the launcher and the
-    // transcript could disagree about which file was used.
+
+
+
+
+
     std::wstring ConfigurationPathUncached()
     {
         const std::wstring directory = ExecutableDirectory();
@@ -3045,10 +3043,10 @@ wchar_t name[48]{};
         return name;
     }
 
-    // Every process running under the given image name. The first name match
-    // is not always the one that can be written to: several modern
-    // applications run a helper under the same image name, and a helper that
-    // has not published its loader list cannot be mapped into.
+
+
+
+
     std::vector<DWORD> FindProcesses(const std::wstring & requested_name)
     {
         std::vector<DWORD> found;
@@ -3076,11 +3074,11 @@ wchar_t name[48]{};
         return found;
     }
 
-    // B4: the working set of every process, from one system snapshot and with
-    // no handle opened on any candidate. The old probe opened
-    // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ on every same-named
-    // candidate - a handle-table entry an onlooker could count - to ask a
-    // question the kernel answers for the whole system in a single query.
+
+
+
+
+
     bool SnapshotWorkingSets(std::vector<std::pair<DWORD, SIZE_T>> & out)
     {
         out.clear();
@@ -3142,12 +3140,12 @@ wchar_t name[48]{};
         return !out.empty();
     }
 
-    // The process under the given image name that can actually be written to.
-    // A candidate whose loader list has not been published is skipped, so the
-    // launcher does not pick a helper process and fail later with a
-    // confusing error. Among the candidates that qualify, the one with the
-    // largest working set is taken, which is the main instance rather than
-    // one of the helpers that run beside it.
+
+
+
+
+
+
     DWORD FindProcess(const std::wstring & requested_name)
     {
         const std::vector<DWORD> candidates = FindProcesses(requested_name);
@@ -3202,17 +3200,17 @@ wchar_t name[48]{};
             return best;
         }
 
-        // No candidate could be shown to have a loader list. The first one is
-        // returned anyway so the failure is the injection's own diagnostic and
-        // not a silent "no such process": an unreadable PEB is not evidence
-        // that the process cannot be written to.
+
+
+
+
         return candidates.front();
     }
 
-    // Re-checks that the process the operator confirmed is still the process
-    // that is about to be written to. A name-based target is resolved again
-    // here, and a game that exits and is relaunched between the confirmation
-    // and the load would otherwise be silently swapped for its replacement.
+
+
+
+
     bool RefreshTarget(TargetSelection & target)
     {
         if (target.by_name)
@@ -3257,9 +3255,9 @@ wchar_t name[48]{};
         }
         if (target.identity.pid == 0)
         {
-            // A target that was named by its process identifier rather than by
-            // its image name has no earlier observation to compare against.
-            // This one is taken now and is what a later refresh checks.
+
+
+
             target.identity = current;
         }
         else if (!target.identity.Matches(current))
@@ -3760,12 +3758,12 @@ DWORD BuildFlags(const WizardConfig & config)
         else if (code == SR_ERR_TARGET_EXITED)
         {
             LOG(0, L"Reason: The Target Process Exited During Loading.\n");
-            // The runtime reports the target's own exit code as the advanced
-            // code on this path. An exit code equal to a debug-print
-            // exception is the measured signature of an OutputDebugString
-            // call that went unhandled on the hijacked thread's synthetic
-            // stack (2026-10-25: a bare notepad loading D3DCOMPILER_47 died
-            // with exactly 0x40010006 before the guard covered dependencies).
+
+
+
+
+
+
             if (adv_code == 0x40010006u || adv_code == 0x40010082u)
             {
                 LOG(0, L"  The Target Exited With DBG_PRINTEXCEPTION_C (0x%08X): An OutputDebugString Call Went\n",
@@ -3932,7 +3930,7 @@ DWORD BuildFlags(const WizardConfig & config)
         return true;
     }
 
-    // The window that is being hidden, and the process that owns it.
+
     struct HideWindowContext
     {
         DWORD pid = 0;
@@ -3951,12 +3949,12 @@ DWORD BuildFlags(const WizardConfig & config)
         return TRUE;
     }
 
-    // Hides the top level windows of a process.
-    //
-    // Starting the scratch target hidden is not enough on its own: several
-    // modern images start a broker that hands off to the real instance, and
-    // the real instance puts its own window up. The window belongs to the
-    // process that was actually selected, so that is the one that is hidden.
+
+
+
+
+
+
     void HideProcessWindows(DWORD pid)
     {
         if (!pid)
@@ -3968,15 +3966,15 @@ DWORD BuildFlags(const WizardConfig & config)
         EnumWindows(&HideWindowCallback, reinterpret_cast<LPARAM>(&context));
     }
 
-    // A scratch target that test mode started itself. It is closed when the
-    // run ends.
-    //
-    // Several modern images start a broker that hands off to the real
-    // instance and then exits, so the process that was started is often not
-    // the process that survives. The guard therefore records every instance
-    // of the image that existed before the start, and closes every instance
-    // that appeared after it. An instance the operator already had running is
-    // never touched, and nothing is left behind either way.
+
+
+
+
+
+
+
+
+
     class ScratchTargetGuard
     {
         std::vector<DWORD> m_Preexisting;
@@ -4000,10 +3998,10 @@ DWORD BuildFlags(const WizardConfig & config)
                 m_Process = nullptr;
             }
 
-            // The family is collected again here rather than at the start.
-            // Several modern images start a broker that hands off to the real
-            // instance afterwards, so the set of processes that belongs to this
-            // run is only known once the run is over.
+
+
+
+
             for (DWORD pid : FindProcesses(m_ImageName))
             {
                 if (std::find(m_Preexisting.begin(), m_Preexisting.end(), pid) != m_Preexisting.end())
@@ -4024,8 +4022,8 @@ DWORD BuildFlags(const WizardConfig & config)
         ScratchTargetGuard(const ScratchTargetGuard &) = delete;
         ScratchTargetGuard & operator=(const ScratchTargetGuard &) = delete;
 
-        // Starts the image when no instance of it is running. Returns false
-        // when one was already there, or when it could not be started.
+
+
         bool StartIfAbsent(const std::wstring & image_name, DWORD & pid_out)
         {
             pid_out = 0;
@@ -4037,7 +4035,7 @@ DWORD BuildFlags(const WizardConfig & config)
             m_Preexisting = FindProcesses(image_name);
             if (!m_Preexisting.empty())
             {
-                // The operator already had one open. It is not ours to close.
+
                 return false;
             }
 
@@ -4045,9 +4043,9 @@ DWORD BuildFlags(const WizardConfig & config)
                 ? image_name + L".exe"
                 : image_name;
 
-            // The image is resolved through the search path rather than
-            // handed to CreateProcess as a bare name, so the process that
-            // starts is the one the operator would have started.
+
+
+
             wchar_t resolved[MAX_PATH * 2]{};
             const DWORD found = SearchPathW(nullptr, file.c_str(), nullptr,
                 static_cast<DWORD>(std::size(resolved)), resolved, nullptr);
@@ -4058,18 +4056,18 @@ DWORD BuildFlags(const WizardConfig & config)
 
             STARTUPINFOW startup{};
             startup.cb = sizeof(startup);
-            // The scratch target is started hidden. A test run is not
-            // something that should put a window on the operator's desktop.
-            // Hiding the window does not affect the target's loader list.
+
+
+
             startup.dwFlags = STARTF_USESHOWWINDOW;
             startup.wShowWindow = SW_HIDE;
 
-            // The scratch target is started in the temporary directory rather
-            // than in the launcher's own working directory. A process holds
-            // its working directory open, so a target that inherited the
-            // launcher's directory would keep that directory pinned for as
-            // long as it lived, and a build that has to write into that
-            // directory could not.
+
+
+
+
+
+
             wchar_t scratch_directory[MAX_PATH]{};
             const DWORD scratch_length = GetTempPathW(MAX_PATH, scratch_directory);
             const wchar_t * working_directory = nullptr;
@@ -4079,9 +4077,9 @@ DWORD BuildFlags(const WizardConfig & config)
             }
 
             PROCESS_INFORMATION info{};
-            // The process is started detached and without a console of its
-            // own. A console of its own leaves the target's loader data
-            // unpublished, which makes it impossible to map into.
+
+
+
             if (!CreateProcessW(resolved, nullptr, nullptr, nullptr, FALSE,
                 DETACHED_PROCESS, nullptr, working_directory, &startup, &info))
             {
@@ -4094,10 +4092,10 @@ DWORD BuildFlags(const WizardConfig & config)
             m_Owns = true;
             pid_out = info.dwProcessId;
 
-            // The image is given time to settle before the target is chosen.
-            // Several modern images start a broker that hands off to the real
-            // instance and then exits, and a target picked while the broker
-            // is still leaving is a target that is about to be gone.
+
+
+
+
             {
                 std::vector<DWORD> previous;
                 for (int attempt = 0; attempt < 40; ++attempt)
@@ -4191,10 +4189,10 @@ DWORD BuildFlags(const WizardConfig & config)
             PauseBeforeExit();
             return 1;
         }
-        // The payload bytes live in this process's heap for as long as the
-        // attempt lasts. They are wiped on the way out, whatever the outcome,
-        // so a copy of the payload is not left behind in the launcher's
-        // memory.
+
+
+
+
         auto payload_scrub = MakeScopeExit([&raw_data]() noexcept
         {
             if (!raw_data.empty())
@@ -4229,16 +4227,16 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (config.test_mode)
         {
-            // Test mode changes what the tool is pointed at and makes the run
-            // reliable against a scratch target. It does not change how much
-            // the tool reports: the verbosity and the console are the
-            // operator's settings, and a test that cannot be read is not a
-            // test.
+
+
+
+
+
             config.target_name = config.test_target.empty() ? L"notepad.exe" : config.test_target;
 
-            // The donor scan is the part that cannot be relied on against a
-            // scratch target, so the direct handle is allowed when the scan
-            // finds nothing.
+
+
+
             SetEnvironmentVariableW(L"INJ_ALLOW_DIRECT_FALLBACK", L"1");
 
             Trace::Begin(L"Test Mode");
@@ -4251,20 +4249,20 @@ DWORD BuildFlags(const WizardConfig & config)
                 kYellow, kReset, config.target_name.c_str());
         }
 
-        // The runtime runs inside this process, so a value published here is
-        // what it sees. The block list cannot come from the environment the
-        // launcher was started in, because the launcher runs elevated and an
-        // elevated process does not inherit its parent's environment.
+
+
+
+
         if (!config.donor_owner_blocklist.empty())
         {
             SetEnvironmentVariableW(L"AMEGER_DONOR_OWNER_BLOCKLIST",
                 config.donor_owner_blocklist.c_str());
         }
 
-        // B4: the thread census is diagnostic-only and every thread it opens
-        // is a handle-table entry an onlooker can count. It runs only when
-        // the operator asked for a verbose trace or the full census; a quiet
-        // run opens no target thread for it at all.
+
+
+
+
         if (config.verbose_trace || FullThreadCensusEnabled())
         {
             SetEnvironmentVariableW(L"AMEGER_CENSUS", L"1");
@@ -4274,29 +4272,29 @@ DWORD BuildFlags(const WizardConfig & config)
         g_AutoConfirm = config.auto_confirm;
         if (config.test_mode)
         {
-            // A test run's transcript is the whole point of the run, so it is
-            // never removed, and a test run does not stop to ask the operator
-            // whether it may begin.
+
+
+
             g_DiscardResultLogOnSuccess = false;
             g_AutoConfirm = true;
         }
 
-        // The scratch target is owned by this guard, so it is closed when the
-        // wizard returns.
+
+
         ScratchTargetGuard scratch_target;
 
-        // The transcript is current from the moment it is opened, so by the
-        // time the wizard finishes it only has to be flushed. It stays open
-        // for anything that is printed after this point, either by this
-        // function as it unwinds or by the fault handler.
+
+
+
+
         auto transcript_guard = MakeScopeExit([&]() noexcept
         {
             ameger_ui_log::FlushResultLog();
         });
 
         Trace::Begin(L"Operator Confirmation");
-        // The confirmation itself decides whether it is needed. A test run
-        // never waits for an answer, because there is nobody to answer it.
+
+
         const ConfirmationResult confirmation = ConfirmBeforeDetection();
         if (confirmation == ConfirmationResult::Cancelled)
         {
@@ -4318,8 +4316,8 @@ DWORD BuildFlags(const WizardConfig & config)
         bool cancelled = false;
         if (config.test_mode)
         {
-            // A scratch target is started here when the operator has none
-            // open, so the run does not sit waiting for one to appear.
+
+
             DWORD scratch_pid = 0;
             if (scratch_target.StartIfAbsent(config.target_name, scratch_pid))
             {
@@ -4350,9 +4348,9 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (config.test_mode)
         {
-            // A test run puts no window on the operator's desktop. The window
-            // belongs to the process that was actually selected, which is not
-            // necessarily the one that was started.
+
+
+
             HideProcessWindows(target.pid);
         }
 
@@ -4403,9 +4401,9 @@ DWORD BuildFlags(const WizardConfig & config)
             return 1;
         }
 
-        // B3/A2: the pre-load baseline of the target's loader list and window
-        // surface, captured before anything is mapped. The verification suite
-        // measures the same surfaces again afterwards and reports the delta.
+
+
+
         StealthVerifierBuffers buffers;
         {
             const bool baseline_ok = stealth::CapturePreLoadBaseline(target.pid, buffers);
@@ -4478,24 +4476,19 @@ DWORD BuildFlags(const WizardConfig & config)
         Trace::End();
 
         HANDLE targetHandle = nullptr;
-        bool limited_probe_ok = false;
         {
-            // F1c, decided: the standing verification handle carries the
-            // limited query right, which is everything the census and the
-            // remote reads need. The stronger PROCESS_QUERY_INFORMATION is
-            // opened only when the census provably cannot run on the limited
-            // right, so the handle table shows the weaker mask for the whole
-            // run in the common case. The debug-port probes report UNKNOWN on
-            // the limited right rather than paying for the stronger one.
+
+
+
+
+
+
+
             targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
             if (targetHandle)
             {
                 MEMORY_BASIC_INFORMATION probe{};
-                if (VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
-                {
-                    limited_probe_ok = true;
-                }
-                else
+                if (!VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
                 {
                     CloseHandle(targetHandle);
                     targetHandle = nullptr;
@@ -4514,20 +4507,39 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else
         {
-            // The posture is reported by construction and by probe, not by a
-            // mask readback: the handle was opened with the limited mask, so
-            // its granted access IS 0x1010 unless the escalation ran, and the
-            // census probe proves the handle serves the suite. An earlier
-            // NtQueryObject readback was tried here and could not be relied
-            // on; the two facts below are each directly earned.
-            const bool escalated = !limited_probe_ok;
-            LOG(0, L"  %ls[+]%ls Verification Handle: Granted %ls (Census Probe %ls) | Posture %ls\n",
+
+
+
+
+
+            ULONG granted = 0;
+            {
+                using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+                HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                auto query = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
+                if (query)
+                {
+
+
+
+
+                    ULONG basic[32]{};
+                    ULONG returned = 0;
+                    if (query(targetHandle, 0, basic, sizeof(basic), &returned) == 0 && returned >= sizeof(ULONG) * 2)
+                    {
+                        granted = basic[1];
+                    }
+                }
+            }
+            const bool granted_read = granted != 0;
+            const bool limited = !granted_read || (granted & PROCESS_QUERY_INFORMATION) == 0;
+            LOG(0, L"  %ls[+]%ls Verification Handle: Granted 0x%08lX (%ls) | Census %ls\n",
                 kGreen, kReset,
-                escalated ? L"0x00000410 (Full Query | VM Read)" : L"0x00001010 (Query-Limited | VM Read)",
-                L"OK On This Handle",
-                escalated
-                    ? L"Escalated - The Limited-Right Open Could Not Serve The Census"
-                    : L"Query-Limited By Decision; Debug-Port Probes Report UNKNOWN By Design");
+                static_cast<unsigned long>(granted),
+                limited ? L"Query-Limited | VM Read" : L"Full Query | VM Read",
+                granted_read
+                    ? (limited ? L"Probe OK On The Limited Right" : L"Escalated After Limited-Right Refusal")
+                    : L"Probe OK; Mask Readback Failed");
         }
 
         const DWORD flags = BuildFlags(config);
@@ -4592,9 +4604,9 @@ DWORD BuildFlags(const WizardConfig & config)
                 LOG(0, L"%ls[x]%ls TEST MODE - This Was A Test Run Against A Scratch Target, Not The Configured Process.%ls\n",
                     kYellow, kReset, kReset);
             }
-            // The advanced code is fetched before the hint so the hint can
-            // name the target's own exit code (the debug-print exception
-            // signature) when the target died mid-load.
+
+
+
             DWORD failure_adv = 0;
             if (runtime.get_last_error_info)
             {
@@ -4822,7 +4834,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 }
                 else
                 {
-                    break; 
+                    break;
                 }
                 BYTE * next = ReCa<BYTE *>(mbi.BaseAddress) + mbi.RegionSize;
                 if (next <= cursor)
@@ -4924,16 +4936,16 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"    W^X Posture. Treat This Build As Suspect.\n\n");
         }
 
-        // The runtime publishes the block through an optional export; when the
-        // export is missing nothing was read and every consumer below must
-        // report "not reported" rather than a zero-valued pass.
+
+
+
         const bool exec_telemetry_read = runtime.get_last_exec_telemetry != nullptr;
 
         {
             const bool exceptions_on = (flags & INJ_MM_ENABLE_EXCEPTIONS) != 0;
-            // A re-read of the mapper's cached copy is not an independent check
-            // of the target's memory: under INJ_ERASE_HEADER the in-image
-            // directory table has already been wiped.
+
+
+
             const bool map_stats_cached = MapStats.Verified != 0 && MapStats.VerifiedCachedCopy != 0;
             const bool map_stats_read = runtime.get_last_map_stats != nullptr &&
                 MapStats.Verified != 0 && !MapStats.VerifiedCachedCopy;
@@ -5031,27 +5043,24 @@ DWORD BuildFlags(const WizardConfig & config)
 
         if (ExecTelemetry.TlsCallbacksConfigured || ExecTelemetry.TlsHasData)
         {
-            // A10: the registration is a TlsAlloc slot, one heap block and a
-            // patched _tls_index; the loader list was never touched, so the
-            // residue question is about the surviving minimum, and the print
-            // states exactly what that is.
             const bool tls_residue_ok = ExecTelemetry.TlsHasData != 0 ||
                 ExecTelemetry.TlsLoaderEntryAbsent != 0 ||
                 (ExecTelemetry.TlsIndexRestored != 0 &&
                  ExecTelemetry.TlsBitmapBitCleared != 0 &&
                  ExecTelemetry.TlsSlotCleared != 0);
-            row(L"TLS Registration.......... ", tls_residue_ok);
+            row(L"TLS Loader Residue........ ", tls_residue_ok);
             if (ExecTelemetry.TlsHasData)
             {
-                LOG(0, L"TlsAlloc Slot %u Live | One PEB Bitmap Bit + One TEB Slot + One Heap Block | LdrpTlsList Entry = None (Never Added) | No Cross-Thread Template Spread\n",
+                LOG(0, L"Retained By Design: Image Carries TLS Data | Index %u, PEB Bit, TEB Slot, And LdrpTlsList Entry Stay Live\n",
                     ExecTelemetry.TlsIndex);
             }
             else
             {
-                LOG(0, L"Callbacks-Only Registration Unwound: Index Restored = %ls | Slot Freed = %ls | Block Scrubbed = %ls | LdrpTlsList Entry = None (Never Added)\n",
+                LOG(0, L"Index Restored = %ls | PEB Bit Cleared = %ls | TEB Slot Restored = %ls | Loader Entry Unlinked = %ls\n",
                     ExecTelemetry.TlsIndexRestored ? L"True" : L"False",
                     ExecTelemetry.TlsBitmapBitCleared ? L"True" : L"False",
-                    ExecTelemetry.TlsSlotCleared ? L"True" : L"False");
+                    ExecTelemetry.TlsSlotCleared ? L"True" : L"False",
+                    ExecTelemetry.TlsLoaderEntryUnlinked ? L"True" : L"False");
             }
         }
 
@@ -5099,12 +5108,12 @@ DWORD BuildFlags(const WizardConfig & config)
         }
 
         {
-            // A3: the packed field decodes into its two mechanisms. Bit 0x10
-            // is the first-chance guard that absorbs debug-print exceptions
-            // raised by freshly loaded dependencies on the synthetic stack;
-            // the low nibble counts the payload's own OutputDebugStringA/W
-            // imports redirected to a bare ntdll return, which never raise
-            // at all.
+
+
+
+
+
+
             const bool debug_print_guard_read = runtime.get_last_exec_telemetry != nullptr;
             const unsigned ods_redirects = ExecTelemetry.DebugPrintVehInstalled & 0xFu;
             const bool veh_installed = (ExecTelemetry.DebugPrintVehInstalled & 0x10u) != 0;
@@ -5125,12 +5134,12 @@ DWORD BuildFlags(const WizardConfig & config)
             }
         }
 
-        // B2: the donor's stall window, measured rather than asserted. The
-        // wall time is what the hijacked thread was suspended-and-redirected
-        // for; the shell's own CPU cost is read back from its cycle counter
-        // against the measured TSC frequency. The verdict follows the
-        // target's own timing heuristic (delta > expected x 2) at the
-        // measured 15-16 ms tick granularity.
+
+
+
+
+
+
         if (ThreadExec.Attempted)
         {
             const double tsc_hz = stealth::MeasureTscHz();
@@ -5166,9 +5175,9 @@ DWORD BuildFlags(const WizardConfig & config)
                 (unsigned)ExecTelemetry.LdrLockStatus, (unsigned)ExecTelemetry.LdrUnlockStatus);
         }
 
-        // TLS loader lock status (written by MMI_HandleTLS) — gated on the
-        // telemetry export so a missing export reports "Not Reported" instead
-        // of a misleading zero-valued pass.
+
+
+
         const bool tls_lock_attempted = exec_telemetry_read &&
             (ExecTelemetry.TlsLockStatus != AMEGER_NTSTATUS_UNSUCCESSFUL ||
              ExecTelemetry.TlsUnlockStatus != AMEGER_NTSTATUS_UNSUCCESSFUL);
@@ -5196,13 +5205,13 @@ DWORD BuildFlags(const WizardConfig & config)
             (unsigned)ThreadExec.ExecMs);
 
         {
-            // Two independent facts, reported separately: whether the pivot
-            // RSP the stub wrote back falls inside the dedicated stack, and
-            // whether a poll ever caught the thread executing on it. A fast
-            // shell legitimately outruns the poll (the completion event fires
-            // before any sample lands on the Executing state), so the row's
-            // pass/fail is the address check; the observation count is stated
-            // as the confidence level it is.
+
+
+
+
+
+
+
             const bool pivot_in_window =
                 ThreadExec.ShellStackTop >= ThreadExec.ShellStackBase &&
                 ThreadExec.ShellStackTop < ThreadExec.ShellStackBase + ThreadExec.ShellStackSize;
@@ -5248,9 +5257,9 @@ DWORD BuildFlags(const WizardConfig & config)
         row(L"Verification Gate......... ", stealth_gate_ok);
         LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
 
-        // A test run has to be recognisable as one at a glance, and it has to
-        // be recognisable in the transcript long after the run is over. It is
-        // not a failure, so it is not marked with the pass or fail marker.
+
+
+
         {
             const wchar_t * marker = config.test_mode ? L"!" : L"+";
             const wchar_t * tint = config.test_mode ? kYellow : kGreen;
@@ -5273,11 +5282,11 @@ DWORD BuildFlags(const WizardConfig & config)
     }
 }
 
-    // A structured exception that escapes the wizard is still a crash of the
-    // launcher, and the transcript has to say so instead of ending in the
-    // middle of a line with no explanation. The handler is a function of its
-    // own because a frame that owns C++ objects cannot contain __try without
-    // asking the whole frame to unwind, and the wizard is full of them.
+
+
+
+
+
     int RunWizardWithFaultReport(Runtime & runtime) noexcept
     {
         __try
@@ -5342,14 +5351,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     const int retryIndex = GetRetryIndex();
 
-    // B5: the transcript carries a random stem for every run, in the same
-    // shape as the launcher's own per-build name. A stable stem would give
-    // the per-build-polymorphic launcher one predictable, linkable disk
-    // artifact: a same-named file beside a self-deleting copy, re-created on
-    // every run and holding the full forensic detail of the load. The random
-    // name keeps the record (it is always written, and a failed run always
-    // keeps it) while removing the cross-run link; the console and the
-    // transcript header both name the file, so finding it costs nothing.
+
+
+
+
+
+
+
+
     const std::wstring config_path = ConfigurationPath();
     {
         std::wstring stem;
@@ -5366,8 +5375,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
         if (!stem.empty())
         {
-            // Each attempt gets its own transcript, so a failed attempt is
-            // not overwritten by the retry that follows it.
+
+
             if (retryIndex > 0)
             {
                 g_ResultLogName = stem + L".attempt" + std::to_wstring(retryIndex) + L".log";
@@ -5379,9 +5388,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         }
         else
         {
-            // The random generator failed, which it does not in practice; a
-            // deterministic fallback still leaves a record, and the transcript
-            // says which run it belongs to in its header either way.
+
+
+
             g_ResultLogName = L"ameger-run.log";
         }
 
@@ -5390,10 +5399,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     ameger_ui_log::ResetResultLog();
 
-    // The transcript describes itself before anything else happens in the run.
-    // A normal run repeats this information in the trace header further down,
-    // but that header is produced by code that can fail; this one is written
-    // first, so a run that never gets that far still says what it was.
+
+
+
+
     {
         SYSTEMTIME now{};
         GetLocalTime(&now);
@@ -5441,91 +5450,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
         if (!ameger_ui_log::BeginResultLog(header))
         {
-            // Without a transcript file the run can still proceed; the console
-            // output is unaffected and the failure is reported once, here.
+
+
             LOG(0, L"%ls[!]%ls Unable To Open The Transcript File; The Run Will Not Leave A Log.\n", kYellow, kReset);
-        }
-    }
-
-    // --reset: ask a mapped driver to unmap itself (free image, driver object,
-    // and the pool anchor block), then exit without running the injection wizard.
-    {
-        const std::wstring cmd = GetCommandLineW();
-        if (cmd.find(kResetMarker) != std::wstring::npos)
-        {
-            Kernel::KernelClient resetClient;
-            const bool ok = resetClient.Reset();
-            if (ok)
-            {
-                LOG(0, L"%ls[*]%ls [Base] Reset Complete\n", kGreen, kReset);
-            }
-            else
-            {
-                LOG(0, L"%ls[-]%ls [Base] Reset Failed\n", kRed, kReset);
-            }
-            return ok ? 0 : 1;
-        }
-    }
-
-    // The kernel client is initialized automatically (no --kernel gate) right after
-    // the launcher is elevated and the config is loaded: load the offsets, map and
-    // start Base.sys through the mapper engine (linked from Mapper.lib),
-    // ping the driver over the shared ring buffer, then shut it down. The run then
-    // continues into the injection wizard in user-mode.
-    {
-        const std::wstring kDriverSys  = L"D:\\Ameger\\Mapper\\Base\\Release\\Base.sys";
-        const std::wstring kOffsetsIni = L"D:\\Ameger\\Mapper\\Build\\Release\\Offsets.ini";
-
-        // 1. Elevation gate. The launcher ships with RequireAdministrator, so verify
-        //    the token is elevated before touching kernel memory.
-        bool elevated = false;
-        {
-            HANDLE token = nullptr;
-            if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-            {
-                TOKEN_ELEVATION elevation{};
-                DWORD returned = 0;
-                if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned))
-                {
-                    elevated = elevation.TokenIsElevated != 0;
-                }
-                CloseHandle(token);
-            }
-        }
-        if (!elevated)
-        {
-            PrintError(L"The kernel client requires an elevated launcher; re-run elevated.");
-        }
-
-        // 2. Instantiate the kernel client.
-        Kernel::KernelClient client;
-
-        // 3. Map and start the driver through the linked mapper engine. Initialize
-        //    loads the offsets itself.
-        LOG(0, L"%ls[*]%ls [Base] Initializing...\n", kGreen, kReset);
-        const bool init_ok = client.Initialize(kDriverSys, kOffsetsIni);
-
-        if (!init_ok)
-        {
-            LOG(0, L"%ls[-]%ls [Base] Kernel Client Failed To Initialize\n", kRed, kReset);
-            LOG(0, L"%ls[-]%ls [Base] Provider Load Failed (NTSTATUS = 0x%08X)\n", kRed, kReset,
-                client.GetLastStatus());
-            // Continue in user-mode only: the wizard still runs, the kernel path is skipped.
-        }
-        else
-        {
-            LOG(0, L"%ls[*]%ls [Base] Mapped At Base 0x%016llX\n", kGreen, kReset,
-                static_cast<unsigned long long>(client.GetDriverBase()));
-
-            // 4. Ping the driver over the shared ring buffer; measure the heartbeat.
-            client.Ping();
-            LOG(0, L"%ls[*]%ls [Base] Ping Sent. Heartbeat = %u, Status = 0x%08X\n",
-                kGreen, kReset, client.GetHeartbeat(), client.GetLastCommandStatus());
-
-            // 5. Ask the driver to tear down and release both user-mode buffers.
-            const bool driver_confirmed = client.Shutdown();
-            LOG(0, L"%ls[*]%ls [Base] Driver Confirmed Shutdown: %s\n",
-                kGreen, kReset, driver_confirmed ? L"True" : L"False");
         }
     }
 
@@ -5547,8 +5474,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         {
             runtime.shutdown_runtime();
         }
-        // The entry points are dropped before the image is released, so a
-        // later mistake cannot call into a module that is no longer mapped.
+
+
         runtime.memory_inject = nullptr;
         runtime.get_symbol_state = nullptr;
         runtime.get_import_state = nullptr;
@@ -5568,35 +5495,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         runtime.module = nullptr;
     }
 
-    // The transcript of the run.
-    //
-    // It is always written, whether the run succeeded or failed. The record of
-    // a successful load is the one worth having, so removing it is something
-    // that has to be asked for explicitly rather than something that happens
-    // by default.
+
+
+
+
+
+
     ameger_ui_log::WriteResultLog();
 
-    // A run that mapped the payload may still be asked to leave nothing
-    // behind. A run that did not is never asked: the transcript of a run that
-    // failed, or that was cancelled, is the only evidence of what happened.
-    // The print states the disposition that actually happened rather than the
-    // setting, so the console is the record of what is on disk.
+
+
+
+    if (g_LoadCompleted && DiscardResultLogOnSuccess())
     {
-        const bool discarded = g_LoadCompleted && DiscardResultLogOnSuccess();
-        if (discarded)
-        {
-            ameger_ui_log::DiscardResultLog();
-        }
-        else if (g_LoadCompleted)
-        {
-            LOG(0, L"%ls[*]%ls Successful-Run Transcript Kept On Disk: %ls (DiscardResultLogOnSuccess = N)\n",
-                kYellow, kReset, g_ResultLogName.c_str());
-        }
-        else
-        {
-            LOG(0, L"%ls[*]%ls Run Transcript Kept On Disk: %ls (Failed Or Cancelled Runs Are Never Discarded)\n",
-                kYellow, kReset, g_ResultLogName.c_str());
-        }
+        ameger_ui_log::DiscardResultLog();
     }
     ameger_ui_log::Clear();
 
@@ -5605,11 +5517,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         const int nextRetry = retryIndex + 1;
         if (SpawnFreshRetryProcess(nextRetry))
         {
-            // B8: this process is about to be terminated without running its
-            // own exit path, so its self-copy is deleted here rather than
-            // left to a path that will never execute. The child still deletes
-            // the parent path it was handed as a backup; if it crashes before
-            // that, the copy is already gone.
+
+
+
+
+
             DeleteOwnSelfCopyIfChild();
             TerminateInterface(result);
         }
@@ -5624,11 +5536,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
         result = 1;
     }
 
-    // The copy this process is running from is removed last, after the retry
-    // has been spawned from it.
+
+
     DeleteOwnSelfCopyIfChild();
 
     return result;
 }
+
+
 
 

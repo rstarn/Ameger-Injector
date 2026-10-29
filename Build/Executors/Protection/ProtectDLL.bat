@@ -75,6 +75,7 @@ if not "%DLL_CANDIDATES%"=="1" goto :target_ambiguous
 for %%N in ("%TARGET%") do set "TARGET_NAME=%%~nxN"
 echo   %C_GREEN%[+]%C_RESET% Target      = %C_GREEN%%TARGET%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% Skipped     = %C_YELLOW%%RUNTIME_NAME% (Manual-Mapped)%C_RESET%
+echo.
 call :check_already_protected
 if defined VMP_PRESENT (
   if /i not "%AMEGER_FORCE_VMP%"=="1" (
@@ -149,7 +150,6 @@ if errorlevel 2 goto :fc_error
 if errorlevel 1 goto :output_invalid
 echo.
 echo   %C_GREEN%OK%C_RESET% Protected Output Validated.
-echo.
 call :verify_segment "%WORK_DIR%\out.dll"
 if errorlevel 1 goto :segment_error
 echo   %C_GREEN%[+]%C_RESET% VM Segment = %C_GREEN%%VM_SEG%%C_RESET% (Verified)
@@ -191,7 +191,6 @@ if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
 if not exist "%DEPLOYED_CONFIG%" goto :pin_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%PIN_SRC%" -Destination "%DEPLOYED_CONFIG%"
 if errorlevel 1 goto :pin_error
-echo.
 echo   %C_GREEN%[+]%C_RESET% Config re-encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 goto :pin_done
 
@@ -210,8 +209,8 @@ call :assert_clean
 if errorlevel 1 goto :cleanup_error
 echo   %C_GREEN%[+]%C_RESET% No VMProtect traces in %C_GREEN%%DLL_DIR%%C_RESET%.
 echo.
-echo   Payload Protection Completed.
-echo   Payload       = %C_GREEN%%TARGET%%C_RESET%
+echo Payload Protection Completed.
+echo   Payload    = %C_GREEN%%TARGET%%C_RESET%
 echo.
 echo.
 if "%NO_PAUSE%"=="0" pause
@@ -234,12 +233,6 @@ if not defined BASELINE (
   echo   %C_RED%         Refusing To Guess Whether The Payload Is Already Protected.%C_RESET%
   goto :vmp_check_cleanup
 )
-REM The VMProtect probe is a PowerShell script carried as base64 so that batch never has to parse a
-REM stray parenthesis from the PowerShell grammar. certutil decodes it to a unique temp .ps1, which is
-REM run and then removed. The probe reads the target's PE section table and reports any section absent
-REM from the recorded baseline as a VMP_PRESENT line. VMP_PROBE_OK is set only when the probe ran and
-REM produced a readable result; callers must treat an unset VMP_PROBE_OK as "unknown", never as
-REM "not protected", or a broken probe would silently re-virtualize an already-protected binary.
 set "VMP_CHK=%TEMP%\amg_vmpchk_%RANDOM%%RANDOM%"
 set "VMP_CHK_B64=%VMP_CHK%.b64"
 set "VMP_CHK_PS1=%VMP_CHK%.ps1"

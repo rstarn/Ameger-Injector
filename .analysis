@@ -1,4 +1,4 @@
-# Eidolon & Warden — Overwatch 2 — Consolidated Analysis
+test# Eidolon & Warden — Overwatch 2 — Consolidated Analysis
 
 **Status:** REWRITTEN 2026-10-15 from primary sources. Playwright/Edge unavailable on host;
 all thread bodies below were retrieved via reader-proxy after direct `WebFetch` returned
@@ -8,7 +8,7 @@ HTTP 403 (Cloudflare) on every `unknowncheats.me` URL.
 
 | Part | Contents | Trust |
 |------|----------|-------|
-| A | OP text of thread 761091, preserved verbatim | Source record. Not endorsed. |
+| A | OP text of thread 761091 | Source record; WRONG/UNSUPPORTED claims corrected in place, each annotated `[FIXED (Dn)]`. Not endorsed. |
 | B | Reply thread 761091 pp.1–3 — the dispute, verbatim | Source record |
 | C | Three additional threads not previously covered | Source record |
 | D | Verification: what is wrong, and why (platform-level) | Analysis |
@@ -159,8 +159,11 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > Overwatch_loader.dll!eidolon_run, every single Windows API Call goes through the loader
 > dll encrypted IAT this means:
 >
-> - Hooking Overwatch.exe IAT is impossible ( there nothing to hook )
-> - All Standard API monitors ( API Monitor, process monitor, in API Mode ) see nothing
+> [FIXED (D5)] The import directory only describes *statically declared* imports; it says
+> nothing about runtime resolution. The ntdll export table is hookable (inline-detour
+> `LdrLoadDll` / `LdrGetProcedureAddress` — exactly what Eidolon's resolver calls), and
+> ProcMon (kernel driver + `PsSetCreateProcessNotifyRoutine` / `ObRegisterCallbacks`) sees
+> `LoadLibrary` / `GetProcAddress` regardless of the target's import table.
 > - the exe is a stub that delegates everything through the loader
 > - any detour must either hook the loader resolved IAT or hook at syscall level
 >
@@ -173,15 +176,22 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > - TLS Callback 3: RVA: 0x026BC5F0, Thread Env
 >
 > **Callback 1: PEB Guard** — checks BeingDebugged, flag at PEB + 0x2. Checks NtGlobalFlag
-> at PEB + 0xBC ( should be 0 for non Debugged ). if Debugger Detected during TLS Phase,
-> Calls RtlExitUserProcess Instantly. *"this means even attaching a debugger before the
-> entrypoint will be caught, that explain why in cheat engine when u attach a Windows
-> Debugger, game closes instantly."*
+> [FIXED (D15)] at PEB + 0xBC — the standard x64 PEB has `NtGlobalFlag` at **+0xD0** and
+> `ImageBaseAddress` at **+0xC8**; `+0xBC` matches neither x86 nor x64. Dump your own PEB.
+> if Debugger Detected during TLS Phase, Calls RtlExitUserProcess Instantly.
+> *"this means even attaching a debugger before the entrypoint will be caught, that explain
+> why in cheat engine when u attach a Windows Debugger, game closes instantly."* — [FIXED (D2)]:
+> not established by the VEH mechanism (the debugger notification precedes the VEH chain),
+> though TLS-callback-time exit may still be true; see D4 for the unrun test.
 >
 > **Callback 2: VEH Setup** — Calls RtlAddVectoredExceptionHandler to register Warden VEH
-> Handler. Stores The Handler Handle in a Global Var, for later removal. *"The Handler is
-> Registred as a First Chance VEH, not last chance VCH — first chance means Warden Get
-> every exception before any Debugger"*
+> Handler. Stores The Handler Handle in a Global Var, for later removal.
+> [FIXED (D2)] *"The Handler is Registred as a First Chance VEH, not last chance VCH — first
+> chance means Warden Get every exception before any Debugger"* — **wrong**: argument 1 of
+> `RtlAddVectoredExceptionHandler(1, h)` only controls the handler's position within the VEH
+> list (1 = front). "First chance" is the *stage* of dispatch, not an ordering claim: a
+> debugged process receives the `DBG_EXCEPTION_FIRST_CHANCE` notification **before** the VEH
+> chain, so the debugger sees the exception first.
 >
 > **Callback 3: Thread Setup** — Init Per Thread Anti Debug Structures. Sets up TLS Data
 > for obfuscated Global Var Access. Installs Thread Local Exception Handlers.
@@ -189,7 +199,9 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > ### 3.1 Load Config/ CFG Info ( maybe important )
 >
 > - Load Config Size: 320 Bytes
-> - SE Handler Count: 0, no SEH Handlers, warden uses VEH exclusively
+> - SE Handler Count: 0, no SEH Handlers, warden uses VEH exclusively [FIXED (D3)] — SafeSEH
+> is an **x86** mechanism; on x64 there is no SafeSEH table, so `SEHandlerCount = 0` is the
+> expected value for any normal x64 image and carries no information about VEH-only usage.
 > - SE Handlers Table: 0x0
 > - Guard CF Check Func Pointer: 0x02E5C548
 > - Guard CF Dispatch Func Ptr: 0x02E5C558
@@ -197,6 +209,10 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 >
 > *"warden does NOT uses SEH, the SE Handler count is 0, all Exception handling is done
 > through VEH this is unusual most apps use SEH for exception Handling"*
+> [FIXED (D4)] The real x64 signal is the exception directory (`IMAGE_DIRECTORY_ENTRY_EXCEPTION`)
+> pointing at `.pdata`: the OP stopped before walking it. Walk `.pdata` to settle whether
+> `UNW_FLAG_EHANDLER`/`UNW_FLAG_UHANDLER` functions exist — that is the test that makes the
+> VEH claim strong or moot.
 >
 > ### 3.2 Imports
 >
@@ -209,6 +225,10 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > *"all API goes via eidolon_run -> Encrypted IAT Trampoline -> Real API"*
 >
 > *"also, overwatch.exe, exports 76 Symbols, this is extremly unusual for an exe.."*
+> [FIXED (D15)] Exes built as DLL-equivalents, plugins, and hosted images export routinely;
+> the count itself (76 names / 94 funcs) is CONFIRMED by our live read-back (D13a), but
+> exports being "unusual" is not a finding, and exports from an EXE say nothing about
+> import resolution or hookability.
 >
 > ### 4- Overwatch_loader.dll ( Eidolon Anti Tamper )
 >
@@ -220,8 +240,9 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > **`.eid`, encrypted core ( ig it was 4.25 mb )** — *"its NOT Decrpyted Entirly at runtime,
 > section is identical in the static dump and live memory. Decrypted page by page when code
 > executes from it. Contains EidolonCore Logic: IAT Res, HWID Collection, Integrity
-> Checking. no API Strings Survive in plaintext withen it. 49 False Postive MZ Headers (
-> from 0x00 0x00, byte patterns, not actual PEs )"*
+> Checking. no API Strings Survive in plaintext withen it.
+> [FIXED (D15)] "49 False Positive MZ Headers (from 0x00 0x00, byte patterns)" — `MZ` is
+> `4D 5A`; `00 00` is not a prefix of anything, so the stated byte pattern is wrong."*
 >
 > **`.data` ( Obfsucated Data )** — contains runtime var, encrypted config, and decrypted
 > state. Larger Virtual Size than raw size ( 0xCB000 vs 0x1C000 ) zero filled at runtime.
@@ -236,6 +257,10 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > followed by 7 more 0xCC ( Int3 ) this is not real entrypoint its a ret sled anti analysis
 > trick. ... when any tool ( ida, x64dbg, dllmain ) calls this export directly, it instantly
 > returns, doing nothing."*
+> [FIXED (D15)] `C3 CC CC` (ret + int3 padding) is what MSVC emits for any function body
+> optimized to nothing — standard inter-function padding, not a demonstrated anti-analysis
+> trick. Note C1/C2 found a *working* entry point for the XOR primitive, so "calling this
+> export does nothing" is incomplete.
 >
 > **`g_warden_aegis_crash_callback_export`: Crash Integrity**
 >
@@ -254,7 +279,9 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > loader ( vs 3 in the exe )"*
 >
 > **4.5 Decoy Import Table** — *"the PE import Directory shows 31 DLLs each with exactly 1
-> decoy import"*
+> decoy import"* [FIXED (D15, F5.7)] — the OP contradicts itself: 31 in the intro, 13 rows
+> in the table, 41 in §5.4. **Live measurement (2026-10-25): 37 import descriptors in the
+> loader's remote image (first: KERNEL32.dll)** — none of the OP's three numbers match.
 >
 > | # | DLL | Decoy API(s) | Claimed meaning |
 > |---|-----|---------------|-----------------|
@@ -283,6 +310,8 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 >    RVA 0x4AC878
 > 2- Static dump shows placeholder bytes (0x000002B968630000), runtime shows resolved
 >    pointer (0x5CE9F34A36F45570)
+>    [NOTE (D1/D16)] the static placeholder `0x000002B968630000` is also non-canonical (bit 47
+>    set, upper bits zero) — it is encrypted data, not an address, consistent with D1.
 > 3- On first call: Eidolon hashes the API name & DLL name, looks up the index, decrypts
 >    the real entry from .eid section, calls LdrGetProcedureAddress to resolve, caches the
 >    result
@@ -299,6 +328,11 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > *"the runtime value 0x7055F4364AF3E95C (reversed for big-endian) is: 1- A valid usermode
 > address (in the 0x7FFE... range after ASLR adjustment) 2- Actually points to a resolver
 > stub in `.text` that handles the API dispatch"*
+> [FIXED (D1)] WRONG — `0x7055F4364AF3E95C` is **non-canonical** (bits 63:48 = `0x7055` while
+> bit 47 = 0), so it cannot be a dereferenceable pointer; Windows x64 is little-endian, so
+> the "reversed for big-endian" reasoning is meaningless. It is consistent with **encrypted
+> data**, not a function pointer — which is what the C3 model predicts (`.eid` entries
+> decrypted into a pointer table).
 >
 > **5.3 Res Process**
 > - *Phase 1, Static Load ( PE Loader )* — Windows PE Loader sees the Decoy Import Table,
@@ -357,8 +391,13 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > };
 > ```
 > ```
-> VEH 1: Handler=ntdll!RtlpExceptionHandler (default ntdll handler)
-> VEH 2: Handler=Overwatch.exe!WardenVEHHandler (Warden's handler)
+> [FIXED (D9)] ntdll does **not** register a default entry in `RtlpVectoredHandlerList`; the
+> chain contains only what usermode registered via `RtlAddVectoredExceptionHandler`. With
+> `AddVectoredExceptionHandler(1, ...)`, Warden's handler sits at the **head** of the list —
+> the inverse of the order shown. `_VECTORED_HANDLER_ENTRY` is not a stable public struct; the
+> observed x64 layout varies across builds — do not hardcode the offsets.
+> VEH 1: Handler=... (other registered handlers)
+> VEH 2: Handler=Overwatch.exe!WardenVEHHandler (Warden's handler, registered first)
 > VEH 3: Handler=... (any other registered handlers)
 > ```
 > *"On Windows 10 22H2+, the VEH chain may not be directly walkable from usermode without
@@ -380,7 +419,11 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > runtime scan of overwatch.exe .text 0 int3 bytes
 > runtime scan of overwatch_loader.dll .text 24k int3 bytes
 >
-> the 1.2M INT3 in static dump is CFG ( control flow guard ) not warden patches..
+> [FIXED (D6)] "the 1.2M INT3 in static dump is CFG (control flow guard) not warden patches"
+> — WRONG. CFG does not emit `0xCC`; its checks are `__guard_check_icall` calls with metadata
+> in `.gfids` / `.giats` / `.gxfg`. Our live census (2026-10-15) measured **1,199,181** `0xCC`
+> bytes at runtime (3% of 31,457,280 sampled across 905 exec regions), so the OP's "runtime 0"
+> line did not hold, and the most likely attribution is ordinary MSVC inter-function padding.
 > ```
 >
 > ### 7- Warden Module System
@@ -390,6 +433,12 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > loader/dispatcher"*
 >
 > | # | Module Name | Runtime RVA | String First Bytes | Claimed Purpose |
+> [FIXED (D11)] All five names are **unclassified strings pending a demonstrated consumer**.
+> The only one with a direct LEA xref (`MemoryTestHasFailed` @ `0x4F2A02`) sits in the
+> crash-reporter/`System` settings namespace beside `ForceFMA3` and `WorkerThreadCount` — it
+> is read like a configuration flag, not a module identity. The other four have **zero**
+> demonstrated references; a third reviewer reported `FkCheck` / `VCheck` / `IntegrityCk` may
+> resolve as **SQLite opcode-name-table entries** (`[UNV]`).
 > |---|-------------|-------------|--------------------|-----------------|
 > | 1 | FkCheck | 0x34645E8 | `46 6B 43 68 65 63 6B 00` | file integrity check |
 > | 2 | VCheck | 0x3464A54 | `56 43 68 65 63 6B 00 00` | Memory Validation Check |
@@ -404,6 +453,12 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > Index = Hash & (TableSize -1) -> Table[Index]: { Hash Stored, Module Entry Point, Module Metadata }
 > if collision linear probing -> result: module code addr or null
 > ```
+> [FIXED (D10)] UNSUPPORTED as presented — nothing is demonstrated: no hash function located,
+> no polynomial, no table base, no compare site, no traced lookup. The explanatory chain is
+> circular ("IDA shows 0 xrefs, therefore a hash table"). Absence of a static xref is not
+> evidence of a hash table; it is explained by string decryption at point-of-use, or that the
+> strings are not Warden module names, or that they sit in pages that are not plaintext until
+> executed (Part E).
 > *"that explains why: IDA Shows 0 xrefs to the module name strings / x64dbg cannot find
 > refs via find ref to current / string search withen code does not help"*
 >
@@ -414,6 +469,11 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > .text sample"* → *"The most likely approach is 3, Warden pre allocates a pool of RWX
 > memory during initialization and loads scanning modules into this pool. This avoids
 > runtime VirtualAlloc calls that could be hooked."*
+> [FIXED (D12)] UNSUPPORTED — absence in a *sample* of `.text` proves nothing, especially in
+> a CFF-obfuscated image where a basic block may simply not be resident (Part E). A long-lived
+> `PAGE_EXECUTE_READWRITE` pool contradicts W^X practice. C7 describes modules being
+> **decrypted-on-use and re-encrypted after use** — a lifecycle that requires no standing
+> RWX pool at all.
 >
 > ### 8- Eidolon String Decryption System
 >
@@ -457,6 +517,8 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > ```
 > Layer 1: Initial string XOR mask · Layer 2: Address/offset obfuscation · Layer 3: Final
 > XOR pass · Layer 4: Checksum validation
+> [FIXED (D15)] `layer4` is computed in the key chain but **never used** in the published
+> pseudocode — a "checksum validation" layer that validates nothing.
 >
 > **8.4 Global Key Data At Runtime** — `loader_base + 0x3DB410`
 > ```
@@ -467,7 +529,8 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > ```
 > `"DWORD[0] = 0x02F8248C (global decryption key, session 2)"` and
 > `"DWORD[0] = 0xC9EF16A9 (global decryption key, session 1)"` — **listed twice for the
-> same DWORD.**
+> same DWORD.** [FIXED (D15)] impossible as stated — only the *rotation* claim survives:
+> C2 independently corroborates that the key changes per build/session.
 >
 > **8.5** — reverse-engineered pseudocode `decrypt_eidolon_string(encrypted_bytes, global_key)`
 > published in full; k1..k4 per 8.3, then
@@ -476,7 +539,9 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 >
 > ### 9- HWID Collection Chain
 >
-> *"Eidolon collects hardware identifiers from 6 distinct sources"* — then lists **eight**:
+> *"Eidolon collects hardware identifiers from 6 distinct sources"* — [FIXED (D15)] the table
+> lists **eight** sources (CPU, MachineGuid, Disk HWID, MAC, HID, Volume Serial, ComputerName,
+> UserName); "6" is an internal inconsistency, not a finding.
 >
 > | Source | Path / API |
 > |--------|-----------|
@@ -499,26 +564,37 @@ process over ~24h. Author's own warning: *"these offsets/rvas are for Overwatch 
 > 6- RC4 Encryption, Custom RC4 with modified KSA (key @ RVA 0x2599931)
 > 7- RSA Encryption, Blizzard public key → encrypted HWID blob
 > 8- Base64 Encoding, `CryptStringToBinaryW` -> final payload
+> [FIXED (D8)] WRONG direction — `CryptStringToBinaryW` is a **decoder** (text → binary);
+> the encoder is `CryptBinaryToStringW`.
 > 9- Sent to Auth Server, Via HTTPS in game connection flow
 >
 > **9.4** — *"The SHA-1 and RC4 implementations use hardcoded constants found at these
 > locations in Overwatch.exe"*: SHA-1 `K[0]=0x5A827999`, `K[1]=0x6ED9EBA1`, `K[2]=0x8F1BBCDC`,
 > `K[3]=0xCA62C1D6` @ RVA 0x1BD7F1A; RC4 @ RVA 0x2599931, *"Modified to include a
 > round-dependent counter value in the swap operation"*.
+> [FIXED (D15)] The SHA-1 round constants are **universal** — finding them proves only that
+> SHA-1 is *present*, not what is hashed, nor that the pipeline is SHA-1→RC4→RSA.
 >
 > ### 10- PEB Based Checks
 > ```
 > PEB Structure (x64):
 > +0x002: BYTE  BeingDebugged -> 0 = not debugged, 1 = debugged
 > +0x003: BYTE  BitField -> Contains ImageUsedOs2 flag
-> +0x0BC: ULONG NtGlobalFlag -> 0 = normal, non-zero = debugger flags
+> [FIXED (D15)] +0x0BC: ULONG NtGlobalFlag — on the standard x64 PEB, `NtGlobalFlag` is at
+> **+0xD0** and `ImageBaseAddress` at **+0xC8**; `+0xBC` matches neither x86 nor x64.
 > ```
 > Detection methods Warden can use: `IsDebuggerPresent()`; `CheckRemoteDebuggerPresent()`
-> *"queries csrss.exe"*; `NtQueryInformationProcess(ProcessDebugPort)`;
+> [FIXED (D7)] The OP wrote *"queries csrss.exe"* — WRONG. `CheckRemoteDebuggerPresent` calls
+> `NtQueryInformationProcess(ProcessDebugPort)` on the **current process handle**; no csrss.exe
+> involvement. Then: `NtQueryInformationProcess(ProcessDebugPort)`;
 > `...ProcessDebugFlags`; `...ProcessDebugObjectHandle`.
 >
 > ### 11.3 Timing Detection — *"Warden uses GetTickCount64 ... Expected delta: Normal
 > (sub-millisecond for simple operations). Detection threshold: Delta > expected × 2"*
+> [FIXED (D15)] `GetTickCount64` cannot resolve sub-millisecond deltas: our measured tick
+> granularity on this host is **15–16 ms** (2000 samples → 3 distinct values, min step 15–16
+> ms; QPC frequency 10,000,000). Use QPC/RDTSC for any timing work; treat Warden timing as
+> a coarse-window detector, not a precision one.
 >
 > ### 11.4 Control Flow Flattening (Eidolon) — normal vs flattened switch-dispatch.
 >
@@ -540,14 +616,15 @@ Trigger is post #4 (`donttalktome555`): *"Layer 2 Warden ( Overwatch.exe ) ?????
 
 | Post | Who | Substance |
 |------|-----|-----------|
-| #4 | donttalktome555 | *"warden does not reside in the overwatch executable"* (#18) |
+| #4 | donttalktome555 | *"Layer 2 Warden ( Overwatch.exe ) ?????"* — trigger; the "does not reside in the exe" claim is post #18 |
 | #6 | betsit | *"this is pure ai slop and most of it is just hallucination"* |
 | #7 | nohtinginLife | *"every offset was verified against ow2 proc while it running, i even wrote a c++ exe that independently confirms all my finds live against Overwatch.exe... if something looks wrong point it out the specific offset"* |
 | #8 | betsit | *"if you would have actually ever reversed anything you wouldn't be so uncertain about everything you post."* |
 | #10 | betsit | *"you're the person who claimed warden is in overwatch_loader.dll which says a lot about your expertise lmao."* — i.e. self-identified Blizzard employee, disputes OP's architecture |
 | #11 | nohtinginLife | *"in this post i literally wrote 2 layers, warden in overwatch.exe, the other post was before i knew better"* |
 | #13 | nohtinginLife | *"how do you claim it's AI? ... ai can post hex dump?"* |
-| #18 | donttalktome555 | *"considering warden modules can be updated while the game is running, would you say that is the case given your 'analysis' on all of the modules being integrated in the executable (which would literally render the entire anticheat useless if they were this easy to reverse)?"* |
+| #18 | donttalktome555 | *"warden does not reside in the overwatch executable"* |
+| #20 | donttalktome555 | *"considering warden modules can be updated while the game is running, would you say that is the case given your 'analysis' on all of the modules being integrated in the executable (which would literally render the entire anticheat useless if they were this easy to reverse)?"* |
 | #22 | donttalktome555 | *"they are streamed which would render whatever nonsense you just replied invalid. this so-called 'loader' is just anti-tamper"* |
 | #24 | donttalktome555 | *"if they were streamed (which they are, news flash), why would they be stored in the binary?"* |
 | #26 | donttalktome555 | *"if a random string along the lines of 'warden_module_integrity_check' appeared in the binary, would you instantly shift your narrative to 'a new module appeared'? could you point me to what led you to believe those strings are specifically warden module names?"* |
@@ -578,7 +655,7 @@ The strongest form of the challengers' case is not "your offsets are wrong" — 
 1. If module code lived in `Overwatch.exe` as ordinary `.text`, it would be as static and
    as inspectable as any other shipped binary. Blizzard ships the exe's `.text` to millions
    of machines. Shipping the anti-cheat's own scanning routines there would be self-defeating.
-2. "Warden modules can be updated while the game is running" (post #18) is only compatible
+2. "Warden modules can be updated while the game is running" (post #20) is only compatible
    with the module bytes arriving *after* launch — from the server, or from an encrypted
    container decrypted on demand.
 3. Therefore a dispatcher must exist somewhere (the OP's VEH handler and TLS callbacks are
@@ -2368,3 +2445,168 @@ mapper exit was not 0 — `--hide` reported `No hypervisor present` (`hide_ok=fa
 gates: (a) start `Hypervisor` and re-run the mapper so the mapper exits 0; (b) re-map the
 same build after teardown to prove zero residue; (c) attribute the two foreign Ob pre-op
 bodies.
+
+---
+
+# PART L — IDA Pro static verification of `Overwatch.exe` (build 2.25.0.1 / 154504)
+
+Opened `C:\Program Files (x86)\Overwatch\_retail_\Overwatch.exe` in the IDA GUI and ran a
+static pass. Findings, all read directly off the image (image base `0x140000000`):
+
+| Area | IDA-verified result |
+|------|---------------------|
+| Build identity | Build path string `D:\Madness\production\Worker\2_25_0_1\...` — confirms **build 2.25.0.1**, matching 154504 |
+| Segments | `.text` ≈ 47 MB (49,463,296 B), `.rdata` ≈ 9.5 MB, `.pdata` ≈ 2.4 MB, `.data` (two blocks, ~13 MB), `_RDATA`, `.rsrc` |
+| CFG | **No** `.gfids` / `.giats` / `.gxfg` sections present — consistent with D6a (CFG not instrumented on this build; the image's load-config `GuardFlags=0x100` declaration is exact, enforcement off) |
+| Functions | 53,851 functions total; 5,014 named (non-`sub_`) |
+| Imports | **2 modules, 3 symbols**: `Overwatch_loader` → `Overwatch_loader_1`; `dbghelp` → `MiniDumpWriteDump`, `EnumerateLoadedModules64`. **This refines the "exactly one import descriptor" claim** (D13a/F2a live read-back counted only the `Overwatch_loader` module; the static PE import directory actually carries two modules) |
+| Static offset keys | All land in `.data` (valid globals); 8-byte static values are `0x0` / `0xffffffff…` sentinels that the game overwrites at runtime — structurally valid |
+| Decrypt constants | **Not** present as static 8-byte immediates in `.text` — they are **runtime-derived**, consistent with the "constants rotate per build" model (C2/D15) |
+| Tick / time source (gap 4) | Binary references `GetTickCount64` and `QueryPerformanceCounter` — the game's tick/time source |
+| Lag-comp / backtrack (gaps 1–3) | No literal `LagComp`/`Backtrack`/`Snapshot` strings; network/latency systems are present (`NetworkEventSystem_C`, `SetMaximumFrameLatency`, `minimumLatencyNS`). The three backtrack candidates (`LerpComponent 0x1F`, `ConnectionComp 0x42`, `ConnRingBufOff 0x1C6`) are component-id / struct-offset (data-level) and live in the encrypted `.eid` layer, so they remain **runtime-verified only** |
+
+**Bottom line:** the `[Offsets]` keys in `Build/Configuration.ini` are structurally sound
+statically (all in `.data`, correct build 2.25.0.1), and the decrypt-constant / CFG findings
+corroborate Parts D/E. The three backtrack candidates still need a live game to confirm.
+
+---
+
+# PART M — IDA Pro analysis of `Anti-Anti-Debug.dll` (the attached payload)
+
+Opened `D:\Ameger\Internal\Assets\Anti-Anti-Debug.dll` in IDA (instance `8e70b01e690f`).
+163,840-byte x64 DLL, image base `0x180000000`, 526 functions, no export table
+(`DllMain`-driven, so it is loaded by injection, not by export), imports **only** `KERNEL32`
+(93 symbols — CRT/stdio/heap plus the anti-debug surface below). `.pdata` present, no CFG
+sections (consistent with D6a).
+
+**Verdict: this DLL is an anti-anti-debugging / Cheat-Engine-compatible bypass payload.**
+Its own log strings say so: `"installed: CE-compatible anti-debug bypass"` and
+`"attach cheat engine and use any debugger option"`.
+
+## What it does, step by step
+
+1. **`DllMain` (PROCESS_ATTACH):**
+   - `DisableThreadLibraryCalls(hinstDLL)` — same call the AmegerBurner runtime makes
+     (blocks per-thread library calls for the attaching thread).
+   - Resolves the main module base and `Overwatch_loader.dll` base (`GetModuleHandleW`),
+     stored in `qword_18002A290` / `qword_18002A138`.
+   - Resolves `NtQueryInformationProcess` from ntdll (`GetProcAddress`).
+   - Calls `sub_180003160()` to install the hooks; on failure logs `"init-error"` and
+     aborts the attach.
+   - Exercises every hook trampoline (NtQueryInformationProcess, NtSetInformationThread,
+     NtGetContextThread, NtSetContextThread, NtQuerySystemInformation, RaiseException,
+     IsDebuggerPresent, OutputDebugStringA, RtlAddVEH/RemoveVEH) and checks a crash sentinel
+     `MEMORY[0x41414141]` to confirm none of the hooks crashed.
+   - Clears PEB debug flags inline (`BeingDebugged` at PEB+2 → 0; `NtGlobalFlag` masked with
+     `0xFFFFFF8F`; Ldr debug bits masked `0x9FFFFFFF`).
+   - Spawns `StartAddress` as a **resident thread** (`CreateThread`) that loops clearing
+     `NtGlobalFlag` / `BeingDebugged` / Ldr debug bits every 50 ms until detach.
+   - Sets `byte_18002A265 = 1` (the "bypass active" master flag).
+2. **`sub_180003160` — hook installation (MonkeyHook):** walks a static table of
+   12 hook targets and installs inline detours (`sub_180002E00` is the `MH_CreateHook`/
+   `MH_EnableHook` wrapper; `sub_180002750` etc. are the replacement handlers).
+
+## The 12 hooked anti-debug APIs
+
+| API | Module | Hook handler | Effect when bypass is active |
+|-----|--------|---------------|------------------------------|
+| `NtQueryInformationProcess` | ntdll | `sub_180002750` | intercept |
+| `NtQueryInformationThread` | ntdll | `sub_180002900` | intercept |
+| `NtSetInformationThread` | ntdll | `sub_180002940` | **suppresses `ThreadHideFromDebugger` (class 17)** → returns success without calling the real fn |
+| `NtQuerySystemInformation` | ntdll | `sub_180002980` | for class 35 (SystemDebugInfo), forces `*result = 256` (spoofs debug port) |
+| `NtGetContextThread` | kernel32 | `sub_1800029E0` | intercept |
+| `NtSetContextThread` | kernel32 | `sub_180002A80` | intercept |
+| `RaiseException` | kernel32 | `sub_180002C70` | intercept |
+| `RaiseFailFastException` | kernel32 | `sub_180002D70` | intercept |
+| `IsDebuggerPresent` | kernel32 | `sub_180002DD0` | **returns 0** (always "not debugged") |
+| `OutputDebugStringA` | kernel32 | `sub_180002DF0` | intercept |
+| `RtlAddVectoredExceptionHandler` | ntdll | `sub_180002B20` | intercept |
+| `RtlRemoveVectoredExceptionHandler` | ntdll | `sub_180002BC0` | intercept |
+
+**`DllMain` (PROCESS_DETACH):** joins the PEB thread, then **restores** the original bytes
+of every hook (memmove the saved bytes back over the patched code, `VirtualProtect`/
+`FlushInstructionCache`), frees the trampoline regions, and resets hook state — so the
+inline detours are removed cleanly on unload (this is the "HookRestore" behavior, the inverse
+of the project's `HookRestore=N` policy).
+
+## Bottom line
+
+`Anti-Anti-Debug.dll` is not a read-only verification payload. It is a **deliberate
+anti-debug-defeating injector payload**: it installs 12 MonkeyHook inline detours over the
+anti-debug-detection APIs, fakes `IsDebuggerPresent`, suppresses `ThreadHideFromDebugger`,
+spoofs the debug-port query, and runs a resident thread that continuously clears the PEB
+debug flags — all so that a classic debugger (Cheat Engine / x64dbg) can attach and survive.
+
+**Policy conflict (explicit exception):** the project's standing policy (Part F4) is
+query-only / scan-only / no writes to game-backed pages (`HookRestore=N`). This DLL does the
+opposite — it patches game memory (inline detours) and clears PEB flags. Using it is an
+**explicit, user-directed exception**. If the goal is only *verification*, a read-only
+payload (in-process read-back) would be the policy-compliant path; this DLL is the
+anti-debug-defeating path the user has chosen.
+
+---
+
+# PART N — Backtrack uid-link, confirmed live (build 2.25.0.23432) `[SRC]`
+
+The backtrack link is a **uid (integer handle), not a direct pointer** — confirmed on our
+build **2.25.0.23432**:
+
+- The triple at `+0xD0` / `+0xD4` / `+0xD8` was the exact offset: **all three fields matched
+  and were nonzero**, and the uid resolved back to the entity exactly as described.
+- A pointer sweep over the controller object found **no pawn pointers** — precisely because
+  the link is a uid, so sweeping for pointers misses it by construction.
+
+Two further observations:
+
+1. **The triple is state-gated.** All three fields are **zeroed during hero select** and are
+   only written once the round actually starts. Reading them before the round begins returns
+   zero.
+2. **Across death/respawn:** the controller-side comps carrying `0x33` get **recreated at
+   new addresses**, but the uid in the triple and the body entity itself **stay the same** —
+   so the link survives a respawn without re-resolving anything.
+
+**Implication:** a backtrack implementation should read the uid from the `+0xD0/D4/D8` triple
+(not sweep for pointers), and must account for the state-gating (zero during hero select) and
+the respawn-stable uid. This closes the "runtime-verified only" status noted in PART L
+(line 2466 / line 2470): the backtrack candidates are now confirmed on 23432.
+
+---
+
+# PART O — End-to-end confirmed uid-link reader (build 2.25.0.23432) `[SRC]`
+
+The reader is confirmed end-to-end. Pipeline, exactly as it runs:
+
+1. **Roster scan:** run a full entity scan only while the map hasn't reached max capacity
+   (12 for 6v6, 10 for 5v5). Filter entities whose uid starts with the `0x80` prefix and
+   keep only those carrying a **Link component**. This yields a stable 10/10 roster that
+   survives the whole match.
+2. **Static controller uids:** controller uids are static and allocated adjacently
+   (`0x80000231`–`243` in one observed match), and they remain valid from game start to end
+   (until the player disconnects).
+3. **Body uid from Link comp D4:** read the matched body uid from the Link component's `+0xD4`.
+   That uid **changes during the game** (respawn / hero swap), so it is refreshed **every tick**
+   — caching it is what bit the reader before. The refreshed uid is then resolved through the
+   game admin's entity table (`admin + 0x18`).
+
+Two gotchas for anyone re-implementing:
+
+- **Dedupe by uid.** A single player uid can have **multiple nodes** in the table (the
+  controller plus shared gameadmin-type entities), and more than one node can carry a Link
+  comp pointing at the same body. Without deduping by uid you enumerate the same player
+  twice.
+- **Do not cache the Link comp pointer.** The comp is recreated at a **new address** across
+  life transitions. Instead re-derive the slot from the **per-tid presence bitmap at
+  `ent + 0x110`** (a set bit = the comp is present; the cumulative counts at `+0x130` give
+  the exact slot in the `+0x80` array, used for rank/select). So a "has Link" check plus
+  slot lookup is only **~4 reads** instead of decoding all 64 slots. `#7831` lists the same
+  bitmap on CN, so it is likely a cross-build fact.
+
+## Open question: reliable team/side source for players
+
+No reliable direct field found yet. A team-looking byte on the **0x3a comp `(+0xD8)`** reads
+clean `1`/`2` right after spawn, but it **drifts through the round** (one player went `1 → 70`
+mid-match), and the 1/2 split does **not** line up with actual teams on cross-check. Current
+workaround: derive side from **spawn-room clustering** (works, but is a detour). An open
+question remains: **is there a direct team/side field being missed?** Flagged as unresolved.
+
+---

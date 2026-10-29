@@ -22,8 +22,8 @@ function RvaToOff($rva) {
 $exportRva = [BitConverter]::ToUInt32($bytes, $optOff + 0x70)
 $exportSize = [BitConverter]::ToUInt32($bytes, $optOff + 0x74)
 
-# A module with no export directory at all (for example the manual-mapped payload) is the
-# strongest possible outcome: there are no names to leak. Say so instead of faulting.
+
+
 if ($exportRva -eq 0 -or $exportSize -eq 0) {
     Write-Host "OK: no export directory present (0 named exports)"
     exit 0
@@ -59,5 +59,5 @@ if ($found.Count -gt 0) {
     Write-Host "FAIL: stable export names present: $($found -join ', ')"
     exit 1
 }
-Write-Host "  OK: $numNames exports, no stable Core names"
+Write-Host "OK: $numNames exports, no stable Core* names"
 exit 0

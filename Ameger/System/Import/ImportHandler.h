@@ -19,11 +19,6 @@ inline ASYNC_WORKER_SLOT			import_handler_ret;
 
 namespace NATIVE
 {
-	// A10: ntdll exports, resolved by name rather than through the PDB.
-	NT_FUNC(TlsAlloc);
-	NT_FUNC(TlsSetValue);
-	NT_FUNC(TlsFree);
-
 	NT_FUNC(LdrUnloadDll);
 
 	NT_FUNC(LdrpLoadDllInternal);

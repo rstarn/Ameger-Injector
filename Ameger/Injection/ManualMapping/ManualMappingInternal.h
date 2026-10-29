@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 
@@ -47,12 +47,12 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories	(MMAP_
 DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader			(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp				(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData);
 
-// A6: OutputDebugString raises DBG_PRINTEXCEPTION_C on current builds even
-// without a debugger. A normal thread absorbs that raise in its top-level
-// handler frame; the hijacked thread has no such frame on its synthetic stack,
-// so the raise would terminate the target. This handler resumes execution for
-// the two debug-print codes and passes everything else through. It is copied
-// with the rest of the shell and therefore must not call anything outside it.
+
+
+
+
+
+
 LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh			(PEXCEPTION_POINTERS ExceptionInfo);
 
 NTSTATUS __declspec(code_seg(".code$12")) __stdcall MMIH_PreprocessModuleName(MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, const char * szModule, UNICODE_STRING * ModuleName, LDRP_LOAD_CONTEXT_FLAGS * CtxFlags);
@@ -111,11 +111,6 @@ namespace MMAP_NATIVE
 		ALIGN NT_FUNC_LOCAL(LdrpInvertedFunctionTable);
 		ALIGN NT_FUNC_LOCAL(LdrpTlsList);
 
-		// A10: the TLS API the registration goes through. ntdll exports.
-		ALIGN NT_FUNC_LOCAL(TlsAlloc);
-		ALIGN NT_FUNC_LOCAL(TlsSetValue);
-		ALIGN NT_FUNC_LOCAL(TlsFree);
-
 		ALIGN f_MMI_FUNCTION MMP_Shell					= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadImports			= nullptr;
 		ALIGN f_MMI_FUNCTION MMIP_LoadDelayImports		= nullptr;
@@ -136,16 +131,15 @@ namespace MMAP_NATIVE
 		bool IsValid() const
 		{
 			return NtAllocateVirtualMemory && NtProtectVirtualMemory && NtFreeVirtualMemory && NtSetEvent && NtClose &&
-			memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
-			LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
-			RtlAnsiStringToUnicodeString &&
-			LdrpPreprocessDllName &&
-			RtlAddFunctionTable && LdrpHandleTlsData &&
-			RtlAddVectoredExceptionHandler && RtlRemoveVectoredExceptionHandler &&
-			LdrLockLoaderLock && LdrUnlockLoaderLock &&
-			LdrpDereferenceModule &&
-			TlsAlloc && TlsSetValue && TlsFree &&
-			LdrpHeap && LdrpTlsList;
+		memmove && RtlZeroMemory && RtlAllocateHeap && RtlFreeHeap &&
+		LdrpLoadDllInternal && LdrGetProcedureAddress && LdrUnloadDll &&
+		RtlAnsiStringToUnicodeString &&
+		LdrpPreprocessDllName &&
+		RtlAddFunctionTable && LdrpHandleTlsData &&
+		RtlAddVectoredExceptionHandler && RtlRemoveVectoredExceptionHandler &&
+		LdrLockLoaderLock && LdrUnlockLoaderLock &&
+		LdrpDereferenceModule &&
+		LdrpHeap && LdrpTlsList;
 		}
 	};
 
@@ -153,20 +147,20 @@ namespace MMAP_NATIVE
  	{
  		ALIGN HINSTANCE	hRet		= NULL;
  		ALIGN HANDLE	CompletionEvent = nullptr;
-		// A3: a bare `ret` inside ntdll, located by the host in this process's
-		// copy. The target's ntdll sits at the same verified base, so the
-		// address is valid there too. OutputDebugStringA/W imports are pointed
-		// at it so the payload's own debug-print calls never raise.
+
+
+
+
 		ALIGN PVOID		OdsReturnStub = nullptr;
-		// A3: the first-chance net for debug-print exceptions raised by code
-		// the redirect cannot cover - a freshly loaded dependency's internal
-		// OutputDebugString on the synthetic stack. Measured 2026-10-25:
-		// notepad exited with DBG_PRINTEXCEPTION_C (0x40010006) when the
-		// shell loaded D3DCOMPILER_47 and only the redirect was in place.
+
+
+
+
+
 		ALIGN PVOID		DebugPrintVehHandle = nullptr;
  		ALIGN DWORD		Flags		= NULL;
-		// The host-validated OS build. The shell uses it to select the
-		// exception-table encoding that this build family actually stores.
+
+
 		ALIGN DWORD		OSBuildNumber	= 0;
  		ALIGN NTSTATUS	ntRet		= STATUS_SUCCESS;
 
@@ -192,39 +186,46 @@ namespace MMAP_NATIVE
  		ALIGN MANUAL_MAPPING_FUNCTION_TABLE * FunctionTable = nullptr;
 
  		ALIGN DYNAMIC_NT_OFFSETS NtOffsets{};
-		// The offsets that were resolved from the live ntdll. The shell uses
-		// them instead of the compile-time guesses, so a loader layout change
-		// does not break the mapping.
+
+
+
 		ALIGN DWORD ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
-		// Tracks whether the executable sections are currently execute-read or
-		// writable, so the stages do not have to re-apply the protection.
+
+
 		ALIGN DWORD		TlsCallbackIndex	= 0;
 		ALIGN ULONG_PTR	TlsCallbackAddress	= 0;
-		// The callback that was rejected and where it pointed, so the launcher
-		// can report why the TLS stage stopped.
+
+
 		ALIGN DWORD					CachedSizeOfImage	= 0;
 		ALIGN DWORD					CachedSizeOfHeaders	= 0;
 		ALIGN DWORD					CachedEntryPoint	= 0;
 		ALIGN DWORD					CachedSectionCount	= 0;
 		ALIGN IMAGE_SECTION_HEADER	CachedSections[MM_MAX_CACHED_SECTIONS]{};
 		ALIGN IMAGE_DATA_DIRECTORY	CachedDataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]{};
-		// A10: what the TLS registration set and what a failure unwind has to
-		// give back. TlsDirectory hands the directory from the setup stage to
-		// the callback stage; TlsIndexAddress caches the in-image _tls_index
-		// location because MMI_CleanDataDirectories zeroes the directory
-		// before MMI_CleanUp runs, and the unwind must not depend on a wiped
-		// struct; TlsIndex is the TlsAlloc slot patched into the image's
-		// _tls_index; TlsIndexPrior is that variable's pre-patch value;
-		// TlsBlock/TlsBlockSize are the template block on the loader heap that
-		// this thread's slot points at.
+
+
  		ALIGN void *	TlsDirectory	= nullptr;
-		ALIGN DWORD *	TlsIndexAddress	= nullptr;
-		ALIGN DWORD	TlsIndex		= 0;
-		ALIGN DWORD	TlsIndexPrior	= 0;
-		ALIGN void *	TlsBlock		= nullptr;
-		ALIGN DWORD	TlsBlockSize	= 0;
-		// Everything the shell learned about its own execution is copied back
-		// into this block for the host to read.
+ 		ALIGN void *	TlsDummyLdr		= nullptr;
+ 		ALIGN void *	TlsDdagNode		= nullptr;
+
+
+
+		ALIGN DWORD	TlsDummyLdrSize		= 0;
+		ALIGN DWORD	TlsDdagNodeSize		= 0;
+
+
+
+
+		ALIGN DWORD	TlsIndex			= 0;
+		ALIGN DWORD	TlsIndexPrior		= 0;
+		ALIGN DWORD	TlsDataLive			= 0;
+		ALIGN DWORD	TlsExpectedIndex	= 0;
+		ALIGN DWORD64	TlsBitmapBefore		= 0;
+		ALIGN DWORD64	TlsBitmapAfter		= 0;
+		ALIGN ULONG_PTR	TlsSlotBefore		= 0;
+		ALIGN ULONG_PTR	TlsSlotAfter		= 0;
+
+
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
 
  		ALIGN DWORD SectionProtCount = 0;
@@ -390,11 +391,11 @@ __forceinline size_t MMI_ImageStringLength(const MMAP_NATIVE::MANUAL_MAPPING_DAT
 	return length == maximum ? 0 : length;
 }
 
-// A3: identifies the two debug-print exports by length and byte-immediate
-// comparison. No string literals and no static arrays: this helper is
-// inlined into the copied shell, where a data reference would point outside
-// the copied span. "OutputDebugStringA" and "OutputDebugStringW" are both 18
-// characters.
+
+
+
+
+
 __forceinline bool MMI_IsDebugPrintImport(const char * name, size_t length) noexcept
 {
 	if (!name || length != 18)
@@ -450,12 +451,12 @@ __forceinline void DeleteObject(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f, 
 	}
 }
 
-// A2: zero a loader-heap block before returning it to the heap. The loader heap
-// is shared with the rest of ntdll, so a freed-but-unscrubbed block is a
-// readable record of the mapped image (module names, paths, the fabricated
-// loader entry) long after the load has finished. Bytes must be the exact
-// allocation size; the caller owns that value because this helper has no way to
-// recover it from the block header.
+
+
+
+
+
+
 template <class T>
 __forceinline void ScrubFreeObject(MMAP_NATIVE::MANUAL_MAPPING_FUNCTION_TABLE * f, T * Object, size_t Bytes)
 {

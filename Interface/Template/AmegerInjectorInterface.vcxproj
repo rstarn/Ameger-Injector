@@ -52,7 +52,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>None</DebugInformationFormat>
       <PreprocessorDefinitions>AMEGER_RUNTIME_DLL_HASH0=$(AmegerRuntimeHash0);AMEGER_RUNTIME_DLL_HASH1=$(AmegerRuntimeHash1);AMEGER_RUNTIME_DLL_HASH2=$(AmegerRuntimeHash2);AMEGER_RUNTIME_DLL_HASH3=$(AmegerRuntimeHash3);AMEGER_RUNTIME_DLL_HASH4=$(AmegerRuntimeHash4);AMEGER_RUNTIME_DLL_HASH5=$(AmegerRuntimeHash5);AMEGER_RUNTIME_DLL_HASH6=$(AmegerRuntimeHash6);AMEGER_RUNTIME_DLL_HASH7=$(AmegerRuntimeHash7);AMEGER_STRING_SEED=$(AmegerStringSeed);AMEGER_CONFIG_MAGIC_STR=&quot;$(AmegerConfigMagic)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..;$(ProjectDir)..\..\Ameger;$(ProjectDir)..\Source;$(ProjectDir)..\Source\PCH;D:\Ameger\Mapper\Mapper;D:\Ameger\Injector\Ameger\Kernel;D:\Ameger\Mapper\Mapper\Symbols\Handler;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..;$(ProjectDir)..\..\Ameger;$(ProjectDir)..\Source;$(ProjectDir)..\Source\PCH;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>PCH.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)Interface.pch</PrecompiledHeaderOutputFile>
@@ -60,8 +60,6 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
-      <AdditionalDependencies>Mapper.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>D:\Ameger\Injector\Build\Library;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -73,9 +71,6 @@
     <ClInclude Include="..\Source\PCH\PCH.h" />
     <ClCompile Include="..\Source\Interface\Process.cpp" />
       <ClCompile Include="..\Source\Main.cpp" />
-    <ClCompile Include="..\..\Ameger\Kernel\Client.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-    </ClCompile>
     <ClCompile Include="..\Source\Interface\Stealth.cpp" />
     <ClCompile Include="..\Source\Interface\Interface.cpp" />
     <ClCompile Include="..\Source\PCH\PCH.cpp">

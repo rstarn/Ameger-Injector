@@ -16,9 +16,9 @@ namespace
 	MAP_STATS g_LastMapStats{};
 	VERIFIABLE_EXEC_TELEMETRY g_LastExecTelemetry{};
 
-	// Writes into the target and insists that every byte landed. A partial
-	// write that is reported as a success would leave the staging area half
-	// filled, and the shell would run against whatever happened to be there.
+
+
+
 	bool WriteRemoteExact(HANDLE hTargetProc, void * address, const void * buffer, SIZE_T size)
 	{
 		if (!hTargetProc || !address || !buffer || !size)
@@ -38,10 +38,10 @@ namespace
 	{
 		static_assert(sizeof(MAP_STATS) % sizeof(LONG) == 0, "MAP_STATS must be a whole number of LONGs");
 
-		// The block is published a word at a time so that a reader never sees
-		// a half-written value. The copy is taken through a value-initialised
-		// instance first, so every word that is published is a defined value
-		// rather than whatever the caller's object happened to hold.
+
+
+
+
 		MAP_STATS copy{};
 		copy = Src;
 
@@ -67,8 +67,8 @@ namespace
 	{
 		static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0, "telemetry must be LONG-multiple");
 
-		// Same word-at-a-time publication rule as StoreMapStats, for the same
-		// reason: no reader may observe a half-written telemetry block.
+
+
 		VERIFIABLE_EXEC_TELEMETRY copy{};
 		copy = Src;
 
@@ -92,22 +92,22 @@ namespace
 
 	constexpr SIZE_T kScrubChunk = 0x100000;
 
-	// Resolves the target process's ntdll.dll base by walking its PEB loader list.
-	//
-	// The remote shell's dispatch table holds absolute addresses taken from this
-	// process's ntdll image (see MANUAL_MAPPING_FUNCTION_TABLE), and the remote
-	// syscall stubs jump through a gadget inside that same image. Both are only
-	// meaningful in the target while ntdll sits at the same base in both
-	// processes, so the base has to be confirmed rather than assumed.
-	//
-	// Returns false when the target's loader state cannot be inspected; the caller
-	// treats that as a refusal, never as a pass.
-	//
-	// The PEB walk is the primary route, but it is not the only one: a process
-	// whose loader data has not been published reports a null Ldr pointer, and
-	// that is a real state on modern Windows rather than a broken read. The
-	// loader's own module list is consulted as a fallback, because it is built
-	// from the same data by the kernel and is available in that state.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	bool ResolveRemoteNtdllBaseFromModuleList(DWORD target_pid, ULONG_PTR & base_out)
 	{
 		base_out = 0;
@@ -166,8 +166,8 @@ namespace
 		}
 
 		PEB_LDR_DATA * ldr = nullptr;
-		// A pointer-sized value is read out of the target, so the size is
-		// spelled out rather than taken from the variable.
+
+
 		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
 			LOG(1, "ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
@@ -182,8 +182,8 @@ namespace
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
-		// The list links are addresses inside the target, so the walk compares
-		// target addresses, not the address of the local copy of the head.
+
+
 		const LIST_ENTRY * head_address = &ldr->InLoadOrderModuleListHead;
 		LIST_ENTRY * current = head.Flink;
 		ULONG depth = 0;
@@ -198,8 +198,8 @@ namespace
 				return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 			}
 
-			// The list link is embedded in the loader entry; walk back from the
-			// link's target address to the start of the entry.
+
+
 			const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
 
 			UNICODE_STRING name{ };
@@ -230,12 +230,12 @@ namespace
 		return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 	}
 
-	// A6: the payload is mapped here, on the host side, before the victim
-	// thread is ever hijacked. The shell used to decrypt an entire raw copy in
-	// the target and copy it section by section from the victim thread, which
-	// kept the victim's RIP inside a private executable region for the whole
-	// load. The host now writes the finished image into a plain RW allocation
-	// (never RWX); the hijacked thread only runs the loader-dependent tail.
+
+
+
+
+
+
 	DWORD HostMapRemoteImage(HANDLE hTargetProc, const INJECTION_SOURCE & source, const PE_IMAGE::VIEW & view,
 		MANUAL_MAPPING_DATA & data, void *& base_out, ERROR_DATA & error_data)
 	{
@@ -259,10 +259,10 @@ namespace
 
 		const unsigned __int64 map_t0 = __rdtsc();
 
-		// The image's own base is tried first. When it is free the mapped bytes
-		// are exactly what the linker emitted and relocation collapses to a
-		// pointer check; the fallback address is what the relocation pass is
-		// for.
+
+
+
+
 		void * remote_base = ReCa<void *>(preferred_base);
 		SIZE_T remote_size = size_of_image;
 		NTSTATUS alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
@@ -338,8 +338,8 @@ namespace
 					source.RawData + section.PointerToRawData, section.SizeOfRawData);
 			}
 
-			// L5: the previous writable-data normalisation was a no-op; the
-			// section characteristics are preserved verbatim.
+
+
 		}
 
 		const ULONG_PTR remote_address = ReCa<ULONG_PTR>(remote_base);
@@ -407,11 +407,11 @@ namespace
 			const IMAGE_DATA_DIRECTORY & load_config =
 				mapped_nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
 
-			// Only the fields through SecurityCookie are read here, so the
-			// directory is required to cover exactly that span rather than the
-			// full modern structure: a valid load config that stops after the
-			// cookie must not be rejected for being shorter than the newest
-			// layout.
+
+
+
+
+
 			const SIZE_T cookie_span = offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) + sizeof(ULONG_PTR);
 			if (load_config.Size < cookie_span ||
 				load_config.VirtualAddress > size_of_image ||
@@ -498,9 +498,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		return INJ_ERR_WINDOWS_BUILD_UNSUPPORTED;
 	}
-	// The payload is validated here, on this side, before a single byte is
-	// written into the target. The shell validates it again once it has been
-	// decoded in place over there.
+
+
+
 	const DWORD remote_flags = Flags;
 	INJECTION_SOURCE source = Source;
 	PE_IMAGE::VIEW source_view;
@@ -540,10 +540,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 	data.NtOffsets = g_DynamicOffsets;
 
-	// A6: the image is mapped, relocated and cookie-initialized on this side.
-	// The shell therefore never runs a single byte of that work inside the
-	// victim; it only performs the loader-dependent tail that genuinely has to
-	// execute in the target.
+
+
+
+
 	void * image_base = nullptr;
 	const DWORD map_result = HostMapRemoteImage(hTargetProc, source, source_view, data, image_base, error_data);
 	if (map_result != INJ_ERR_SUCCESS)
@@ -561,12 +561,12 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		}
 	});
 
-	// A6: completion event. The shell signals it immediately before returning
-	// from the routine, so the host can stop polling the state page at once
-	// instead of discovering completion on the next poll tick. The handle is
-	// duplicated into the target and closed there by the shell; if duplication
-	// is unavailable (a limited donor handle), the load proceeds on the poll
-	// path and this remains null.
+
+
+
+
+
+
 	UniqueHandle completion_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
 	HANDLE completion_event_remote = nullptr;
 	if (completion_event)
@@ -585,8 +585,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	data.CompletionEvent = completion_event_remote;
 
-	// Until the shell actually runs, this side owns the duplicated handle: any
-	// host-side failure must close it from the target's handle table.
+
+
 	bool remote_event_owned = completion_event_remote != nullptr;
 	auto remote_event_guard = MakeScopeExit([&]() noexcept {
 		if (remote_event_owned && completion_event_remote)
@@ -596,13 +596,13 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		}
 	});
 
-	// The remote shell is assembled from *this* process's ntdll addresses: the
-	// loader internals are resolved by symbol against the local ntdll and their
-	// absolute addresses are written straight into the target's dispatch table.
-	// That is only correct while both processes have ntdll mapped at the same base,
-	// which is the normal case on Windows but is not something the loader may rely
-	// on. Verify it explicitly and fail closed instead of executing the remote
-	// shell against a function table full of foreign addresses.
+
+
+
+
+
+
+
 	{
 		const ULONG_PTR local_ntdll = reinterpret_cast<ULONG_PTR>(g_hNTDLL);
 		if (!local_ntdll)
@@ -651,10 +651,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		SC_NtQueryInformationProcess,
 	};
 
-	// The remote stub table is followed by an eight byte slot that holds the ntdll
-	// gadget address. Every remote stub jumps through that slot instead of
-	// embedding a `syscall` instruction, so the target never holds a `0F 05`
-	// pattern in memory of its own.
+
+
+
+
 	const SIZE_T stub_table_size	= static_cast<SIZE_T>(SC_REMOTE_STUB_COUNT) * SC_STUB_SIZE;
 	const SIZE_T stub_area_size		= stub_table_size + sizeof(void *);
 	const SIZE_T exec_area_size		= static_cast<SIZE_T>(ShellSize) + stub_area_size;
@@ -692,8 +692,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 
 	RemoteAllocation allocation_guard(hTargetProc, pAllocBase);
-	// The staging allocation is released and zeroed on every exit path unless
-	// the remote shell is still running and must be left alone.
+
+
 	bool leak_staging = false;
 
 	auto cleanup_guard = MakeScopeExit([&]() noexcept {
@@ -741,14 +741,14 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	table_local->MMIHP_PreprocessModuleName		= ReCa<decltype(MMIH_PreprocessModuleName)		*>(pShells + (ReCa<BYTE *>(MMIH_PreprocessModuleName)		- mmap_sec_base));
 	table_local->MMIHP_LoadModule				= ReCa<decltype(MMIH_LoadModule)				*>(pShells + (ReCa<BYTE *>(MMIH_LoadModule)					- mmap_sec_base));
-	// The two module helpers are addressed the same way as the stages: an
-	// offset relative to the start of the shell, rebased onto the copy that
-	// lives in the target.
+
+
+
 	{
-		// The staging buffer mirrors the remote layout exactly: the stub table
-		// followed by the eight byte gadget slot. The stubs are emitted against the
-		// remote base address so their RIP-relative jump displacements are already
-		// correct once the buffer lands in the target.
+
+
+
+
 		BYTE stub_slab[SC_REMOTE_STUB_COUNT * SC_STUB_SIZE + sizeof(void *)]
 		{
 			0
@@ -783,8 +783,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			}
 		}
 
-		// The gadget slot travels with the stubs: it holds the ntdll `syscall ; ret`
-		// address that every remote stub jumps through.
+
+
 		if (!WriteRemoteExact(hTargetProc, pStubArea, stub_slab, sizeof(stub_slab)))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -806,11 +806,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	data.FunctionTable = ReCa<MANUAL_MAPPING_FUNCTION_TABLE *>(pFunctionTable);
 
-	// A3: a bare return inside ntdll, located in this process's copy. The
-	// target's ntdll sits at the same verified base, so the address is valid
-	// there too. The import stages point OutputDebugStringA/W at it so the
-	// debug-print exception is never raised; landing on a 0xC3 byte executes a
-	// complete return regardless of the instruction stream it sits inside.
+
+
+
+
+
 	{
 		BYTE * ods_ret = nullptr;
 		const BYTE * ntdll_base = ReCa<const BYTE *>(g_hNTDLL);
@@ -892,10 +892,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	LOG(1, "Staging Dispatch Written To Memory\n");
 
 	{
-		// The RX span covers the shell *and* the whole remote stub area (the stub
-		// table plus the trailing gadget slot). It is measured from the actual
-		// layout rather than from exec_area_size, because the stub area starts at a
-		// 16-byte aligned offset that can sit past the end of a page-rounded size.
+
+
+
+
 		const SIZE_T code_bytes = static_cast<SIZE_T>((pStubArea + stub_area_size) - pShells);
 		if (code_bytes)
 		{
@@ -931,25 +931,23 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED)
 		{
-			// The stub may still execute. The shell owns the image from here
-			// and will free it through its cleanup path; the completion event
-			// is closed by the shell as well.
-			// C1: the shell owns the staging allocation from here; release the
-			// host guard so its destructor cannot free it out from under the
-			// still-running shell.
+
+
+
+
+
+
 			leak_staging = true;
 			image_guard.release();
 			allocation_guard.release();
 			remote_event_owned = false;
 
-		// If that donor never runs after all, nothing in the target will
-		// free these two allocations, and the host has released both
-		// guards. MAP_STATS has only one (base, size) pair, so only the
-		// image base is recorded. The staging allocation at pAllocBase is
-		// the same order of magnitude (image_span plus staging overhead)
-		// and is reported under the same size, but its base is not
-		// separately tracked. This is a known telemetry limitation, not a
-		// description of what the struct holds.
+
+
+
+
+
+
 			{
 				MAP_STATS Retained{ };
 				Retained.RetainedAllocBase = ReCa<ULONG_PTR>(image_base);
@@ -959,13 +957,13 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		}
 		else
 		{
-			// Every other failure - including SR_HT_ERR_REMOTE_PENDING_TIMEOUT,
-			// which only ever arrives after the donor's context was confirmed
-			// rewound with the shell never started - leaves the image ours: no
-			// code in the target can ever touch it again. L1: scrub before
-			// releasing so the failure path does not leave the mapped image
-			// behind in the target; the staging and the target-side duplicated
-			// event handle are reclaimed by their own guards.
+
+
+
+
+
+
+
 			ScrubRemoteRegion(hTargetProc, image_base, image_span, kScrubChunk);
 			image_guard.reset();
 		}
@@ -974,9 +972,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	}
 
-	// The remote routine ran, so the image and the duplicated event belong to
-	// the shell path now: it frees the image on a failed load and closes the
-	// event on every exit.
+
+
+
 	image_guard.release();
 	remote_event_owned = false;
 
@@ -994,9 +992,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	StoreMapStats(data.MapStats);
 	StoreExecTelemetry(data.ExecTelemetry);
 
-	// A6: the completion event is the shell's direct "routine is returning"
-	// signal. A signaled event together with a zero CompletionEventStatus is
-	// proof that the shell reached its exit path and closed its own handle.
+
+
+
 	{
 		const bool event_signaled = completion_event &&
 			WaitForSingleObject(completion_event.get(), 0) == WAIT_OBJECT_0;
@@ -1016,9 +1014,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 				(unsigned)data.ExecTelemetry.CompletionEventStatus);
 		}
 
-		// The shell nulls this field when it closes the handle. A value that is
-		// still present means the shell never reached its exit macro; close the
-		// duplicate from this side so the target does not keep a stray handle.
+
+
+
 		if (data.CompletionEvent)
 		{
 			ScNtDuplicateObject(hTargetProc, data.CompletionEvent, nullptr, nullptr,
@@ -1044,9 +1042,9 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		LOG(1, "[ManualMap] [x] Host Map Cycles Missing; The Host-Mapped Image Was Not Reported\n");
 	}
-	// Everything below is telemetry that the shell wrote back into the shared
-	// data block. It is the only way to tell a clean load from a partial one,
-	// because the shell itself runs in the target and cannot report back.
+
+
+
 	if (data.pImageBase && data.CachedSectionCount)
 	{
 		LOG(1, "[ManualMap] [+] Image Relocation: Base = %p | Sections = %u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
@@ -1056,8 +1054,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		LOG(1, "[ManualMap] [x] Image Relocation Produced Nothing (Base = %p | Sections = %u)\n",
 			ReCa<void *>(data.pImageBase), data.CachedSectionCount);
 	}
-	// A zero cycle delta means the entry point was never reached, which is
-	// either an image without an entry point or an earlier stage that aborted.
+
+
 	if (data.ExecTelemetry.DllMainCyclesDelta == 0)
 	{
 		LOG(1, "[ManualMap] [*] DllMain: Not Entered (No Entry Point In Image, Or An Earlier Stage Aborted)\n");
@@ -1067,10 +1065,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		LOG(1, "[ManualMap] [x] DllMain: Result = 0 (False) | Win32 = 0x%08X | Cycles = %llu -- Payload Refused To Initialize\n",
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
-		LOG(1, "[ManualMap] DllMain: LastError = 0x%08X | Before = 0x%08X | Set By Payload = %s\n",
-			data.ExecTelemetry.DllMainLastWin32Error,
-			data.ExecTelemetry.DllMainLastWin32ErrorBefore,
-			(data.ExecTelemetry.DllMainLastWin32Error != data.ExecTelemetry.DllMainLastWin32ErrorBefore) ? "yes" : "no");
 	}
 	else
 	{
@@ -1100,8 +1094,8 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		tls_ok ? "+" : "x",
 		data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted,
 		data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
-	// Either exception table flavour counts as covered; neither means the
-	// payload's own fault handling is not registered.
+
+
 	const bool seh_ok = data.ExecTelemetry.DynamicTableInstalled || data.ExecTelemetry.InvertedTableInstalled;
 	LOG(1, "[ManualMap] [%s] SEH: Dynamic = %d | Inverted = %d | Entry = %p%s\n",
 		seh_ok ? "+" : "*",
@@ -1364,7 +1358,7 @@ bool __declspec(code_seg(".code$11")) __stdcall MMI_FindLoadedModule(MANUAL_MAPP
 	{
 		const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
 		const auto * EntryName = ReCa<const UNICODE_STRING *>(entry + ldr_name_off);
-	// The shell reports which sections it mapped and where the image landed.
+
 		if (EntryName->Length == FullName->Length && EntryName->szBuffer)
 		{
 			bool equal = true;
@@ -1595,10 +1589,10 @@ NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPI
 		ReCa<LDRP_PATH_SEARCH_CONTEXT *>(ctx)->OriginalFullDllName = Module->szBuffer;
 	}
 
-	// The fourth parameter is the loader's optional "reuse this module handle"
-	// slot. It is a pointer, so anything other than null is a bogus handle the
-	// loader would try to dereference; it is passed as null so the loader
-	// resolves the module from the search path like a normal load.
+
+
+
+
 	f->LdrpLoadDllInternal(Module, ReCa<LDRP_PATH_SEARCH_CONTEXT *>(ctx), CtxFlag, nullptr,
 		nullptr, nullptr, ReCa<LDR_DATA_TABLE_ENTRY_WIN11 **>(&entry_out), &ntRet, nullptr);
 
@@ -1643,19 +1637,19 @@ NTSTATUS __declspec(code_seg(".code$13")) __stdcall MMIH_LoadModule(MANUAL_MAPPI
 
 #pragma endregion
 
-// A6: the shell body is copied byte-for-byte into the target, so these helpers
-// are macros: a lambda or an outlined helper would be emitted outside the copied
-// span and the remote copy would call into this process's text.
 
-// A3: the first-chance net for debug-print exceptions the import redirection
-// cannot cover. The redirect points the payload's own OutputDebugStringA/W
-// imports at a bare return, so its logging never raises; but a dependency the
-// shell loads (D3DCOMPILER_47 in a bare notepad, for example) can call
-// OutputDebugString from its own init on the synthetic stack, where no
-// top-level OS handler frame exists to absorb the exception. Measured
-// 2026-10-25: without this guard the target exits with DBG_PRINTEXCEPTION_C.
-// The handler continues exactly the two debug-print codes and passes
-// everything else through the chain untouched.
+
+
+
+
+
+
+
+
+
+
+
+
 LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POINTERS ExceptionInfo)
 {
 	EXCEPTION_RECORD * record = ExceptionInfo ? ExceptionInfo->ExceptionRecord : nullptr;
@@ -1732,9 +1726,9 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 		return INJ_MM_ERR_INVALID_HEAP_HANDLE;
 	}
 
-	// A6: the image in the target was mapped, relocated, and cookie-patched by
-	// the host. The shell adopts that mapping and refuses to continue unless the
-	// host-provided image and cached metadata are all present and well formed.
+
+
+
 	if (!pData->pAllocationBase || !pData->pImageBase ||
 		!pData->CachedSizeOfImage || !pData->CachedSizeOfHeaders ||
 		!pData->CachedSectionCount ||
@@ -1750,16 +1744,16 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 	pData->pOptionalHeader	= &pData->pNtHeaders->OptionalHeader;
 	pData->pFileHeader		= &pData->pNtHeaders->FileHeader;
 
-	// A3: the debug-print protection is two mechanisms. The import stages
-	// below point the payload's own OutputDebugStringA/W imports at a bare
-	// return in ntdll, so its logging never raises the exception at all; and
-	// this first-chance guard absorbs the debug-print exception for
-	// everything the redirect cannot cover - a dependency the shell loads
-	// (D3DCOMPILER_47 in a bare notepad, measured 2026-10-25: without the
-	// guard the target exits with DBG_PRINTEXCEPTION_C) calling
-	// OutputDebugString from its own init on the synthetic stack. The guard
-	// is installed before the first stage that can load or execute anything
-	// and removed on every exit path.
+
+
+
+
+
+
+
+
+
+
 	if (f->RtlAddVectoredExceptionHandler && f->RtlRemoveVectoredExceptionHandler)
 	{
 		pData->DebugPrintVehHandle = f->RtlAddVectoredExceptionHandler(1, MMI_DebugPrintVeh);
@@ -1775,9 +1769,9 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 	MM_SHELL_STAGE(TlsStageCycles, f->MMIP_HandleTLS(pData));
 	MM_SHELL_STAGE(TlsCallbackStageCycles, f->MMIP_RunTlsCallbacks(pData));
 	{
-		// DllMain records its own DllMainCyclesDelta only when the entry point
-		// is actually invoked; a zero value is how the host tells that apart
-		// from an image without an entry point.
+
+
+
 		const DWORD dll_main_ret = f->MMIP_ExecuteDllMain(pData);
 		if (dll_main_ret != INJ_ERR_SUCCESS)
 		{
@@ -1786,9 +1780,9 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 			MM_SHELL_EXIT(dll_main_ret);
 		}
 	}
-	// The header is destroyed last, once everything that still needs it has
-	// run. Everything after this point reads the cached copy of the section
-	// table and the data directories instead of the mapped image.
+
+
+
 	MM_SHELL_STAGE(HeaderStageCycles, f->MMIP_CloakHeader(pData));
 	MM_SHELL_STAGE(DirectoryStageCycles, f->MMIP_CleanDataDirectories(pData));
 	MM_SHELL_STAGE(ProtectStageCycles, f->MMIP_SetPageProtections(pData));
@@ -1818,12 +1812,12 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 	IMAGE_DATA_DIRECTORY	* pImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_IMPORT]);
 	IMAGE_IMPORT_DESCRIPTOR * pImportDescr	= nullptr;
 
-	// An image with no import directory at all is only a problem when the
-	// caller asked for imports to be resolved; without that request there is
-	// simply nothing to resolve. A directory that is present but empty is
-	// malformed either way: the loader would read it as "no imports", the IAT
-	// would keep the hint values it was given on disk, and the payload's first
-	// call through it would jump into garbage.
+
+
+
+
+
+
 	const bool imports_requested = (pData->Flags & INJ_MM_RESOLVE_IMPORTS) != 0;
 
 	if (!pImportDir->VirtualAddress || pImportDir->Size == 0)
@@ -1889,9 +1883,9 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 		}
 
 		HINSTANCE hDll = NULL;
-		// A module that is already loaded is reused as is. Loading it a second
-		// time would give the payload a second copy of its dependencies and a
-		// second set of static initialisers.
+
+
+
 		if (!MMI_FindLoadedModule(pData, &ModNameW, &hDll) || !hDll)
 		{
 			pData->ntRet = f->MMIHP_LoadModule(pData, &ModNameW, ctx_flags, &hDll, &pData->pImportsHead);
@@ -1966,11 +1960,11 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 
 			const size_t import_name_length = MMI_ImageStringLength(pData, pImport->Name);
 
-			// A3: the debug-print imports are pointed at a bare return in
-			// ntdll before the loader ever resolves them, so the payload's
-			// logging becomes a no-op at the call site and the
-			// DBG_PRINTEXCEPTION_C that would walk the target's VEH chain on
-			// the synthetic stack is never raised.
+
+
+
+
+
 			if (pData->OdsReturnStub && MMI_IsDebugPrintImport(pImport->Name, import_name_length))
 			{
 				*pFuncRef = ReCa<UINT_PTR>(pData->OdsReturnStub);
@@ -2048,10 +2042,10 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 	IMAGE_DATA_DIRECTORY		* pDelayImportDir	= ReCa<IMAGE_DATA_DIRECTORY *>(&MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]);
 	IMAGE_DELAYLOAD_DESCRIPTOR	* pDelayImportDescr = nullptr;
 
-	// The same rule as for the ordinary import directory: a directory that is
-	// present but empty is malformed, and a directory that is absent means
-	// there is nothing to resolve. Most images carry no delay imports at all,
-	// so the absent case is the ordinary one and must not be an error.
+
+
+
+
 	if (pDelayImportDir->VirtualAddress && pDelayImportDir->Size == 0)
 	{
 		pData->ntRet = STATUS_INVALID_IMAGE_FORMAT;
@@ -2114,8 +2108,8 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 		}
 
 		HINSTANCE hDll = NULL;
-		// Delay imports follow the same rule as regular imports: reuse what is
-		// already mapped, load the rest through the loader.
+
+
 		if (!MMI_FindLoadedModule(pData, &ModNameW, &hDll) || !hDll)
 		{
 			pData->ntRet = f->MMIHP_LoadModule(pData, &ModNameW, ctx_flags, &hDll, &pData->pDelayImportsHead);
@@ -2192,8 +2186,8 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 				const size_t import_name_length = MMI_ImageStringLength(pData, pImport->Name);
 
-				// A3: the same debug-print redirection as the ordinary import
-				// path, applied to the delay-load name table.
+
+
 				if (pData->OdsReturnStub && MMI_IsDebugPrintImport(pImport->Name, import_name_length))
 				{
 					pIAT->u1.Function = ReCa<UINT_PTR>(pData->OdsReturnStub);
@@ -2266,14 +2260,14 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 	auto f = pData->FunctionTable;
 
 	ULONG OldProtection = 0;
-	// The header page is made read-only when it is not being erased. With
-	// erasure on, the header has already been zeroed and locked down by the
-	// cloak stage and must not be touched again.
+
+
+
 	if (!(pData->Flags & INJ_ERASE_HEADER))
 	{
-		// NtProtectVirtualMemory writes the page-rounded base back through the
-		// pointer it is given, so a local is passed: the shared data block's
-		// pImageBase must stay the allocation base every other stage uses.
+
+
+
 		void * HeaderBase = pData->pImageBase;
 		SIZE_T SizeOut = MMI_SizeOfHeaders(pData);
 		pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &HeaderBase, &SizeOut, PAGE_READONLY, &OldProtection);
@@ -2283,9 +2277,9 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 			return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 		}
 	}
-	// Each section gets the protection its characteristics ask for. The first
-	// failure aborts the loop, so a partial protection state is not left in
-	// place.
+
+
+
 	bool section_failure = false;
 
 	auto pCurrentSectionHeader = MMI_Sections(pData);
@@ -2414,13 +2408,13 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 			pData->ExecTelemetry.DynamicTableInstalled = FALSE;
 		}
 
-		// A5: the dynamic function table is the only registration path. The
-		// old fallback inserted the image into the loader's inverted function
-		// table by writing ntdll's .mrdata under LdrProtectMrdata(FALSE) - a
-		// write into an ntdll-backed page in the target, with no removal API
-		// for the entry it left behind. A registration the documented path
-		// cannot make is now refused instead of bought with that write; the
-		// stage fails and the shell's cleanup releases everything it owns.
+
+
+
+
+
+
+
 		if (!dynamic_ok)
 		{
 			pData->ntRet = STATUS_UNSUCCESSFUL;
@@ -2453,10 +2447,11 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 
 	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->pImageBase + MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
 
-	// A4: a TLS directory that declares neither callbacks nor data exists only
-	// to carry an index. Registering it would take a PEB bitmap bit for
-	// nothing the image can use, so the stage is skipped and the "no loader
-	// entry" telemetry carries the fact.
+
+
+
+
+
 	{
 		bool has_callbacks = false;
 		if (pTLS->AddressOfCallBacks &&
@@ -2482,102 +2477,253 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 		}
 	}
 
-	// A10: the registration no longer goes anywhere near the loader's module
-	// bookkeeping. The old stage fabricated an LDR_DATA_TABLE_ENTRY and a DDAG
-	// node on the loader heap, called LdrpHandleTlsData under the loader lock,
-	// and left a permanent entry on LdrpTlsList - which also meant the loader
-	// copied this payload's TLS template into the TEB slot of every thread the
-	// target created from then on. The index now comes from TlsAlloc, the
-	// template block is allocated on the loader heap and installed in this
-	// thread's slot with TlsSetValue, and the image's _tls_index is patched to
-	// match. What the registration touches, in total: one PEB TlsBitmap bit,
-	// this thread's TEB slot, and one heap block. No loader list entry, no
-	// loader-heap churn beyond that block, no cross-thread spread.
-	if (!f->TlsAlloc || !f->TlsSetValue || !f->TlsFree || !f->RtlAllocateHeap || !f->LdrpHeap || !*f->LdrpHeap)
+	const DWORD ldr_size = pData->NtOffsets.LdrEntrySize ? pData->NtOffsets.LdrEntrySize : sizeof(LDR_DATA_TABLE_ENTRY_WIN11);
+	const DWORD ldr_base_off = pData->NtOffsets.LdrEntryDllBase ? pData->NtOffsets.LdrEntryDllBase : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DllBase));
+	const DWORD ldr_image_off = pData->NtOffsets.LdrEntrySizeOfImage ? pData->NtOffsets.LdrEntrySizeOfImage : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, SizeOfImage));
+	const DWORD ddag_off = pData->NtOffsets.LdrEntryDdagNode ? pData->NtOffsets.LdrEntryDdagNode : static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DdagNode));
+	const DWORD ddag_state_off = pData->NtOffsets.LdrDdagNodeState ? pData->NtOffsets.LdrDdagNodeState : static_cast<DWORD>(offsetof(LDR_DDAG_NODE_WIN11, State));
+	const DWORD ddag_size = pData->NtOffsets.LdrDdagNodeSize ? pData->NtOffsets.LdrDdagNodeSize : sizeof(LDR_DDAG_NODE_WIN11);
+
+	if (!ldr_size || ldr_size > 0x1000 || ldr_base_off + sizeof(void *) > ldr_size)
 	{
-		pData->ntRet = STATUS_ENTRYPOINT_NOT_FOUND;
 		return INJ_MM_ERR_HEAP_ALLOC;
 	}
+	void * pDummyLdrRaw = NewBytes(f, ldr_size);
+	if (!pDummyLdrRaw)
+	{
+		return INJ_MM_ERR_HEAP_ALLOC;
+	}
+	WritePtrField(pDummyLdrRaw, ldr_base_off, pData->pImageBase);
+	if (ldr_image_off + sizeof(ULONG) <= ldr_size)
+	{
+		*ReCa<ULONG *>(ReCa<BYTE *>(pDummyLdrRaw) + ldr_image_off) = MMI_SizeOfImage(pData);
+	}
 
-	// The image's _tls_index variable is the one piece the registration cannot
-	// substitute: without patching it, the payload's __tls_get_value reads
-	// whatever slot the raw image happens to carry.
+
+	void * pDdagRaw = nullptr;
+	if (ddag_off + sizeof(void *) <= ldr_size && ddag_state_off + sizeof(int) <= ddag_size && ddag_size <= 0x800)
+	{
+		pDdagRaw = NewBytes(f, ddag_size);
+		if (!pDdagRaw)
+		{
+			DeleteObject(f, pDummyLdrRaw);
+
+			return INJ_MM_ERR_HEAP_ALLOC;
+		}
+
+		*ReCa<int *>(ReCa<BYTE *>(pDdagRaw) + ddag_state_off) = static_cast<int>(LdrModulesReadyToInit);
+
+
+
+
+		WritePtrField(pDdagRaw, offsetof(LDR_DDAG_NODE_WIN11, Modules), pDdagRaw);
+		WritePtrField(pDdagRaw, offsetof(LDR_DDAG_NODE_WIN11, Modules) + sizeof(void *), pDdagRaw);
+
+		WritePtrField(pDummyLdrRaw, ddag_off, pDdagRaw);
+	}
+
+	auto * pDummyLdr = ReCa<LDR_DATA_TABLE_ENTRY *>(pDummyLdrRaw);
+
+
+
+
+
+
+	pData->TlsDirectory	= pTLS;
+	pData->TlsDummyLdr	= pDummyLdrRaw;
+	pData->TlsDdagNode	= pDdagRaw;
+	pData->TlsDummyLdrSize = ldr_size;
+	pData->TlsDdagNodeSize = pDdagRaw ? ddag_size : 0;
+
+
+
+
+	const bool tls_has_data = pTLS->EndAddressOfRawData > pTLS->StartAddressOfRawData ||
+		pTLS->SizeOfZeroFill != 0;
+	pData->TlsDataLive = tls_has_data ? 1 : 0;
+	pData->ExecTelemetry.TlsHasData = tls_has_data ? 1u : 0u;
+
 	DWORD * const pTlsIndex = (pTLS->AddressOfIndex &&
 		MMI_InImage(pData, ReCa<void *>(pTLS->AddressOfIndex), sizeof(DWORD)))
 		? ReCa<DWORD *>(pTLS->AddressOfIndex) : nullptr;
-	if (!pTlsIndex)
+
+	const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x30));
+	const ULONG_PTR peb = teb ? *ReCa<ULONG_PTR *>(teb + 0x60) : 0;
+	DWORD * tls_bitmap = nullptr;
+	ULONG_PTR * tls_slots = nullptr;
+	if (peb && pData->NtOffsets.PebTlsBitmapBits &&
+		pData->NtOffsets.PebTlsBitmapBits + 2 * sizeof(ULONG) <= 0x400)
 	{
-		return INJ_MM_ERR_INVALID_PE_IMAGE;
+		tls_bitmap = ReCa<DWORD *>(peb + pData->NtOffsets.PebTlsBitmapBits);
+	}
+	if (teb && pData->NtOffsets.TebTlsSlots &&
+		pData->NtOffsets.TebTlsSlots + 64 * sizeof(void *) <= 0x2000)
+	{
+		tls_slots = ReCa<ULONG_PTR *>(teb + pData->NtOffsets.TebTlsSlots);
 	}
 
-	const DWORD index = f->TlsAlloc();
-	if (index == TLS_OUT_OF_INDEXES)
+	ULONG lock_state = 0;
+	ULONG_PTR lock_cookie = 0;
+	pData->ExecTelemetry.TlsLockStatus = f->LdrLockLoaderLock(NULL, &lock_state, &lock_cookie);
+	if (NT_FAIL(pData->ExecTelemetry.TlsLockStatus))
 	{
-		pData->ntRet = STATUS_UNSUCCESSFUL;
-		return INJ_MM_ERR_HEAP_ALLOC;
+		ScrubFreeObject(f, pDdagRaw, ddag_size);
+		ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
+
+		pData->TlsDirectory	= nullptr;
+		pData->TlsDummyLdr	= nullptr;
+		pData->TlsDdagNode	= nullptr;
+		pData->TlsDummyLdrSize = 0;
+		pData->TlsDdagNodeSize = 0;
+
+		return INJ_MM_ERR_LOADER_LOCK_FAILED;
 	}
 
-	// The per-thread block the payload's slot will point at: the raw template
-	// followed by the zero fill, on the loader's heap, 16-byte aligned, in the
-	// same shape the loader's own allocation would have.
-	const ULONGLONG raw_start = pTLS->StartAddressOfRawData;
-	const ULONGLONG raw_end = pTLS->EndAddressOfRawData;
-	SIZE_T raw_span = raw_end > raw_start ? static_cast<SIZE_T>(raw_end - raw_start) : 0;
-	if (raw_span && !MMI_InImage(pData, ReCa<void *>(raw_start), raw_span))
+	pData->TlsIndexPrior = pTlsIndex ? *pTlsIndex : 0;
+	pData->TlsBitmapBefore = tls_bitmap
+		? (static_cast<DWORD64>(tls_bitmap[0]) | (static_cast<DWORD64>(tls_bitmap[1]) << 32))
+		: 0;
+	pData->TlsExpectedIndex = 0xFFFFFFFF;
+	pData->TlsSlotBefore = 0;
+	pData->TlsSlotAfter = 0;
+	if (!tls_has_data && tls_bitmap)
 	{
-		f->TlsFree(index);
-		return INJ_MM_ERR_INVALID_PE_IMAGE;
+
+
+
+		for (DWORD bit = 0; bit < 64; ++bit)
+		{
+			if (!(tls_bitmap[bit >> 5] & (1u << (bit & 31))))
+			{
+				pData->TlsExpectedIndex = bit;
+				if (tls_slots)
+				{
+					pData->TlsSlotBefore = tls_slots[bit];
+				}
+				break;
+			}
+		}
 	}
 
-	SIZE_T block_size = raw_span + pTLS->SizeOfZeroFill;
-	block_size = (block_size + 0xF) & ~static_cast<SIZE_T>(0xF);
-	if (!block_size)
+	pData->ntRet = f->LdrpHandleTlsData(pDummyLdr);
+
+	if (NT_SUCCESS(pData->ntRet))
 	{
-		block_size = 0x10;
+		pData->TlsIndex = pTlsIndex ? *pTlsIndex : 0;
+		pData->ExecTelemetry.TlsIndex = pData->TlsIndex;
+		pData->TlsBitmapAfter = tls_bitmap
+			? (static_cast<DWORD64>(tls_bitmap[0]) | (static_cast<DWORD64>(tls_bitmap[1]) << 32))
+			: 0;
+		if (tls_slots && pData->TlsIndex < 64)
+		{
+			pData->TlsSlotAfter = tls_slots[pData->TlsIndex];
+		}
+
+		const DWORD assigned = pData->TlsIndex;
+		const DWORD assigned_bit = assigned < 64 ? (1u << (assigned & 31)) : 0;
+		const bool bit_now_set = assigned_bit && tls_bitmap &&
+			(tls_bitmap[assigned >> 5] & assigned_bit) != 0;
+
+
+
+
+
+
+
+
+		if (!tls_has_data && bit_now_set &&
+			assigned == pData->TlsExpectedIndex &&
+			pTlsIndex && tls_bitmap && tls_slots && f->LdrpTlsList &&
+			pData->NtOffsets.TlsEntrySize >= sizeof(LIST_ENTRY) + sizeof(void *) &&
+			pData->NtOffsets.TlsEntrySize < 0x1000 &&
+			pData->NtOffsets.TlsEntryModuleEntry + sizeof(void *) <= pData->NtOffsets.TlsEntrySize)
+		{
+			BYTE * tls_entry = nullptr;
+			bool entry_found = false;
+			bool entry_unlinked = false;
+
+			auto node = f->LdrpTlsList->Flink;
+			ULONG guard = 0;
+			while (node && node != f->LdrpTlsList && guard++ < 0x4000)
+			{
+				auto entry_bytes = ReCa<BYTE *>(node);
+				node = node->Flink;
+				if (ReadPtrField(entry_bytes, pData->NtOffsets.TlsEntryModuleEntry) == pDummyLdr)
+				{
+					entry_found = true;
+					auto links = ReCa<LIST_ENTRY *>(entry_bytes);
+					if (links->Blink && links->Flink)
+					{
+						links->Blink->Flink = links->Flink;
+						links->Flink->Blink = links->Blink;
+						entry_unlinked = true;
+						tls_entry = entry_bytes;
+					}
+					break;
+				}
+			}
+
+
+
+
+
+			const bool list_clear = entry_unlinked || (!entry_found && node == f->LdrpTlsList);
+			if (list_clear)
+			{
+				if (!entry_found)
+				{
+					pData->ExecTelemetry.TlsLoaderEntryAbsent = 1;
+				}
+
+				if (entry_unlinked)
+				{
+					ScrubFreeObject(f, tls_entry, pData->NtOffsets.TlsEntrySize);
+					pData->ExecTelemetry.TlsLoaderEntryUnlinked = 1;
+				}
+
+				*pTlsIndex = pData->TlsIndexPrior;
+				pData->ExecTelemetry.TlsIndexRestored = 1;
+
+				tls_bitmap[assigned >> 5] &= ~assigned_bit;
+				pData->ExecTelemetry.TlsBitmapBitCleared = 1;
+
+				tls_slots[assigned] = pData->TlsSlotBefore;
+				pData->ExecTelemetry.TlsSlotCleared = 1;
+
+				ScrubFreeObject(f, pDdagRaw, ddag_size);
+				ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
+				pDdagRaw = nullptr;
+				pDummyLdrRaw = nullptr;
+				pDummyLdr = nullptr;
+
+				pData->TlsDummyLdr = nullptr;
+				pData->TlsDdagNode = nullptr;
+				pData->TlsDummyLdrSize = 0;
+				pData->TlsDdagNodeSize = 0;
+			}
+		}
 	}
-	if (block_size > 0x400000)
+
+	pData->ExecTelemetry.TlsUnlockStatus = f->LdrUnlockLoaderLock(NULL, lock_cookie);
+
+	if (NT_FAIL(pData->ExecTelemetry.TlsUnlockStatus))
 	{
-		f->TlsFree(index);
-		return INJ_MM_ERR_HEAP_ALLOC;
+		return INJ_MM_ERR_LOADER_LOCK_FAILED;
 	}
 
-	void * block = f->RtlAllocateHeap(*f->LdrpHeap, 0, block_size);
-	if (!block)
+	if (NT_FAIL(pData->ntRet))
 	{
-		f->TlsFree(index);
-		pData->ntRet = STATUS_UNSUCCESSFUL;
-		return INJ_MM_ERR_HEAP_ALLOC;
+		ScrubFreeObject(f, pDdagRaw, ddag_size);
+		ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
+
+		pData->TlsDirectory	= nullptr;
+		pData->TlsDummyLdr	= nullptr;
+		pData->TlsDdagNode	= nullptr;
+		pData->TlsDummyLdrSize = 0;
+		pData->TlsDdagNodeSize = 0;
+
+		return static_cast<DWORD>(pData->ntRet);
 	}
-
-	f->RtlZeroMemory(block, block_size);
-	if (raw_span)
-	{
-		f->memmove(block, ReCa<void *>(raw_start), raw_span);
-	}
-
-	if (!f->TlsSetValue(index, block))
-	{
-		ScrubFreeObject(f, block, block_size);
-		f->TlsFree(index);
-		pData->ntRet = STATUS_UNSUCCESSFUL;
-		return INJ_MM_ERR_HEAP_ALLOC;
-	}
-
-	const DWORD prior_index = *pTlsIndex;
-	*pTlsIndex = index;
-
-	pData->TlsDirectory	= pTLS;
-	pData->TlsIndexAddress	= pTlsIndex;
-	pData->TlsIndex		= index;
-	pData->TlsIndexPrior	= prior_index;
-	pData->TlsBlock		= block;
-	pData->TlsBlockSize	= static_cast<DWORD>(block_size);
-
-	pData->ExecTelemetry.TlsIndex = index;
-	pData->ExecTelemetry.TlsHasData = (raw_span != 0 || pTLS->SizeOfZeroFill != 0) ? 1u : 0u;
-	// The loader list was never touched under this scheme, so "no loader entry
-	// exists" is its standing truth rather than an outcome.
-	pData->ExecTelemetry.TlsLoaderEntryAbsent = 1;
 
 	return INJ_ERR_SUCCESS;
 }
@@ -2585,10 +2731,10 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPPING_DATA * pData)
 {
 	auto * pTLS = ReCa<IMAGE_TLS_DIRECTORY *>(pData->TlsDirectory);
-	// Without a TLS directory there is nothing to run; the image simply has no
-	// TLS callbacks. The registration is a TlsAlloc slot plus one heap block
-	// under the A10 scheme, and both are owned by the setup stage's failure
-	// unwind, not by this stage.
+
+
+
+
 	if (!pTLS)
 	{
 		return INJ_ERR_SUCCESS;
@@ -2647,9 +2793,9 @@ DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPP
 			tls_result = INJ_MM_ERR_TLS_CALLBACK_RANGE;
 			break;
 		}
-			// A callback that points outside the image is refused. A payload may
-			// legitimately point at a callback in another already-loaded module,
-			// so that case is allowed, but a dangling pointer is not.
+
+
+
 		const bool callback_in_image = MMI_InImage(pData, ReCa<void *>(Callback), sizeof(BYTE));
 		if (!callback_in_image && !MMI_AddressInLoadedImage(pData, ReCa<void *>(Callback)))
 		{
@@ -2672,12 +2818,12 @@ DWORD __declspec(code_seg(".code$0F")) __stdcall MMI_RunTlsCallbacks(MANUAL_MAPP
 		pData->ExecTelemetry.TlsCallbacksFailed = 0;
 	}
 
-	// The registration is owned by MMI_CleanUp: the TlsAlloc slot, the heap
-	// block this thread's slot points at, and the image's patched _tls_index
-	// all unwind there, after every stage that can still read TLS. No
-	// diagnostic may be emitted here: this function lives in the copied
-	// remote-shell span and LOG resolves to a host .text routine outside it.
-	// What happened is published through ExecTelemetry instead.
+
+
+
+
+
+
 	pData->TlsDirectory = nullptr;
 	return tls_result;
 }
@@ -2724,24 +2870,12 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPI
 
 	f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + MMI_EntryPoint(pData));
 	const unsigned __int64 dll_t0 = __rdtsc();
-	DWORD dll_win32_before = 0;
-	{
-		const DWORD teb_last_error = pData->NtOffsets.TebLastErrorValue;
-		if (teb_last_error && teb_last_error + sizeof(DWORD) <= 0x2000)
-		{
-			const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x30));
-			if (teb)
-			{
-				dll_win32_before = *ReCa<DWORD *>(ReCa<BYTE *>(teb) + teb_last_error);
-			}
-		}
-	}
 	const BOOL dll_result = DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_ATTACH, nullptr);
 	const unsigned __int64 dll_t1 = __rdtsc();
-	// The payload's DllMain is called with the image base as its instance
-	// handle, exactly like the loader would. The tick counter brackets the
-	// call so the launcher can report how long the payload took to
-	// initialise.
+
+
+
+
 	DWORD dll_win32 = 0;
 	{
 		const DWORD teb_last_error = pData->NtOffsets.TebLastErrorValue;
@@ -2756,7 +2890,6 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPI
 	}
 	pData->ExecTelemetry.DllMainResult = dll_result;
 	pData->ExecTelemetry.DllMainLastWin32Error = dll_win32;
-	pData->ExecTelemetry.DllMainLastWin32ErrorBefore = dll_win32_before;
 	pData->ExecTelemetry.DllMainCyclesDelta = (dll_t1 >= dll_t0) ? (dll_t1 - dll_t0) : 0;
 	if (!dll_result)
 	{
@@ -3088,8 +3221,8 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress	= 0;
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_TLS].Size			= 0;
 	}
-					// Resource names are strings; they are wiped along with the rest
-					// of the resource metadata.
+
+
 	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size;
 	if (Size)
 	{
@@ -3102,8 +3235,8 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
 		MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
 	}
-					// A directory entry either points at a subdirectory or at a leaf
-					// data entry. Both offsets are relative to the resource root.
+
+
 	Size = MMI_DataDirectory(pData)[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size;
 	if (Size)
 	{
@@ -3111,9 +3244,9 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 
 		if (MMI_InImage(pData, pResRoot, Size))
 		{
-					// Only the version resource is wiped. It is the one that carries
-					// the payload's identity in a form that is trivially readable,
-					// and removing it does not break anything the payload uses.
+
+
+
 			constexpr int kMaxResourceDepth = 16;
 			constexpr DWORD kMaxResourceDirs = 0x2000;
 			DWORD visited_dirs = 0;
@@ -3246,10 +3379,10 @@ DWORD __declspec(code_seg(".code$0C")) __stdcall MMI_CleanDataDirectories(MANUAL
 
 		pData->MapStats.ResidualMask	= residual;
 		pData->MapStats.Verified		= residual ? 0u : 1u;
-		// With INJ_ERASE_HEADER the in-image header was already wiped and the
-		// cached copy is the only readable source, so this read-back can only
-		// prove that the cache is consistent. Report that instead of implying
-		// an independent verification of the target's memory.
+
+
+
+
 		pData->MapStats.VerifiedCachedCopy = (pData->Flags & INJ_ERASE_HEADER) ? 1u : 0u;
 	}
 
@@ -3275,19 +3408,19 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
-	// The structural size covers the DOS header, the NT headers and the
-	// section table; the wipe covers everything up to the first section,
-	// which is the region a scanner looks at to identify the image.
+
+
+
 	const DWORD e_lfanew		= pDos->e_lfanew;
-	const DWORD nt_size			= static_cast<DWORD>(sizeof(IMAGE_NT_HEADERS64));						
-	const DWORD section_size	= static_cast<DWORD>(sizeof(IMAGE_SECTION_HEADER));						
-	const DWORD opt_hdr_off		= static_cast<DWORD>(FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader));	
+	const DWORD nt_size			= static_cast<DWORD>(sizeof(IMAGE_NT_HEADERS64));
+	const DWORD section_size	= static_cast<DWORD>(sizeof(IMAGE_SECTION_HEADER));
+	const DWORD opt_hdr_off		= static_cast<DWORD>(FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader));
 	const DWORD size_optional	= pNt->FileHeader.SizeOfOptionalHeader;
 	DWORD		num_sections	= pNt->FileHeader.NumberOfSections;
 	const DWORD size_of_image	= pNt->OptionalHeader.SizeOfImage;
-	// The wiped region is scanned for the signatures that identify a PE
-	// image. The counts are reported so the launcher can prove the wipe
-	// actually happened rather than just claim it did.
+
+
+
 	DWORD limit = size_of_image;
 	DWORD pre_section = 0;
 	if (num_sections)
@@ -3297,10 +3430,10 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		{
 			limit = first_section;
 		}
-		// A first section whose RVA does not fall inside the image cannot
-		// bound the wipe: treating an out-of-range RVA as the image size
-		// would zero the whole mapped image, so it is ignored here and the
-		// structural header span alone is wiped.
+
+
+
+
 		if (first_section && first_section < size_of_image)
 		{
 			pre_section = first_section;
@@ -3324,8 +3457,8 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		const DWORD room = limit - e_lfanew;
 		nt_bytes = room < nt_size ? room : nt_size;
 	}
-	// The header is locked down completely. Nothing needs to read it again,
-	// and the protection keeps a reader from mapping it.
+
+
 	DWORD sec_bytes = 0;
 	const DWORD sec_off = e_lfanew + opt_hdr_off + size_optional;
 	if (sec_off < limit)
@@ -3347,9 +3480,9 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	{
 		structural_size = sec_off + sec_bytes;
 	}
-	// The image is only released when nothing points into it any more. If
-	// the inverted function table refers to it, the image has to stay
-	// mapped and the leak is reported in the map statistics.
+
+
+
 	DWORD wipe_size = structural_size;
 	if (pre_section && pre_section > wipe_size)
 	{
@@ -3370,12 +3503,12 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
-	// The region is counted twice: once before the wipe, so the report can say
-	// what was there, and once after it, so the report can prove that what was
-	// there is gone. A scan that only ran after the wipe would be reading a
-	// region that had just been zeroed and could therefore never find
-	// anything; it would say "zero remnants" whether the wipe had happened
-	// or not.
+
+
+
+
+
+
 	DWORD scan_mz_before = 0;
 	DWORD scan_pe_before = 0;
 	DWORD scan_mz_after = 0;
@@ -3399,9 +3532,9 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 		}
 	}
 
-	// The pre-section region is destroyed. Everything the loader would have
-	// used to identify the image goes with it: the DOS stub, the NT headers
-	// and the section table.
+
+
+
 	f->RtlZeroMemory(pData->pImageBase, wipe_size);
 
 	{
@@ -3421,19 +3554,19 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 			}
 		}
 	}
-	// The header region is made inaccessible rather than merely read-only,
-	// so a reader that maps the image gets nothing back.
+
+
 	const ULONG final_access = PAGE_NOACCESS;
 	pData->ntRet = f->NtProtectVirtualMemory(NtCurrentProcess(), &base, &region, final_access, &old_access);
 	if (NT_FAIL(pData->ntRet))
 	{
 		return INJ_MM_ERR_UPDATE_PAGE_PROTECTION;
 	}
-	// The wipe is recorded in the map statistics so the launcher can verify
-	// the size that was cleared and the protection it was left with. The map
-	// statistics carry the counts from before the wipe, because that is what
-	// the region actually contained; the execution telemetry carries the
-	// counts from after it, because that is what survived.
+
+
+
+
+
 	pData->MapStats.HeaderStructuralSize	= structural_size;
 	pData->MapStats.HeaderWipeSize			= wipe_size;
 	pData->MapStats.HeaderWipeProtect		= final_access;
@@ -3457,39 +3590,8 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 
 	auto f = pData->FunctionTable;
 
-	// A10: the TlsAlloc registration unwinds here, after every stage that can
-	// still read TLS (the detach above included). Order matters: the image's
-	// _tls_index is restored first so nothing can look the slot up again, then
-	// the block is scrubbed and freed, then the slot itself is released. The
-	// index location comes from the cached TlsIndexAddress, not from the
-	// directory: MMI_CleanDataDirectories zeroes the TLS directory before this
-	// runs on a post-cloak failure path, and the unwind must not depend on a
-	// wiped struct.
-	if (pData->TlsIndexAddress && pData->TlsBlockSize && pData->TlsBlock && pData->TlsIndex != 0 && pData->TlsIndex != TLS_OUT_OF_INDEXES)
-	{
-		if (MMI_InImage(pData, pData->TlsIndexAddress, sizeof(DWORD)))
-		{
-			*pData->TlsIndexAddress = pData->TlsIndexPrior;
-			pData->ExecTelemetry.TlsIndexRestored = 1;
-		}
 
-		ScrubFreeObject(f, pData->TlsBlock, pData->TlsBlockSize);
-		pData->TlsBlock = nullptr;
-		pData->TlsBlockSize = 0;
 
-		if (f->TlsFree(pData->TlsIndex))
-		{
-			pData->ExecTelemetry.TlsBitmapBitCleared = 1;
-		}
-		pData->ExecTelemetry.TlsSlotCleared = 1;
-
-		pData->TlsIndex = 0;
-		pData->TlsIndexAddress = nullptr;
-		pData->TlsDirectory = nullptr;
-	}
-
-	// M7: if DllMain attached, detach before dependencies are unloaded and the
-	// image is freed, so payload resources do not outlive the image.
 	if (pData->ExecTelemetry.DllMainResult && pData->ExecTelemetry.DllMainCyclesDelta != 0 &&
 		MMI_EntryPoint(pData))
 	{
@@ -3533,7 +3635,7 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 		const BOOLEAN deleted = f->RtlDeleteFunctionTable(pData->pDynamicFunctionTable);
 		if (!deleted)
 		{
-			// Retain the image when the function table cannot be removed.
+
 			pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pImageBase);
 		}
 	}
@@ -3603,9 +3705,6 @@ MANUAL_MAPPING_FUNCTION_TABLE::MANUAL_MAPPING_FUNCTION_TABLE()
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpHeap);
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpInvertedFunctionTable);
 	NT_FUNC_CONSTRUCTOR_INIT(LdrpTlsList);
-	NT_FUNC_CONSTRUCTOR_INIT(TlsAlloc);
-	NT_FUNC_CONSTRUCTOR_INIT(TlsSetValue);
-	NT_FUNC_CONSTRUCTOR_INIT(TlsFree);
 }
 
 void ResetMapStats()

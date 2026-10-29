@@ -1,4 +1,4 @@
-﻿#include "Core/Utility/Header/PrecompiledHeader.h"
+#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Error.h"
 
@@ -96,9 +96,9 @@ void custom_print(int indention_offset, const char * format, ...)
 
 	if (result > 0)
 	{
-		// The formatted line is handed to the host's callback when one is
-		// installed, and to the console otherwise. The lock keeps two
-		// threads from interleaving their output.
+
+
+
 		AcquireSRWLockExclusive(&g_print_lock);
 
 		if (f_raw_print_callback callback = g_print_raw_callback.load())

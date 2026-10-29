@@ -4,21 +4,21 @@
 
 #include <intrin.h>
 
-// The post-injection verification suite.
-//
-// Every check runs against the live target process after the payload has been
-// mapped: the mapped image, its protections, its exception handling, its TLS
-// state and the forensic traces it leaves behind. The suite is the launcher's
-// proof that the load actually took, not just that the call returned.
+
+
+
+
+
+
 
 namespace stealth
 {
     void ReportGameTraps(HANDLE process, DWORD target_pid, StealthVerifierBuffers & buffers);
 
-    // The x64 load-configuration layout. The SDK's IMAGE_LOAD_CONFIG_DIRECTORY
-    // is the 32-bit structure, so the offsets of the fields this suite reads
-    // out of a 64-bit image have to be stated explicitly. Reading the 32-bit
-    // offsets out of a 64-bit image silently returns the wrong field.
+
+
+
+
     namespace LoadConfig64
     {
         constexpr SIZE_T kSecurityCookie = 0x58;
@@ -31,11 +31,11 @@ namespace stealth
         constexpr DWORD kGuardCfInstrumentedAndImportsInstrumented = 0x00001000;
     }
 
-    // The time-stamp counter runs at the core's nominal frequency, which is
-    // not 3.2 GHz on any current part and is not fixed across parts at all.
-    // The frequency is measured once against the performance counter, so the
-    // cycle deltas the remote shell reports can be turned into a real
-    // duration. Returns 0 when the calibration could not be performed.
+
+
+
+
+
     double MeasureTscHz()
     {
         static const double hz = []()
@@ -48,8 +48,8 @@ namespace stealth
                 return 0.0;
             }
 
-            // The first reading is taken after a short warm-up so the caches
-            // and the branch predictor are not part of the measurement.
+
+
             ULONGLONG tsc_warm = __rdtsc();
             QueryPerformanceCounter(&start);
             Sleep(60);
@@ -69,10 +69,10 @@ namespace stealth
             }
 
             const double measured = static_cast<double>(tsc_end - tsc_warm) / seconds;
-            // A plausible TSC runs somewhere between 100 MHz and 10 GHz. A
-            // measurement outside that band means the calibration was not
-            // trustworthy, and the caller is told so rather than being given
-            // a number it would print as a fact.
+
+
+
+
             if (measured < 1.0e8 || measured > 1.0e10)
             {
                 return 0.0;
@@ -82,9 +82,9 @@ namespace stealth
         return hz;
     }
 
-    // Turns a cycle delta into milliseconds using the measured counter
-    // frequency. Returns false when no usable frequency is available, in which
-    // case the caller reports the raw cycle count and nothing else.
+
+
+
     bool CyclesToMilliseconds(ULONGLONG cycles, double & milliseconds)
     {
         const double hz = MeasureTscHz();
@@ -458,22 +458,22 @@ namespace stealth
                     census_done ? L"" : L" [Truncated At 100k Regions]");
                 if (rx_private)
                 {
-                    // B1: the private-RX count is attributed by address range
-                    // rather than asserted: the regions inside this load's
-                    // image are counted separately from the ones the target
-                    // carried before the load, so the number an onlooker's
-                    // self-census would see is split into ours and theirs.
+
+
+
+
+
                     const unsigned long pre_existing = rx_private > rx_this_load ? rx_private - rx_this_load : 0;
                     LOG(0, L"      %ls[!]%ls %ls%lu%s Private-RX Region(s) Process-Wide: %ls%lu%s Belong To This Load's Image @ %p | %ls%lu%s Pre-Existing In The Target; Each Is VAD-Visible With No Loader Entry\n",
                         kYellow, kReset, kYellow, rx_private, kReset,
                         kYellow, rx_this_load, kReset, hRemoteBase,
                         kYellow, pre_existing, kReset);
                 }
-                // rx_private is a process-wide census over the whole VAD, not a
-                // measurement of this load alone, so the count is presented as
-                // process-wide and the image's own share is stated separately.
-                // Staging teardown is a mapper property that is not re-checked
-                // here, so it is called out as a design assertion.
+
+
+
+
+
                 LOG(0, L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | This Load's Image = %ls%lu%s Of %ls%lu%s RX Region(s) (Inherent To Manual Map)\n",
                     kGreen, kReset, wx_rwx ? kYellow : kGreen, wx_rwx, kReset,
                     kGreen, rx_this_load, kReset,
@@ -969,9 +969,9 @@ namespace stealth
     };
     inline bool QueryRemoteDebugPort(HANDLE process, DebugPortSurvey & out);
     bool IsSafeCodePage(HANDLE process, ULONG_PTR address, size_t size);
-    // Reads the name of a string that lives inside the target's image. The
-    // read is bounded by the image extent and by the length of the buffer, so
-    // a malformed image cannot make this run past the end of anything.
+
+
+
     bool ReadRemoteImageString(HANDLE process, ULONG_PTR image_base, SIZE_T image_size, DWORD rva,
         char * out, size_t out_size)
     {
@@ -1001,9 +1001,9 @@ namespace stealth
             return false;
         }
 
-        // The string ends at the first terminator inside what was read. The
-        // bytes after it belong to something else in the image and are not
-        // part of the name.
+
+
+
         SIZE_T length = 0;
         while (length < got && out[length] != '\0')
         {
@@ -1016,8 +1016,8 @@ namespace stealth
             return false;
         }
 
-        // Only printable characters are accepted, so a name that is really
-        // binary data does not end up in the report.
+
+
         for (SIZE_T i = 0; i < length; ++i)
         {
             const unsigned char c = static_cast<unsigned char>(out[i]);
@@ -1030,10 +1030,10 @@ namespace stealth
         return true;
     }
 
-    // Reads the module name and the first imported function name of one
-    // import descriptor. A count on its own does not say which module a
-    // target depends on, and the name is what turns the shape into an
-    // answer.
+
+
+
+
     void ReadRemoteImportNames(HANDLE process, ULONG_PTR image_base, SIZE_T image_size,
         const IMAGE_IMPORT_DESCRIPTOR & entry, std::wstring & dll_out, std::wstring & function_out)
     {
@@ -1050,9 +1050,9 @@ namespace stealth
             }
         }
 
-        // The import name table holds the original entries; the address table
-        // holds the bound ones. Either can be used, and the original table is
-        // preferred because it is the one that still carries the names.
+
+
+
         const DWORD thunk_rva = entry.OriginalFirstThunk ? entry.OriginalFirstThunk : entry.FirstThunk;
         if (!thunk_rva || thunk_rva >= image_size)
         {
@@ -1079,7 +1079,7 @@ namespace stealth
             {
                 return;
             }
-            // A high bit set means the entry is an ordinal, not a name.
+
             if (thunk & (static_cast<ULONG_PTR>(1) << 63))
             {
                 function_out = L"Ordinal " + std::to_wstring(thunk & 0xFFFF);
@@ -1092,7 +1092,7 @@ namespace stealth
                 return;
             }
 
-            // The hint precedes the name, so the string starts two bytes in.
+
             char function_name[256] = { 0 };
             if (ReadRemoteImageString(process, image_base, image_size, name_rva + sizeof(WORD),
                 function_name, sizeof(function_name)))
@@ -1279,10 +1279,10 @@ namespace stealth
             }
             else
             {
-                // A1/F1c posture: on the standing QUERY_LIMITED handle both
-                // debug reads are refused by rights, which is the decided
-                // trade (weaker handle, weaker probe). The refusal is named
-                // for what it is instead of being read as an unknown fault.
+
+
+
+
                 const bool denied_by_rights =
                     dbg.portStatus == static_cast<NTSTATUS>(0xC0000022u) &&
                     dbg.flagsStatus == static_cast<NTSTATUS>(0xC0000022u);
@@ -1447,48 +1447,40 @@ namespace stealth
             {
                 LOG(0, L"  %ls[x]%ls TLS Callback Failure: %u Callback(s) Rejected (Verified Ground Truth).\n", kRed, kReset, exec->TlsCallbacksFailed);
             }
-            if (exec->TlsHasData || exec->TlsCallbacksConfigured)
+            if (exec->TlsHasData)
             {
-                // A10: the registration is a TlsAlloc slot, one heap block and
-                // a patched _tls_index - no LDR entry, no loader lock, no
-                // cross-thread spread. TlsLoaderEntryAbsent is the scheme's
-                // standing truth (the loader list was never touched), and the
-                // three rewind flags below are only set on a load-failure
-                // unwind, so their state at report time is itself the datum.
-                const bool unwound = exec->TlsIndexRestored != 0 && exec->TlsBitmapBitCleared != 0 && exec->TlsSlotCleared != 0;
-                const bool registered_live = exec->TlsIndexRestored == 0 && exec->TlsBitmapBitCleared == 0 && exec->TlsSlotCleared == 0;
-                LOG(0, L"  %ls[%ls]%ls TLS Registration (TlsAlloc Scheme): Index = %u | Data Template = %ls | LdrpTlsList Entry = %ls | Loader Lock Taken = No\n",
-                    kGreen, L"+", kReset,
-                    exec->TlsIndex,
-                    exec->TlsHasData ? L"Yes (One Heap Block, This Thread's Slot)" : L"No",
-                    L"None (Never Added)");
-                if (registered_live)
-                {
-                    LOG(0, L"  %ls[+]%ls Registration Live: Slot %u, One PEB Bitmap Bit, One TEB Slot, One Heap Block - And No Loader Bookkeeping, No Cross-Thread Template Spread.\n",
-                        kGreen, kReset, exec->TlsIndex);
-                }
-                else if (unwound)
-                {
-                    LOG(0, L"  %ls[+]%ls Registration Unwound On The Failure Path: Index Restored = True | Slot Freed = True | Block Scrubbed = True.\n",
-                        kGreen, kReset);
-                }
-                else
-                {
-                    LOG(0, L"  %ls[!]%ls Registration State Partially Reported (Index Restored = %ls | Slot Freed = %ls | Block Scrubbed = %ls) - Inspect The Telemetry.\n",
-                        kYellow, kReset,
-                        exec->TlsIndexRestored ? L"True" : L"False",
-                        exec->TlsBitmapBitCleared ? L"True" : L"False",
-                        exec->TlsSlotCleared ? L"True" : L"False");
-                }
+                LOG(0, L"  %ls[+]%ls TLS Registration Retained: The Image Carries TLS Data, So Index %u, The PEB Bit, "
+                        L"The TEB Slot, And The LdrpTlsList Entry Must Stay Live.\n",
+                    kGreen, kReset, exec->TlsIndex);
             }
-            else if (exec->TlsLoaderEntryAbsent != 0)
+            else if (exec->TlsCallbacksConfigured == 0 && exec->TlsLoaderEntryAbsent != 0)
             {
-                // A4: the stage skipped entirely - the image's TLS directory
-                // declares neither callbacks nor data, so no slot was taken,
-                // no bitmap bit was set, and nothing was allocated.
-                LOG(0, L"  %ls[+]%ls TLS Skipped: The TLS Directory Declares No Callbacks And No Data; "
-                        L"No Slot, No PEB Bit, No Heap Block, No Loader Contact.\n",
+
+
+
+
+                LOG(0, L"  %ls[+]%ls Loader Mutation Skipped: The TLS Directory Declares No Callbacks And No Data; "
+                        L"No LDR Entry, PEB Bit, Or Loader Heap Was Ever Touched.\n",
                     kGreen, kReset);
+            }
+            else if (exec->TlsCallbacksConfigured)
+            {
+                const bool nothing_to_rewind = exec->TlsLoaderEntryAbsent != 0;
+                const bool rewound = nothing_to_rewind || (exec->TlsIndexRestored && exec->TlsBitmapBitCleared &&
+                    exec->TlsSlotCleared && exec->TlsLoaderEntryUnlinked);
+                LOG(0, L"  %ls[%ls]%ls Loader TLS Registration: Index Restored = %ls | PEB Bit Cleared = %ls | "
+                        L"TEB Slot Restored = %ls | Loader Entry Unlinked = %ls | Nothing To Rewind = %ls\n",
+                    rewound ? L"+" : L"!", rewound ? kGreen : kYellow, kReset,
+                    exec->TlsIndexRestored ? L"True" : L"False",
+                    exec->TlsBitmapBitCleared ? L"True" : L"False",
+                    exec->TlsSlotCleared ? L"True" : L"False",
+                    exec->TlsLoaderEntryUnlinked ? L"True" : L"False",
+                    nothing_to_rewind ? L"True" : L"False");
+                if (!rewound)
+                {
+                    LOG(0, L"  %ls[!]%ls The Loader Registration Could Not Be Fully Rewound; Loader Bookkeeping May Remain.\n",
+                        kYellow, kReset);
+                }
             }
         }
         else if (tls_callbacks > 0)
@@ -1623,7 +1615,7 @@ namespace stealth
             {
                 if (dirs[i].size == 0)
                 {
-                    continue; 
+                    continue;
                 }
                 ++populated;
                 if (MapStats->CleanedMask & (1u << dirs[i].index))
@@ -2170,11 +2162,11 @@ namespace stealth
                 }
                 else
                 {
-                    // The load configuration carries the image's own control
-                    // flow guard declaration. It is a different field from the
-                    // process policy: an image can declare the feature and
-                    // still run with the policy turned off, and only reading
-                    // both tells the two apart.
+
+
+
+
+
                     if (survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress &&
                         survey_dirs[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size >= LoadConfig64::kMinimumSizeForGuardFlags)
                     {
@@ -2359,9 +2351,9 @@ namespace stealth
                         LOG(0, L"  %ls[!]%ls Target TLS Directory.... Out Of Image/Safepage\n", kYellow, kReset);
                     }
 
-                    // The process policy and the image's own declaration, side
-                    // by side. One of them is what the process is running
-                    // under, the other is what the image was built with.
+
+
+
                     if (cfg_read)
                     {
                         LOG(0, L"  %ls[+]%ls Target CFG Policy: Enable %ls%lu%s | Strict %ls%lu%s.\n", kGreen, kReset,
@@ -2507,10 +2499,10 @@ namespace stealth
 
                 if (exec)
                 {
-                    // The map statistics hold the counts from before the wipe and
-                    // the execution telemetry holds the counts from after it. The
-                    // cross-check is therefore that the post-wipe region holds
-                    // nothing, and that it cannot hold more than it did before.
+
+
+
+
                     const bool agree = (exec_span == wiped) &&
                         (exec_mz == 0) && (exec_pe == 0) &&
                         (exec_mz <= scan_mz) && (exec_pe <= scan_pe) &&
@@ -2580,10 +2572,10 @@ namespace stealth
             return false;
         }
 
-        // B3: one transient module snapshot, closed immediately. The suite
-        // takes the same snapshot again after the load, and the delta between
-        // the two is what the report shows - new modules that appeared with
-        // no load event are the loader-list trace the survey hunts for.
+
+
+
+
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
         if (snap != INVALID_HANDLE_VALUE)
         {
@@ -2599,9 +2591,9 @@ namespace stealth
             CloseHandle(snap);
         }
 
-        // A2: the target's window surface before anything is mapped. The
-        // styles counted are exactly the ones an EnumWindows or DWM hook in
-        // the target can key on.
+
+
+
         struct WindowTally
         {
             DWORD pid;
@@ -2629,10 +2621,10 @@ namespace stealth
         return !buffers.pre_load_modules.empty();
     }
 
-    // A6/B6: the host-side surfaces the target can read from outside. Every
-    // line is a measurement: the memory sizes behind the pagefile signal, the
-    // CPU's identification leaves, this process's own named kernel objects,
-    // and the persistent symbol store.
+
+
+
+
     void StealthSurveyHostSurface(const StealthVerifierBuffers & buffers, int & step, int total)
     {
         ++step;
@@ -2644,9 +2636,9 @@ namespace stealth
             memory.dwLength = sizeof(memory);
             if (GlobalMemoryStatusEx(&memory))
             {
-                // C3's pagefile signal: ullTotalPageFile is the same commit
-                // limit the target reads. A commit limit that equals physical
-                // memory is the classic "no pagefile" analysis-VM tell.
+
+
+
                 const bool commit_equals_physical = memory.ullTotalPageFile <= memory.ullTotalPhys;
                 LOG(0, L"  %ls[%ls]%ls Memory Surface............ Physical %ls%llu MB%ls | Commit Limit %ls%llu MB%ls | In Use %ls%llu MB%ls %ls\n",
                     commit_equals_physical ? kYellow : kGreen, commit_equals_physical ? L"!" : L"+", kReset,
@@ -2707,9 +2699,9 @@ namespace stealth
 
                 if (status == 0)
                 {
-                    // SystemExtendedHandleInformation layout: ULONG_PTR Count;
-                    // ULONG_PTR Reserved; then the entries. The count and the
-                    // entry base are pointer-sized, not ULONG-sized.
+
+
+
                     struct HandleEntryEx
                     {
                         void * Object;
@@ -2739,11 +2731,11 @@ namespace stealth
                         }
                         ++checked;
 
-                        // Each handle is duplicated before anything is asked
-                        // of it, so the enumeration's own handles are never
-                        // closed, and nothing is asked of types known to be
-                        // unsafe to query (pipes are filtered out by the type
-                        // check below rather than by hope).
+
+
+
+
+
                         HANDLE duplicate = nullptr;
                         if (!DuplicateHandle(GetCurrentProcess(), entry.Handle, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
                         {
@@ -2817,9 +2809,9 @@ namespace stealth
             const DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH);
             if (len && len < MAX_PATH)
             {
-                // The store nests one directory per symbol name and one more
-                // per GUID (symstore layout: Symbols\<name>\<guid>\<file>), so
-                // the count walks two levels.
+
+
+
                 const std::wstring dir = std::wstring(root) + L"\\Symbols";
                 size_t files = 0;
                 size_t folders = 0;
@@ -2899,9 +2891,9 @@ namespace stealth
         DWORD own_pid = GetCurrentProcessId();
         int visible_windows = 0;
 
-        // The tally travels through LPARAM rather than through statics: the
-        // census callbacks must stay re-entrant so the suite cannot race
-        // itself if it is ever run from more than one thread.
+
+
+
         struct OverlayTally
         {
             DWORD pid;
@@ -2923,11 +2915,11 @@ namespace stealth
         }, reinterpret_cast<LPARAM>(&overlay));
         visible_windows = overlay.count;
 
-        // A2: the payload's overlay surface, measured rather than asserted.
-        // The target's top-level windows are counted now (after the load) and
-        // compared against the baseline captured before it; the layered and
-        // transparent styles are exactly what an EnumWindows/DWM hook in the
-        // target can key on. A payload that draws nothing changes nothing.
+
+
+
+
+
         size_t after_windows = 0;
         size_t after_layered = 0;
         if (survey_pid)
@@ -2976,11 +2968,11 @@ namespace stealth
                 layered_delta == 0 ? kGreen : kYellow, layered_delta, kReset,
                 surface_clean ? L"(No Surface The Target Can Enumerate Was Added)" : L"(Payload Created Window Surface - EnumWindows/DWM Visible)");
         }
-        // The rows below are design statements, not measurements. They are
-        // printed dim and marked [*] so they cannot be read as passed checks in
-        // the same visual language as the two vectors that are actually probed.
-        // The Handle Donor row is only an assertion when no handle telemetry is
-        // available, so the tally below must follow the row that was printed.
+
+
+
+
+
         int design_assertions = 6;
         LOG(0, L"  %ls[*]%ls Input Polling.............. Not Measured (Design Assertion): GetAsyncKeyState (HOME/END), No Target Hook\n", kDim, kReset);
         LOG(0, L"  %ls[*]%ls Shared Memory.............. Not Measured (Design Assertion): Unnamed Events Only, No Named Objects\n", kDim, kReset);
@@ -3027,9 +3019,9 @@ namespace stealth
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
         StealthVerifierBuffers & buffers)
     {
-        // Fail-closed: the flag starts as "not confirmed" and is only cleared
-        // by the W^X walk actually completing, so an early return can never
-        // be read as a passed posture by a caller that checks the flag alone.
+
+
+
         if (wx_violated)
         {
             *wx_violated = true;
@@ -3233,9 +3225,9 @@ namespace stealth
         }
     }
 
-    // Every module the target has loaded, ordered by base address. The loader
-    // list is the only complete view of what is mapped; the PEB is what says
-    // which of them is the main image.
+
+
+
     bool EnumerateRemoteModules(HANDLE process, std::vector<SurveyModule> & out)
     {
         out.clear();
@@ -3278,8 +3270,8 @@ namespace stealth
         return !out.empty();
     }
 
-    // The main image is the one the PEB points at. The loader list is walked
-    // in load order, so its first entry is only the main image by convention.
+
+
     bool FindModuleByBase(const std::vector<SurveyModule> & modules, ULONG_PTR base, SurveyModule & out)
     {
         for (const SurveyModule & module : modules)
@@ -3293,9 +3285,9 @@ namespace stealth
         return false;
     }
 
-    // The main image of the target. The PEB's image base is the authority; the
-    // first entry of the loader list is the fallback for a target whose PEB
-    // could not be read.
+
+
+
     bool GetRemoteMainModule(HANDLE process, std::wstring & name_out, ULONG_PTR & base_out, SIZE_T & size_out)
     {
         name_out.clear();
@@ -3419,8 +3411,8 @@ namespace stealth
             return false;
         }
         got = 0;
-        // The image base is read on its own: a failure here must not fail the
-        // exception-chain survey, which is still worth reporting.
+
+
         if (ReadProcessMemory(process, ReCa<LPCVOID>(image_base_addr), &image_base, sizeof(image_base), &got) &&
             got == sizeof(image_base))
         {
@@ -3520,12 +3512,12 @@ namespace stealth
         return true;
     }
 
-    // The encrypted core of a module: the section a loader keeps its own
-    // obfuscated payload in. It is located by its section name, but it is
-    // reported as a range of its own rather than being folded into the
-    // surrounding counts. A section that has been renamed therefore shows up
-    // as an ordinary in-image region instead of silently vanishing from the
-    // tally.
+
+
+
+
+
+
     struct EncryptedCoreRange
     {
         ULONG_PTR start = 0;
@@ -3534,8 +3526,8 @@ namespace stealth
         std::wstring section_name;
     };
 
-    // The name a loader's encrypted core is known by. The comparison is
-    // case-insensitive and ignores the padding a section name may carry.
+
+
     bool IsEncryptedCoreSectionName(const char * name)
     {
         if (!name)
@@ -3556,9 +3548,9 @@ namespace stealth
         return _stricmp(trimmed, ".eid") == 0;
     }
 
-    // Walks the remote section table of one module looking for the encrypted
-    // core. Returns false when the module has none, or when its headers
-    // cannot be read.
+
+
+
     bool FindEncryptedCoreRange(HANDLE process, const SurveyModule & module, EncryptedCoreRange & out)
     {
         out = EncryptedCoreRange{};
@@ -3652,8 +3644,8 @@ namespace stealth
         return static_cast<SIZE_T>(value);
     }
 
-    // Per-module results of the region census. Only the modules that are
-    // actually read are sampled for byte patterns; every module is counted.
+
+
     struct ModuleCensus
     {
         const SurveyModule * module = nullptr;
@@ -3674,12 +3666,12 @@ namespace stealth
         size_t exec_regions_not_sampled = 0;
     };
 
-    // The census walks the whole address space once and attributes every
-    // committed region to the module image it belongs to, or to free address
-    // space. That distinction is the whole point: a region inside a module's
-    // own image that is still inaccessible while the process is running is a
-    // different observation from a region in free space, and a count that
-    // does not separate them cannot tell the two apart.
+
+
+
+
+
+
     void ReportGameTraps(HANDLE process, DWORD target_pid, StealthVerifierBuffers & buffers)
     {
         if (!process || !target_pid)
@@ -3695,8 +3687,8 @@ namespace stealth
             return;
         }
 
-        // The main image, identified through the PEB rather than through the
-        // order the loader list happens to be walked in.
+
+
         ULONG_PTR main_base = 0;
         SIZE_T main_size = 0;
         std::wstring main_name;
@@ -3706,10 +3698,10 @@ namespace stealth
             return;
         }
 
-        // The encrypted core is located by its section, which is what makes
-        // the module that carries it the loader rather than an ordinary
-        // dependency. The largest modules are probed first, because the
-        // loader is a large image and the probe costs three reads per module.
+
+
+
+
         constexpr size_t kMaxCoreProbes = 96;
         std::vector<EncryptedCoreRange> cores;
         {
@@ -3756,10 +3748,10 @@ namespace stealth
             }
         }
 
-        // Only the main image and the module that carries the encrypted core
-        // are read byte for byte. Reading every module's code would be a large
-        // amount of traffic against the target for a question that only these
-        // two modules can answer.
+
+
+
+
         std::vector<ModuleCensus> census(survey_modules.size());
         for (size_t i = 0; i < survey_modules.size(); ++i)
         {
@@ -3779,7 +3771,7 @@ namespace stealth
             }
         }
 
-        // Aggregate counters for the whole address space.
+
         size_t space_committed = 0;
         size_t space_exec = 0;
         size_t space_noaccess = 0;
@@ -3801,8 +3793,8 @@ namespace stealth
         bool walk_aborted = false;
         std::wstring walk_reason;
 
-        // The top of the address space the process can use. A query past it
-        // is the end of the walk, not a failure of it.
+
+
         ULONG_PTR max_application_address = 0;
         {
             SYSTEM_INFO system_info{};
@@ -3814,10 +3806,10 @@ namespace stealth
             }
         }
 
-        // The census was built from the base-sorted module list, so a module
-        // for an address is found by binary search rather than a linear scan
-        // per region: a module-heavy target walks tens of thousands of
-        // regions, and each one must not re-read the whole list.
+
+
+
+
         const auto module_of = [&](ULONG_PTR address) -> ModuleCensus *
         {
             size_t lo = 0;
@@ -3867,9 +3859,9 @@ namespace stealth
             MEMORY_BASIC_INFORMATION mbi{};
             if (!VirtualQueryEx(process, reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) || !mbi.RegionSize)
             {
-                // The query stops answering once the address is past the top
-                // of the address space. That is where the walk ends, not a
-                // failure, and the counts are complete.
+
+
+
                 if (cursor < max_application_address)
                 {
                     walk_aborted = true;
@@ -3942,8 +3934,8 @@ namespace stealth
                         ++owner->exec_regions;
                     }
 
-                    // The byte scan runs only over the modules that carry the
-                    // question: the main image and the loader.
+
+
                     const bool worth_reading = owner && (owner->is_main || owner->has_encrypted_core);
                     if (worth_reading && max_sample_regions &&
                         owner->exec_regions_sampled >= max_sample_regions)
@@ -3972,10 +3964,10 @@ namespace stealth
                                 {
                                     ++region_cc;
                                 }
-                                // A7: AutoDump's demand-paging touch gadget -
-                                // mov rax,[rcx]; ret. One hit in the loader's
-                                // executable region is the cheapest lead on
-                                // how a no-access page becomes readable.
+
+
+
+
                                 if (i + 3 < got &&
                                     chunk_buf[i] == 0x48 && chunk_buf[i + 1] == 0x8B &&
                                     chunk_buf[i + 2] == 0x01 && chunk_buf[i + 3] == 0xC3)
@@ -4017,9 +4009,9 @@ namespace stealth
 
             cursor = region_end;
 
-            // The cap is measured against the bytes actually walked rather
-            // than a page-count estimate, so a bound configured in MB caps
-            // what it says it caps.
+
+
+
             if (max_walk_bytes && walked_bytes > max_walk_bytes)
             {
                 walk_capped = true;
@@ -4028,11 +4020,11 @@ namespace stealth
             }
         }
 
-        // B3: the loader-list delta. Modules the target did not have when the
-        // run started are exactly what a module-list diff would see: the
-        // dependencies the mapper loads for the payload appear here with no
-        // load event of their own. Our own mapped image is not in this list
-        // by design, so every name below is a dependency load.
+
+
+
+
+
         if (!buffers.pre_load_modules.empty())
         {
             std::vector<std::wstring> appeared;
@@ -4083,8 +4075,8 @@ namespace stealth
                 kDim, kReset);
         }
 
-        // The report. Every count states the range it was measured over, so a
-        // reader can tell an in-image measurement from an address-space one.
+
+
         LOG(0, L"  %lsScope%ls  %ls%zu%ls Module(s) Loaded | Main Image = %ls%ls%ls @ %p | %ls%zu%ls KB\n",
             kDim, kReset,
             kGreen, survey_modules.size(), kReset,
@@ -4176,10 +4168,10 @@ namespace stealth
                     StageField(L"INT3:", 12).c_str());
             }
 
-            // A7: the loader's own loader state, read from its remote image.
-            // Its import surface is what the encrypted IAT replaces and its
-            // TLS callback count is the G4 survey gap; both are read here so
-            // the loader stops being the least-surveyed module in the target.
+
+
+
+
             if (entry.has_encrypted_core && !entry.is_main && process)
             {
                 BYTE loader_dos[sizeof(IMAGE_DOS_HEADER)]{};

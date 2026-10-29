@@ -1,17 +1,17 @@
-﻿#include "PCH.h"
+#include "PCH.h"
 
 #include "Launcher.h"
 
 #include <cstdarg>
 #include <cstdio>
 
-// Console output for the launcher.
-//
-// The transcript is kept in memory as it is produced and is written to disk at
-// the end of the run, so a failed attempt can still be inspected afterwards.
-// Removes the ANSI escape sequences from a fragment of console output. The
-// transcript on disk and the stream written to a console that cannot render
-// VT sequences both need the same cleaned text.
+
+
+
+
+
+
+
 static std::wstring StripAnsiEscapes(const wchar_t * text)
 {
     if (!text || !*text)
@@ -28,30 +28,27 @@ static std::wstring StripAnsiEscapes(const wchar_t * text)
     clean.reserve(len);
     for (size_t i = 0; text[i]; ++i)
     {
-        const bool has_next = (i + 1 <= len);
-        const bool has_third = (i + 2 <= len);
-
-        if (text[i] == L'\x1b' && has_next && text[i + 1] == L'[')
+        if (text[i] == L'\x1b' && text[i + 1] == L'[')
         {
             size_t j = i + 2;
-            while (j <= len && text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
+            while (text[j] && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L';' || text[j] == L':' ||
                 text[j] == L'<' || text[j] == L'=' || text[j] == L'>' || text[j] == L'?' || text[j] == L'!'))
             {
                 ++j;
             }
-            while (j <= len && text[j] >= L' ' && text[j] <= L'/')
+            while (text[j] >= L' ' && text[j] <= L'/')
             {
                 ++j;
             }
-            if (j <= len && text[j] >= L'@' && text[j] <= L'~')
+            if (text[j] >= L'@' && text[j] <= L'~')
             {
                 i = j;
                 continue;
             }
         }
-        else if (text[i] == L'\x1b' && has_next && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
+        else if (text[i] == L'\x1b' && (text[i + 1] == L'(' || text[i + 1] == L')' || text[i + 1] == L'#'))
         {
-            if (has_third && text[i + 2])
+            if (text[i + 2])
             {
                 i += 2;
                 continue;
@@ -78,12 +75,12 @@ static std::wstring & Buffer()
     return buffer;
 }
 
-// The transcript file, once it has been opened, and the number of characters of
-// the buffer that are already in it. Everything logged after the file is opened
-// is written immediately instead of being held until the end of the run, so a
-// crash still leaves the lines that led up to it. Holding the whole transcript
-// in memory and writing it once at the end means the runs that most need a
-// record, the ones that die, are the ones that leave nothing.
+
+
+
+
+
+
 static HANDLE & File()
 {
     static HANDLE file = INVALID_HANDLE_VALUE;
@@ -160,9 +157,9 @@ void AppendClean(const wchar_t * text)
         }
         buf.append(text, take);
     }
-    // Whatever has not reached the file yet is written now. This also covers
-    // lines that were logged before the file was opened: they are still in the
-    // buffer and are flushed by the first append that follows.
+
+
+
     size_t & written = Written();
     if (written < buf.size())
     {
@@ -247,8 +244,8 @@ bool BeginResultLog(const wchar_t * header)
     return ok;
 }
 
-// Removes the transcript outright. A clean run should not leave a record of
-// what it did next to the launcher.
+
+
 void DiscardResultLog()
 {
     CloseFile();
@@ -259,9 +256,9 @@ void DiscardResultLog()
     }
 }
 
-// Writes what has not reached the file yet and leaves it open. Anything logged
-// afterwards is appended to the same file, so a line printed after the wizard
-// returns is still part of the record.
+
+
+
 void FlushResultLog()
     {
         AcquireSRWLockExclusive(&Lock());
@@ -275,9 +272,9 @@ void FlushResultLog()
         ReleaseSRWLockExclusive(&Lock());
     }
 
-// Writes what has not reached the file yet and closes it. The file is already
-// open and current from BeginResultLog onward, so this only drains the tail; a
-// second call is a no-op rather than a second copy of the whole transcript.
+
+
+
 void WriteResultLog()
     {
         FlushResultLog();
@@ -291,14 +288,14 @@ void Clear()
         Written() = 0;
         ReleaseSRWLockExclusive(&Lock());
     }
-} 
+}
 
 
 
 
-// Whether the attached console can render the ANSI sequences the tints are
-// made of. A console that cannot is fed the cleaned text instead, so escape
-// bytes never reach the screen.
+
+
+
 static bool ConsoleSupportsColor()
 {
     static const bool supported = []()

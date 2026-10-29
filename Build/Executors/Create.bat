@@ -43,8 +43,8 @@ set "PAYLOAD_ASSET=%ROOT%\Assets\DLL\Jlov.dll"
 set "PAYLOAD_PROTECTED=%ROOT%\Assets\DLL\Jlov.protected.dll"
 set "PAYLOAD_DEST="
 set "RUNTIME_STOCK_DLL=%DEPS_RELEASE%\Ameger Injector - x64.dll"
-set "LIBRARY_PROJ=%ROOT%\Interface\Template\Injector.vcxproj"
-set "INTERFACE_PROJ=%ROOT%\Interface\Template\InjectorInterface.vcxproj"
+set "LIBRARY_PROJ=%ROOT%\Interface\Template\AmegerInjector.vcxproj"
+set "INTERFACE_PROJ=%ROOT%\Interface\Template\AmegerInjectorInterface.vcxproj"
 set "OUT64=%OUT_ROOT%"
 set "LIBRARY64_OBJ=%CACHE_RUNTIME%"
 set "INTERFACE64_OBJ=%CACHE_INTERFACE%"
@@ -84,6 +84,7 @@ if errorlevel 1 goto :clean_error
 call :prepare_cache
 if errorlevel 1 goto :clean_error
 echo   %C_GREEN%[+]%C_RESET% Clean Layout Prepared In %C_GREEN%%RELEASE_CACHE%%C_RESET%.
+echo.
 echo.
 call :generate_names
 if errorlevel 1 goto :names_error
@@ -136,27 +137,6 @@ goto :failure
 call :build_project "%LIBRARY_PROJ%" x64 "%DEPS_RELEASE%" "%LIBRARY64_OBJ%" "%TOOLSET_ARG%" "%SDK_ARG%" "%MUTATE_ARGS%"
 if errorlevel 1 goto :build_error
 
-REM The remote mapping shell is staged into the target as one contiguous span sized from
-REM (MMAP_SEC_END - ManualMapping_Shell), which is only correct if the linker merged every
-REM .code$NN part into a single section. That has to be checked on the raw linker output:
-REM BuildPE.ps1 randomises every section name a few lines below, so by the end of the build the
-REM section is no longer called .code and the check could not find it. This is the one content
-REM check that cannot be a byte scan, because an unmerged link still passes every pattern scan.
-REM ========================================================
-REM BUILD ORDER INVARIANT - DO NOT REORDER
-REM
-REM   :verify_mmap_sections MUST run against the pre-mutation DLL.
-REM   BuildPE.ps1 randomizes every section name on the very next
-REM   step; after that, the merged .code section has been renamed
-REM   and this check cannot find it. Reordering the two lines
-REM   silently breaks the one content check that cannot be a byte
-REM   scan.
-REM
-REM   The same applies to :verify before BuildPE.ps1 runs. Any
-REM   step that locates a section by name must run before the
-REM   first mutation.
-REM ========================================================
-echo.
 call :verify_mmap_sections "%RUNTIME_STOCK_DLL%"
 if errorlevel 1 goto :verify_error
 echo.
@@ -218,7 +198,6 @@ echo.
 echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Deploying Release Binaries...
 echo.
 echo   %C_GREEN%[+]%C_RESET% Runtime Binaries Are In %C_GREEN%%OUT_ROOT%%C_RESET%.
-echo.
 call :deploy_payload
 if errorlevel 1 goto :payload_error
 call :protect_config
@@ -240,20 +219,16 @@ if not exist "%INTERFACE_EXE%" (
 )
 call :verify "%INTERFACE_EXE%" "x64 Interface"
 if errorlevel 1 goto :verify_error
-echo.
 call :verify_embed
 if errorlevel 1 goto :verify_content_error
 call :verify_config_magic
 if errorlevel 1 goto :verify_content_error
-echo.
 call :verify_deployed_pin
 if errorlevel 1 goto :verify_content_error
 call :verify_config_keys
 if errorlevel 1 goto :verify_content_error
-echo.
 call :verify "%RUNTIME_DLL%" "x64 runtime"
 if errorlevel 1 goto :verify_error
-echo.
 call :verify_syscall_stub
 if errorlevel 1 goto :verify_content_error
 call :verify_syscall_payload
@@ -273,7 +248,9 @@ call :remove_import_artifacts "%DLL_DIR%"
 if errorlevel 1 goto :cleanup_error
 call :sweep_artifacts
 if errorlevel 1 goto :cleanup_error
+echo.
 echo   %C_GREEN%[+]%C_RESET% Cache Groups = Runtime, Injector.
+echo.
 echo.
 
 if /i "%AMEGER_REFUSE_UNMUTATED%"=="1" goto :refuse_unmutated
@@ -291,8 +268,8 @@ echo.
 echo Build Completed Successfully.
 echo.
 echo Cache = %C_GREEN%%RELEASE_CACHE%%C_RESET%
-echo Interface x64 = %C_GREEN%%INTERFACE_EXE%%C_RESET%
 echo Payload = %C_GREEN%%PAYLOAD_DEST%%C_RESET%
+echo Interface x64 = %C_GREEN%%INTERFACE_EXE%%C_RESET%
 echo Runtime DLL = %C_GREEN%%RUNTIME_DLL%%C_RESET%
 
 echo.
@@ -381,10 +358,10 @@ if /i "%EXE_NAME%"=="%CONFIG_NAME%" exit /b 1
 if /i "%DLLDIR_NAME%"=="%CONFIG_NAME%" exit /b 1
 echo   %C_GREEN%[+]%C_RESET% PayloadName = %C_GREEN%%PAYLOAD_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% RuntimeName = %C_GREEN%%RUNTIME_NAME%%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% LogName     = %C_GREEN%%CONFIG_NAME%.log%C_RESET%
-echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ExeName     = %C_GREEN%%EXE_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% DllDirName  = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigName  = %C_GREEN%%CONFIG_NAME%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% LogName     = %C_GREEN%%CONFIG_NAME%.log%C_RESET%
 echo   %C_GREEN%[+]%C_RESET% ConfigMagic = %C_GREEN%%CONFIG_MAGIC%%C_RESET%
 echo.
 exit /b 0
@@ -410,7 +387,6 @@ if not defined EXPORT_MAP (
   echo   %C_RED%Error: Runtime Export Rename Produced No Map; Refusing To Ship Stable Export Names.%C_RESET%
   exit /b 1
 )
-echo.
 echo   %C_GREEN%[+]%C_RESET% Runtime Exports Renamed (Map Captured).
 exit /b 0
 
@@ -466,8 +442,6 @@ if not defined CONFIG_MAGIC exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigKeys -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
-REM Confirms the stealth critical plumbing is actually compiled into the shipped runtime. These are
-REM static checks on the built image; the live behaviour is covered by the runtime verify tool.
 :verify_syscall_stub
 if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Stub -Path "%RUNTIME_DLL%"
@@ -483,9 +457,6 @@ if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check Stealth -Path "%RUNTIME_DLL%"
 exit /b %ERRORLEVEL%
 
-REM Confirms the remote mapping shell is still one contiguous, execute-read block. Takes the image
-REM path as an argument because it runs on the pre-mutation linker output, before BuildPE.ps1 has
-REM randomised the section names.
 :verify_mmap_sections
 if not exist "%VERIFY_SYSCALL_SCRIPT%" exit /b 1
 set "MMAP_VERIFY_PATH=%~1"
@@ -493,8 +464,6 @@ if not defined MMAP_VERIFY_PATH set "MMAP_VERIFY_PATH=%RUNTIME_DLL%"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SYSCALL_SCRIPT%" -Check MmapSections -Path "%MMAP_VERIFY_PATH%"
 exit /b %ERRORLEVEL%
 
-REM Refuses to ship a runtime whose export table still carries a stable, greppable entrypoint
-REM name. ShuffleExports.ps1 renames them per build; this is the gate that proves it happened.
 :verify_export_names
 if not exist "%EXPORTS_SCRIPT%" exit /b 1
 where powershell.exe >nul 2>&1
@@ -568,7 +537,6 @@ if errorlevel 1 (
   echo   %C_RED%Error: Config Encryption Failed; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
-echo.
 echo   %C_GREEN%[+]%C_RESET% Config Encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 exit /b 0
 
@@ -628,7 +596,6 @@ if not defined PAYLOAD_IS_PREPARED (
   echo   %C_YELLOW%[+]%C_RESET% Prepared payload deployed; master pin left pristine.%C_RESET%
 )
 echo   %C_GREEN%[+]%C_RESET% Payload deployed: %C_GREEN%%PAYLOAD_DEST%%C_RESET%
-echo.
 exit /b 0
 
 :write_section_manifest

@@ -2,29 +2,29 @@
 
 #include "Launcher.h"
 
-// Process inspection and the reporting that sits on top of it.
-//
-// The launcher needs to identify processes, and the launch transcript needs to
-// name the donor processes behind an acquired handle. Both live here so the two
-// halves of the tool agree on how a process is identified.
+
+
+
+
+
 
 namespace
 {
-    // The PEB's loader data pointer sits after the image base, the process
-    // parameters and the process heap: three pointers in an x64 PEB, two in
-    // a 32-bit one. The offset is derived from the pointer width of the
-    // launcher rather than written out for x64 alone, so a 32-bit build reads
-    // a 32-bit PEB instead of the middle of a pointer-sized field.
+
+
+
+
+
     constexpr SIZE_T kPebLoaderOffset = (sizeof(void *) == 8) ? 0x18 : 0x0C;
 
-    // Whether a process's loader list is there to walk.
-    //
-    // The pointer being null is a definite answer: the process has not been
-    // through the loader's setup, and there is nothing to map into. A failed
-    // read is not an answer at all: the PEB may be unreadable because the
-    // process is protected, or because it has just started and the page is
-    // not committed yet, and both are reasons to let the caller probe the
-    // process directly instead of skipping it.
+
+
+
+
+
+
+
+
     LoaderListState ReadLoaderListState(HANDLE process)
     {
         using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
@@ -69,8 +69,8 @@ namespace
         return loader ? LoaderListState::Published : LoaderListState::NotPublished;
     }
 
-    // Reads the target's architecture through IsWow64Process2 when it is
-    // available, falling back to IsWow64Process on builds that predate it.
+
+
     Architecture ProcessArchitecture(HANDLE process)
     {
         using IsWow64Process2Fn = BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *);
@@ -113,10 +113,10 @@ namespace
         GetNativeSystemInfo(&system_info);
         return system_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? Architecture::X64 : Architecture::X86;
     }
-}  // namespace
+}
 
-// Opens the process read-only and takes both its image name and its
-// architecture from the same handle, so the two cannot disagree.
+
+
 bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
 {
     ProcessIdentity identity;
@@ -130,18 +130,18 @@ bool QueryProcess(DWORD pid, std::wstring & name, Architecture & architecture)
     return !name.empty();
 }
 
-// The full identity of a process. The creation time is what actually pins an
-// instance down: a name and a path can both be reused by a relaunched
-// process, but a creation time cannot.
+
+
+
 bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
 {
     out = ProcessIdentity{};
 
-    // QueryFullProcessImageNameW, GetProcessTimes and IsWow64Process all run
-    // on PROCESS_QUERY_LIMITED_INFORMATION alone. Asking for PROCESS_VM_READ
-    // as well would make this call fail for every protected or medium-integrity
-    // process the launcher is not already allowed to read, and the identity
-    // would be reported as unavailable even though nothing here reads memory.
+
+
+
+
+
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process)
     {
@@ -163,11 +163,11 @@ bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
         out.creation_time = (static_cast<ULONGLONG>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
     }
 
-    // Whether the process has published its loader list. A process whose PEB
-    // carries no loader pointer has not finished being set up by the loader,
-    // and nothing can be mapped into it. Several modern applications run a
-    // helper process under the same image name, and the first name match is
-    // not always the one that can be written to.
+
+
+
+
+
     out.loader_list_state = ReadLoaderListState(process);
 
     CloseHandle(process);
@@ -183,8 +183,8 @@ bool QueryProcessIdentity(DWORD pid, ProcessIdentity & out)
     return !out.name.empty();
 }
 
-// The fixed-buffer form used where a std::wstring would be wasted work, such as
-// naming a donor process while walking a handle table.
+
+
 bool QueryProcessFixed(DWORD pid, wchar_t * name_out, size_t name_count, Architecture & architecture)
 {
     if (!name_out || name_count == 0)
@@ -207,9 +207,9 @@ bool QueryProcessFixed(DWORD pid, wchar_t * name_out, size_t name_count, Archite
     return true;
 }
 
-// The reported name of the process that owned the handle before it was
-// duplicated. An unreadable name leaves the buffer empty, which the callers
-// render as a bare PID.
+
+
+
 void DescribeDonor(DWORD Pid, wchar_t * NameOut, size_t NameCount)
 {
     if (!NameOut || NameCount == 0)
@@ -226,9 +226,9 @@ void DescribeDonor(DWORD Pid, wchar_t * NameOut, size_t NameCount)
     QueryProcessFixed(Pid, NameOut, NameCount, Arch);
 }
 
-// The stage-by-stage account of how a process or thread handle was acquired.
-// It is only worth printing when the acquisition was configured and the runtime
-// reported telemetry, so both of those are checked first.
+
+
+
 void PrintHijackTrace(const wchar_t * Kind, const HijackStats * Stats, const HijackContext * Context, DWORD Flags, bool IsThread)
 {
     if (!Stats || !Stats->Attempted)
@@ -259,9 +259,9 @@ void PrintHijackTrace(const wchar_t * Kind, const HijackStats * Stats, const Hij
         FlagTint, hijack_flag, kReset,
         FlagTint, Flags, kReset);
 
-    // SeDebugPrivilege is only a lever for the launcher when it is the one
-    // opening the handle; for a thread hijack the runtime does the work from
-    // inside the target, so the launcher's token is irrelevant.
+
+
+
     if (!IsThread)
     {
         LOG(0, XOR_STR_W(L"    %ls %ls SeDebugPrivilege %ls%s%ls\n").get(), StageTag(++Stage).c_str(), StageLabel(L"Privilege").c_str(),
@@ -317,8 +317,8 @@ void PrintHijackTrace(const wchar_t * Kind, const HijackStats * Stats, const Hij
             kGreen, Stats->SnapshotBytes, kReset, kGreen, Stats->ProbeMethod, kReset);
     }
 
-    // The donor is named when it can be read; a PID with no name is still
-    // enough to correlate against a process list afterwards.
+
+
     if (Stats->Success && Stats->DonorPid)
     {
         wchar_t Donor[MAX_PATH * 2]{ 0 };
@@ -368,8 +368,8 @@ void PrintHijackTrace(const wchar_t * Kind, const HijackStats * Stats, const Hij
             StageLabel(L"Result").c_str(), kRed, kReset, kRed, Stats->FailCode, kReset);
     }
 
-    // An unused sponsor TID is worth calling out: it explains why a scan
-    // fallback ran even though the sponsor path was configured.
+
+
     if (IsThread && Context && Context->SponsorTid && Context->UsedTid
         && Context->UsedTid != Context->SponsorTid && Stats->Success
         && Stats->Source != static_cast<DWORD>(HijackSource::Sponsor))
@@ -382,8 +382,8 @@ void PrintHijackTrace(const wchar_t * Kind, const HijackStats * Stats, const Hij
     }
 }
 
-// The one-line form of the same result, used where the full trace would drown
-// the rest of the report.
+
+
 void PrintHijackSummary(const wchar_t * Kind, const HijackStats * Stats)
 {
     if (!Stats || !Stats->Attempted)

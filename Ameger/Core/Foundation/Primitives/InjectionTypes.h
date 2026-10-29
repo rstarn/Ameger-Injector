@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Windows.h>
 
@@ -53,9 +53,9 @@ struct THREAD_EXEC_STATS
 	DWORD FailCode = 0;
 	DWORD DonorRounds = 0;
 	DWORD64 RoutineCyclesDelta = 0;
-	// A5: the RSP the stub pivoted to, and the window that RSP must fall in.
-	// A zero ShellStackTop means the pivot was not observed, which is a failed
-	// isolation check rather than a cosmetic one.
+
+
+
 	ULONG_PTR ShellStackTop = 0;
 	DWORD PollIterations = 0;
 	DWORD ExecMs = 0;
@@ -66,16 +66,16 @@ struct THREAD_EXEC_STATS
 	DWORD FpMode = 0;
 	DWORD FpMask = 0;
 	DWORD ShellStackSize = 0;
-	// The register spill below the victim RSP holds only the victim's own
-	// register values; no shell pointer or frame is ever placed there.
+
+
 	DWORD VictimStackBytes = 0;
 
-	// Host-side observation counter: incremented once per polling iteration in
-	// which the stub was observed executing with its RSP inside the dedicated
-	// shell stack.  Replaces the ShellStackSize "install flag" as the primary
-	// evidence that the thread actually resumed on the shell stack — a zero
-	// here means the pivot was never independently observed, even if the
-	// staging allocation succeeded.
+
+
+
+
+
+
 	DWORD ShellStackResumeCount = 0;
 };
 
@@ -104,21 +104,21 @@ struct MAP_STATS
 	DWORD ExportSize = 0;
 	DWORD Verified = 0;
 	DWORD ResidualMask = 0;
-	// Header cloaking telemetry: how much of the header was structurally
-	// present, how much was actually wiped, the protection it was left with,
-	// and how many PE signatures were still found afterwards.
+
+
+
 	DWORD HeaderStructuralSize = 0;
 	DWORD HeaderWipeSize = 0;
 	DWORD HeaderWipeProtect = 0;
 	DWORD HeaderScanBytes = 0;
 	DWORD HeaderScanMZ = 0;
 	DWORD HeaderScanPE = 0;
-	// 1 when the residual check read the mapper's cached directory copy rather
-	// than the in-image header (INJ_ERASE_HEADER wipes the header first). The
-	// check then proves cache consistency only, not an independent re-read.
+
+
+
 	DWORD VerifiedCachedCopy = 0;
-	// An allocation that had to be kept alive because something in the target
-	// still points into the mapped image.
+
+
 	ULONG_PTR RetainedAllocBase = 0;
 	DWORD RetainedAllocSize = 0;
 };
@@ -139,12 +139,12 @@ static_assert(sizeof(STRING_STATS) == 24);
 
 #define AMEGER_NTSTATUS_UNSUCCESSFUL	((NTSTATUS)0xC0000001L)
 
-// The telemetry block is published to the host a word at a time, so that a
-// reader never sees a half-written value. A word-wise copy also copies the
-// padding bytes of the structure, and padding has no defined value, so the
-// structure is laid out with no padding at all: every byte of it belongs to a
-// named field. The reserved field is what makes the four-byte group an even
-// number of words, which is what leaves no gap at the end.
+
+
+
+
+
+
 struct VERIFIABLE_EXEC_TELEMETRY
 {
 	ULONG_PTR LoaderLockCookie = 0;
@@ -152,11 +152,11 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	PVOID TlsLastExecutedAddress = nullptr;
 	PVOID InvertedTableEntryBase = nullptr;
 	SIZE_T PreSectionSpanWiped = 0;
-	// A6: the image is mapped by the host before the hijack, so the victim
-	// thread never executes the map/relocate/cookie work. HostMapCycles is the
-	// host's own TSC for that work; the remaining counters are written by the
-	// shell around the stages it still owns, so the launcher can show exactly
-	// where the in-shell window went.
+
+
+
+
+
 	unsigned __int64 HostMapCycles = 0;
 	unsigned __int64 ImportStageCycles = 0;
 	unsigned __int64 DelayImportStageCycles = 0;
@@ -172,7 +172,6 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	ULONG LoaderLockState = 0;
 	BOOL DllMainResult = FALSE;
 	DWORD DllMainLastWin32Error = 0;
-	DWORD DllMainLastWin32ErrorBefore = 0;
 	DWORD TlsCallbacksConfigured = 0;
 	DWORD TlsCallbacksExecuted = 0;
 	DWORD TlsCallbacksFailed = 0;
@@ -181,18 +180,18 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	DWORD MZRemnantsFound = 0;
 	DWORD PERemnantsFound = 0;
 	DWORD PostWipeProtection = 0;
-	// 1 when the loader-allocated TLS entry was found and unlinked from
-	// LdrpTlsList, 0 when it was not (or TLS was not configured).
+
+
 	DWORD TlsLoaderEntryUnlinked = 0;
-	// L2: 1 when no loader entry existed to rewind (a valid outcome), so
-	// telemetry consumers can distinguish "nothing to do" from "failed".
+
+
 	DWORD TlsLoaderEntryAbsent = 0;
-	// Reserved to keep the trailing four-byte group an even number of words.
+
 	DWORD Reserved = 0;
-	// A1: the TLS index the loader assigned, whether the image carries real TLS
-	// data (which forces the registration to be retained), and whether each
-	// piece of the registration was restored. The index in the image and the
-	// PEB bitmap bit are separate facts, so each gets its own flag.
+
+
+
+
 	DWORD TlsIndex = 0;
 	DWORD TlsHasData = 0;
 	DWORD TlsIndexRestored = 0;
@@ -200,28 +199,23 @@ struct VERIFIABLE_EXEC_TELEMETRY
 	DWORD TlsSlotCleared = 0;
 	NTSTATUS TlsLockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
 	NTSTATUS TlsUnlockStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
-	// A6: the shell signals a host-owned event as its last act, so the launcher
-	// can stop polling the state page the moment the work is done instead of
-	// waiting for the next poll tick. The handle is closed by the shell.
+
+
+
 	DWORD CompletionEventSignaled = 0;
 	NTSTATUS CompletionEventStatus = AMEGER_NTSTATUS_UNSUCCESSFUL;
-	// A3: packed debug-print protection state. Bit 0x10 = the first-chance
-	// VEH guard is installed (the net for debug-print exceptions raised by
-	// freshly loaded dependencies on the synthetic stack - without it the
-	// target exits with DBG_PRINTEXCEPTION_C, measured 2026-10-25). The low
-	// nibble counts the OutputDebugStringA/W imports (ordinary and
-	// delay-load) redirected to a bare return in ntdll, so the payload's own
-	// logging never raises the exception at all and never reaches the
-	// target's VEH chain.
+
+
+
+
+
+
+
+
 	DWORD DebugPrintVehInstalled = 0;
-	// Second reserved word: DllMainLastWin32ErrorBefore made the trailing
-	// four-byte group an odd word count, which would force 4 bytes of
-	// trailing padding; this word keeps the group even so the block stays
-	// padding-free and can still be published a word at a time.
-	DWORD Reserved2 = 0;
 };
 
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 28 * sizeof(DWORD),
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 26 * sizeof(DWORD),
 	"the telemetry block must have no padding, because it is published a word at a time");
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0,
 	"the telemetry block is published a word at a time, so its size must be a whole number of words");

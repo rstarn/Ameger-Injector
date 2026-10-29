@@ -1,4 +1,4 @@
-﻿#include "Core/Utility/Header/PrecompiledHeader.h"
+#include "Core/Utility/Header/PrecompiledHeader.h"
 
 #include "System/Information/ProcessInformation.h"
 #include "Native/Syscall.h"
@@ -7,9 +7,9 @@
 
 namespace
 {
-	// Walks the snapshot's NextEntryOffset chain with the same bounds rules
-	// the inline loop used: a zero/self-referential offset or an entry that
-	// would cross the buffer end stops the walk.
+
+
+
 	SYSTEM_PROCESS_INFORMATION * LocateProcessEntry(SYSTEM_PROCESS_INFORMATION * first, ULONG_PTR buffer_size, ULONG_PTR pid)
 	{
 		if (!first)
@@ -89,8 +89,8 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 			return false;
 		}
 	}
-	// The process list is cached, so asking for the same process twice does
-	// not re-run the enumeration.
+
+
 	if (hTargetProc == m_hCurrentProcess && m_ProcessLocated)
 	{
 		m_CurrentThreadIndex = 0;
@@ -114,11 +114,11 @@ bool ProcessInformation::SetProcess(HANDLE hTargetProc)
 
 	if (!m_pCurrentProcess)
 	{
-		// The cached snapshot predates this process: it may simply have been
-		// created after the last enumeration. Re-query once and search again
-		// before reporting the process as absent, so a caller that targets a
-		// newly started process does not have to know that the cache must be
-		// dropped manually.
+
+
+
+
+
 		if (!RefreshInformation())
 		{
 			return false;
@@ -167,9 +167,9 @@ bool ProcessInformation::NextThread()
 
 bool ProcessInformation::RefreshInformation()
 {
-	// The snapshot is rebuilt from scratch. The kernel does not guarantee
-	// that the buffer it filled is still the size it needs, so the size
-	// is grown until the query succeeds.
+
+
+
 	m_ProcessLocated = false;
 
 	if (m_pFirstProcess)
@@ -228,7 +228,7 @@ bool ProcessInformation::RefreshInformation()
 
 		return false;
 	}
-	// The walk starts at the first entry of the snapshot.
+
 	m_CurrentThreadIndex	= 0;
 	m_pCurrentProcess		= m_pFirstProcess;
 	m_pCurrentThread		= &m_pCurrentProcess->Threads[0];
@@ -252,9 +252,9 @@ bool ProcessInformation::GetThreadState(KTHREAD_STATE & state, KWAIT_REASON & re
 	{
 		return false;
 	}
-	// The thread state and the wait reason come straight out of the
-	// snapshot; they are only meaningful for the thread the cursor points
-	// at.
+
+
+
 	state	= static_cast<KTHREAD_STATE>(m_pCurrentThread->ThreadState);
 	reason	= static_cast<KWAIT_REASON>(m_pCurrentThread->WaitReason);
 
@@ -310,10 +310,10 @@ void * ProcessInformation::GetTEB()
 
 bool ProcessInformation::IsThreadWorkerThread()
 {
-	// Every unreadable case reports "worker", which every caller treats as
-	// "skip this thread": a thread that cannot be proven to be an ordinary
-	// thread is never hijacked. The failure is conservative by design, and a
-	// caller that needs the distinction must query the TEB itself.
+
+
+
+
 	if (!m_pCurrentThread)
 	{
 		return true;

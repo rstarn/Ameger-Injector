@@ -69,11 +69,11 @@ typedef enum class _THREADINFOCLASS
 	ThreadBasicInformation			= 0
 } THREADINFOCLASS;
 
-// These two carry a value that was read out of the kernel, so the zero that
-// a default-constructed instance holds has to be a state the kernel can
-// actually report. "Unknown" is the zero value for that reason: the real
-// meaning of "Running" is resolved from the PDB at run time, and the values
-// here are only the fallbacks.
+
+
+
+
+
 typedef enum class _KTHREAD_STATE : ULONG
 {
 	Unknown = 0x00,
@@ -89,17 +89,17 @@ typedef enum class _KWAIT_REASON : ULONG
 
 namespace WAIT_REASON_SAFE
 {
-	// The kernel's ThreadWaitReason values a thread can be parked on and still
-	// be expected to run again without help from whoever is looking at it.
-	//
-	// A user-mode wait (a message, a timer, an APC) is released by an
-	// unrelated wakeup or by the timer expiring on its own. A kernel wait is
-	// not: the thread is blocked inside the executive and an unrelated event
-	// will not reach it. And a suspended thread is never released at all until
-	// somebody resumes it, so parking a payload on one means the payload never
-	// runs.
-	//
-	// Suspended (6) and WrPageOut (11) are deliberately not on this list.
+
+
+
+
+
+
+
+
+
+
+
 	constexpr unsigned char UserRequest		= 4;
 	constexpr unsigned char UserDelay		= 7;
 	constexpr unsigned char WrUserRequest	= 12;
@@ -113,11 +113,11 @@ namespace WAIT_REASON_SAFE
 			reason == WrUserRequest2;
 	}
 
-	// B2: a delay wait parks the thread on a timer whose remaining time is
-	// unknowable from outside, so it is a donor of last resort: the hijack
-	// window is however long that timer still has to run. The event-driven
-	// safe waits are preferred first, and a delay wait is only taken when
-	// nothing else qualified within the probe budget.
+
+
+
+
+
 	__forceinline bool IsDelay(unsigned char reason)
 	{
 		return reason == UserDelay || reason == WrUserDelay;

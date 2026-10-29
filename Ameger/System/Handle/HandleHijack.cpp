@@ -23,9 +23,9 @@ namespace
 	constexpr size_t kMaxEnumBytes = 64ULL * 1024ULL * 1024ULL;
 
 	constexpr size_t kMaxForeignOwners = 16;
-	// The scan is bounded: at most this many foreign processes are opened and
-	// at most this many duplication attempts are made, so a machine with a
-	// very large handle table cannot turn the scan into an unbounded loop.
+
+
+
 	constexpr size_t kMaxDupAttempts = 4096;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
@@ -80,9 +80,9 @@ namespace
 
 	bool ResolveNtdll(NtdllHandles & Out)
 	{
-		// The handle enumeration and the duplication both go through the syscall
-		// layer, so the scan does not show up in the import table of this
-		// module.
+
+
+
 		Out.NtQuerySystemInformation = ReCa<f_NtQuerySystemInformationLocal>(SyscallStub(SC_NtQuerySystemInformation));
 		Out.NtDuplicateObject = ReCa<f_NtDuplicateObjectLocal>(SyscallStub(SC_NtDuplicateObject));
 
@@ -122,13 +122,13 @@ namespace
 	std::atomic<USHORT> g_CachedProcessType{ 0 };
 	std::atomic<USHORT> g_CachedThreadType{ 0 };
 
-	// Every scan that may open foreign owners runs inside one
-	// SeDebugPrivilegeScope, and the privilege is given back only by the last
-	// scope that exits. The previous once-per-process guard let one scan's
-	// teardown revoke the privilege while a concurrent scan was still using
-	// it, and it skipped the enable for a later scan whenever an earlier scan
-	// had already been through here - which left that later scan running
-	// without the privilege at all.
+
+
+
+
+
+
+
 	std::atomic<LONG> g_SeDebugScopes{ 0 };
 	std::atomic<bool> g_SeDebugEnabled{ false };
 
@@ -150,11 +150,11 @@ namespace
 			LUID Luid{ 0 };
 			if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
 			{
-				// Disabling (clearing SE_PRIVILEGE_ENABLED) rather than
-				// SE_PRIVILEGE_REMOVED: removal is irreversible for the token,
-				// so a later scan could never re-enable it, and a token with
-				// the privilege present but disabled is exactly the state an
-				// elevated process is born with.
+
+
+
+
+
 				TOKEN_PRIVILEGES Privileges{ 0 };
 				Privileges.PrivilegeCount = 1;
 				Privileges.Privileges[0].Luid = Luid;
@@ -331,16 +331,16 @@ namespace
 
 		return false;
 	}
-	// A donor handle is only accepted once it has been proven to work.
-	// The probe has three strengths, selected by an environment variable so
-	// the behaviour can be varied per machine without a rebuild:
-	//
-	//   Reserve  - allocate and release a page in the target (default)
-	//   Protect  - re-apply the current protection to the first committed page
-	//   None     - trust the handle without probing it
-	//
-	// The probe is deliberately cheap. It proves that the handle carries the
-	// rights the injection needs without leaving anything behind.
+
+
+
+
+
+
+
+
+
+
 	enum class VM_PROBE_POLICY
 	{
 		Reserve = 0,
@@ -406,9 +406,9 @@ namespace
 
 			case VM_PROBE_POLICY::Protect:
 			{
-				// Re-applying the current protection is a no-op for the page, but it
-				// is a real test: a handle without PROCESS_VM_OPERATION cannot
-				// call it at all.
+
+
+
 				MEMORY_BASIC_INFORMATION info{ 0 };
 				if (!VirtualQueryEx(Candidate, nullptr, &info, sizeof(info)) || info.State != MEM_COMMIT)
 				{
@@ -430,18 +430,18 @@ namespace
 				break;
 			}
 		}
-			// A page that can be reserved and released proves the handle carries
-			// the virtual memory rights the mapping needs.
+
+
 			void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_NOACCESS);
 			if (!Page)
 			{
 				return false;
 			}
 
-			// The release can fail transiently, and a page left behind in the
-			// target is a census-visible artifact, so it is retried. If it
-			// still fails the rights are proven regardless - the allocation
-			// itself required them - and the retained page is only reported.
+
+
+
+
 			for (int attempt = 0; attempt < 3; ++attempt)
 			{
 				if (ScFreeMemory(Candidate, Page))
@@ -480,15 +480,15 @@ namespace
 		return ScGetThreadId(Candidate) == TargetTid && ScGetProcessIdOfThread(Candidate) == TargetPid;
 	}
 
-	// The owners a donor handle can be taken from are visible in the audit
-	// trail of every endpoint that watches handle access, and the credential
-	// and session stores are watched more closely than anything else on the
-	// system. A donor taken from one of them is the loudest signal this scan
-	// can produce, so those owners are passed over.
-	//
-	// The list is built once per scan. It can be replaced at run time with a
-	// comma separated set of image names, so it can be tuned without a
-	// rebuild.
+
+
+
+
+
+
+
+
+
 	class DonorOwnerBlocklist
 	{
 		std::vector<std::wstring> m_Names;
@@ -561,9 +561,9 @@ namespace
 		}
 	};
 
-	// The image name of every running process, taken once from a single
-	// snapshot. It lets a donor owner be recognised by name without opening
-	// it for anything, which is the whole point of the block list.
+
+
+
 	class ProcessImageIndex
 	{
 		std::unordered_map<DWORD, std::wstring> m_Names;
@@ -628,8 +628,8 @@ namespace
 		{
 			return nullptr;
 		}
-		// The owner handles are cached so a process that owns many candidate
-		// handles is only opened once.
+
+
 		try
 		{
 			Owners.reserve(Owners.size() + 1);
@@ -664,10 +664,10 @@ namespace
 		Detail.Success = 0;
 		Detail.FailCode = INJ_ERR_HANDLE_HIJACK_FAILED;
 
-		// Probe method uses the documented encoding (0 = None, 1 = Reserve,
-		// 2 = Protect, 3 = Roundtrip). A thread scan only verifies query rights,
-		// so it reports None; a process scan reports the policy that
-		// ProbeVmOperation will actually apply.
+
+
+
+
 		if (ThreadScan)
 		{
 			Detail.ProbeMethod = 0;
@@ -693,9 +693,9 @@ namespace
 
 		std::vector<std::pair<DWORD, UniqueHandle>> Owners;
 
-		// The image names are collected once, before anything is opened. A
-		// donor owner that is on the block list is passed over before that
-		// owner process is ever opened.
+
+
+
 		ProcessImageIndex ImageIndex;
 		ImageIndex.Build();
 		const DonorOwnerBlocklist Blocklist;
@@ -780,10 +780,10 @@ namespace
 			{
 				if (OwnerPid != TargetPid)
 				{
-					// A donor from a process that watches handle access is
-					// skipped before that process is opened. A skipped owner
-					// was never verified, so it is not counted as a
-					// verification failure.
+
+
+
+
 					if (OwnerPid != SelfPid)
 					{
 						const wchar_t * owner_name = ImageIndex.Find(OwnerPid);
@@ -811,8 +811,8 @@ namespace
 
 					if (!known && foreign_opened >= kMaxForeignOwners)
 					{
-						// Opening an unbounded number of foreign processes would be
-						// noisy and slow. The budget bounds how many are tried.
+
+
 						++BudgetSkipped;
 						return false;
 					}
@@ -949,9 +949,9 @@ namespace
 				{
 					continue;
 				}
-				// Only a handle whose granted access already covers what the
-				// injection needs is worth duplicating. Checking the mask up
-				// front avoids a duplication attempt per candidate.
+
+
+
 				if ((Entry.GrantedAccess & DesiredAccess) != DesiredAccess)
 				{
 					continue;
@@ -1113,9 +1113,9 @@ HijackStats g_ThreadHijackStats{ };
 namespace
 {
 
-	// The block is published as a whole under one lock rather than a word at a
-	// time: the export can be polled while a scan is still writing, and a
-	// reader must see one run's fields or another's, never a mix of the two.
+
+
+
 	SRWLOCK g_HijackStatsLock{ SRWLOCK_INIT };
 
 	void StoreHijackStats(HijackStats & Dst, const HijackStats & Src)
@@ -1164,9 +1164,9 @@ namespace
 
 	bool ProbeMemoryRoundtrip(HANDLE Candidate)
 	{
-	// A full round trip: allocate a page in the target, write a known byte,
-	// read it back, and release the page. A handle that survives that is
-	// usable for the injection, and the target is left exactly as it was.
+
+
+
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
 		if (!Page)
 		{

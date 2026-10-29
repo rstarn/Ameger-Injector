@@ -58,11 +58,11 @@ $data = [IO.File]::ReadAllBytes($Path)
 
 
 
-# The emitted stub is not one fixed byte pattern. WriteStub() selects between two
-# "mov r10, rcx" encodings and writes either a direct (0F 05 C3) or indirect
-# (FF 25 <disp32>) tail. The compiler also materialises the prologue bytes as immediate
-# stores rather than a contiguous run, so this checks each piece independently instead of
-# requiring one template.
+
+
+
+
+
 $prologueA = [int[]](0x4C, 0x8B, 0xD1)
 $prologueB = [int[]](0x49, 0x89, 0xCA)
 $tailIndirect = [int[]](0xFF, 0x25)
@@ -88,13 +88,19 @@ if ($Check -eq "Stub") {
     }
     Write-Ok ("Syscall Stub Prologues Present (A=$pA B=$pB)")
 
+    $tI = Get-ByteMatches $data $tailIndirect
+    if ($tI -lt 1) {
+        Write-Fail "Syscall Stub Indirect Tail (FF 25) Missing; The Pool Is Not Using Gadget Indirection"
+        exit 1
+    }
+    Write-Ok ("Syscall Stub Indirect Tail Present ($tI Match)")
+
     $movE = Get-ByteMatches $data $movEaxImm32
     if ($movE -lt 1) {
         Write-Fail "mov eax, imm32 Opcode (B8) Missing; The SSN Load Would Be Inert"
         exit 1
     }
     Write-Ok ("Syscall SSN Load Opcode Present ($movE Match)")
-    Write-Host ""
 
     $prologueCount = Get-ByteMatches $data $healthyPrologue
     if ($prologueCount -lt 1) {
@@ -103,25 +109,17 @@ if ($Check -eq "Stub") {
     }
     Write-Ok ("Resolver Prologue Constant Present (" + $prologueCount + " Match)")
 
-    $tI = Get-ByteMatches $data $tailIndirect
-    if ($tI -lt 1) {
-        Write-Fail "Syscall Stub Indirect Tail (FF 25) Missing; The Pool Is Not Using Gadget Indirection"
-        exit 1
-    }
-    Write-Ok ("Syscall Stub Indirect Tail Present ($tI Match)")
-
     $syscallOp = [int[]](0x0F, 0x05)
     $opCount = Get-ByteMatches $data $syscallOp
     Write-Ok ("Syscall Opcode Resolver Probe Present (" + $opCount + " Match)")
-    Write-Host ""
 }
 
 if ($Check -eq "Payload") {
 
-    # A6 removed the raw-payload transfer: the host maps the finished image at
-    # its final address and no keystream is ever mixed. These constants are the
-    # old transfer encoder; finding one means the superseded path is still
-    # compiled into the runtime.
+
+
+
+
     $k1 = Get-ByteMatches $data $keystreamConstant
     $k2 = Get-ByteMatches $data $keystreamAlt
     $k3 = Get-ByteMatches $data $keystreamAlt2
@@ -130,10 +128,9 @@ if ($Check -eq "Payload") {
         exit 1
     }
     Write-Ok "Raw-Payload Transfer Path Removed (Keystream Constants Absent)"
-    Write-Host ""
 
-    # Positive attestation for the split: the host-map log marker, the per-stage
-    # timing marker, and the completion-event marker all live in the new code.
+
+
     $hostMapNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Host Map: Image Mapped")
     $stageNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Shell Stages:")
     $eventNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Completion Event")
@@ -171,9 +168,8 @@ if ($Check -eq "Stealth") {
         Write-Host ("  [*] W^X Static Heuristic: " + $rwx + " Adjacent mov r9d,0x40 Sequence(s); Source Review Confirms No PAGE_EXECUTE_READWRITE Protect Request. Live Verifier Is Authoritative.")
     }
     Write-Ok ("W^X Protect Sequences Present (RX = " + $rx + " | NOACCESS = " + $na + " | RWX = " + $rwx + ")")
-    Write-Host ""
 
-    Write-Host ("  " + (Get-Painted $script:C_Dim "Static Verification Only; Live Properties Are Checked By The Runtime Verify Tool."))
+    Write-Host ("  " + (Get-Painted $script:C_Dim "Static Verification Only; Live Properties Are Checked By The Runtime Verify Tool"))
 }
 
 if ($Check -eq "MmapSections") {
@@ -222,9 +218,9 @@ if ($Check -eq "MmapSections") {
 
 
 
-    # ".code" is five characters, so the linker emits it verbatim in the 8-byte section-name
-    # field. A section literally named ".code$xx" means the per-part code_seg attributes failed
-    # to merge.
+
+
+
     $mmapExact = @($chars | Where-Object { $_.Name -eq ".code" })
 
     $dollarParts = @($chars | Where-Object { $_.Name -match "\`$" })
@@ -261,7 +257,7 @@ if ($Check -eq "MmapSections") {
         Write-Fail "Merged .code Section Is Writable; W^X Regression In The Staged Image"
         exit 1
     }
-    Write-Ok ("Merged Shell Section Is Execute + Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")
+    Write-Ok ("Merged Shell Section Is Execute+Read (Characteristics 0x" + $characteristics.ToString("X8") + ")")
 }
 
 exit 0
