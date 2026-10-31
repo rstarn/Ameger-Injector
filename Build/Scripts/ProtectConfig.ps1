@@ -12,6 +12,8 @@ param(
 
     [string]$DllDir,
 
+    [string]$TestTarget,
+
     [string]$ConfigMagic
 )
 
@@ -71,8 +73,8 @@ function Get-IniValue([string]$Text, [string]$Key) {
 }
 
 function Set-IniKeys([string]$Text, $Pairs) {
-    $order = @("PayloadName", "RuntimeName", "ExportMap", "DllDir")
-    $rx = '^\s*(PayloadName|RuntimeName|ExportMap|DllDir)\s*='
+    $order = @("PayloadName", "RuntimeName", "ExportMap", "DllDir", "TestTarget")
+    $rx = '^\s*(PayloadName|RuntimeName|ExportMap|DllDir|TestTarget)\s*='
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($line in [regex]::Split($Text, "\r?\n")) {
         if ($line -match $rx) { continue }
@@ -123,7 +125,8 @@ if (-not [string]::IsNullOrEmpty($PinPayload)) {
 $hasNewKeys = (-not [string]::IsNullOrEmpty($PayloadName)) -or
               (-not [string]::IsNullOrEmpty($RuntimeName)) -or
               (-not [string]::IsNullOrEmpty($ExportMap)) -or
-              (-not [string]::IsNullOrEmpty($DllDir))
+              (-not [string]::IsNullOrEmpty($DllDir)) -or
+              (-not [string]::IsNullOrEmpty($TestTarget))
 
 $existing = [IO.File]::ReadAllBytes($Source)
 $isEncrypted = $false
@@ -191,12 +194,18 @@ if (-not [string]::IsNullOrEmpty($DllDir)) {
     $carry = Get-IniValue $preserved "DllDir"
     if (-not [string]::IsNullOrEmpty($carry)) { $pairs["DllDir"] = $carry }
 }
+if (-not [string]::IsNullOrEmpty($TestTarget)) {
+    $pairs["TestTarget"] = $TestTarget
+} elseif ($null -ne $preserved) {
+    $carry = Get-IniValue $preserved "TestTarget"
+    if (-not [string]::IsNullOrEmpty($carry)) { $pairs["TestTarget"] = $carry }
+}
 
 if ($pairs.Count -gt 0) {
     $before = $text
     $text = Set-IniKeys $text $pairs
     if ($text -ne $before) { $modified = $true }
-    foreach ($k in @("PayloadName", "RuntimeName", "ExportMap", "DllDir")) {
+    foreach ($k in @("PayloadName", "RuntimeName", "ExportMap", "DllDir", "TestTarget")) {
         if ($pairs.ContainsKey($k)) {
             $val = $pairs[$k]
             if ($k -eq "ExportMap") {

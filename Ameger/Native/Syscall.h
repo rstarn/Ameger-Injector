@@ -38,6 +38,13 @@ constexpr DWORD ScHash(const char * s)
 #define SC_NtGetContextThread				SC_NAME(NtGetContextThread)
 #define SC_NtSetContextThread				SC_NAME(NtSetContextThread)
 
+#define SC_NtCreateSection				SC_NAME(NtCreateSection)
+#define SC_NtMapViewOfSection			SC_NAME(NtMapViewOfSection)
+#define SC_NtUnmapViewOfSection			SC_NAME(NtUnmapViewOfSection)
+#define SC_NtQuerySection				SC_NAME(NtQuerySection)
+
+#define SC_NtClose						SC_NAME(NtClose)
+
 #pragma endregion
 
 #pragma region stub layout
@@ -50,6 +57,16 @@ constexpr DWORD ScHash(const char * s)
 #define SC_STUB_OFFSET_SERVICE		4
 #define SC_STUB_OFFSET_SYSCALL		8
 #define SC_STUB_TAIL_INDIRECT	14
+
+// Vector 7 sampled stub: the 167-byte capture-only sampler block is emitted after the service
+// imm32 and before the gadget jmp. Layout below is derived from kSampleBlockRaw[167] in Syscall.cpp.
+// The block captures 8 real-stack frames and advances the ring index; it does NOT pivot the stack
+// (no Tier 2 fake-stack / restore gadget), so the tail after the gadget jmp is plain NOP padding.
+#define SC_STUB_OFFSET_SAMPLE			8
+#define SC_SAMPLE_BLOCK_SIZE			167
+#define SC_STUB_OFFSET_SAMPLED_SYSCALL	(SC_STUB_OFFSET_SAMPLE + SC_SAMPLE_BLOCK_SIZE) // 175: jmp [rip+disp]
+#define SC_STUB_TAIL_SAMPLED			(SC_STUB_OFFSET_SAMPLED_SYSCALL + 6)              // 181: NOP tail start
+#define SC_STUB_SIZE_SAMPLED			192                                                // 0xC0; tail (181..192) is NOP padding
 
 #pragma endregion
 
@@ -66,6 +83,9 @@ DWORD	SyscallServiceOfStub(const void * Stub);
 
 void *	SyscallGadgetAddress();
 
+size_t	SyscallGadgetPoolCount();
+
+void *	SyscallGadgetAt(size_t Index);
 
 
 
@@ -79,7 +99,12 @@ void *	SyscallGadgetAddress();
 
 
 
-DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count, ULONG_PTR RemoteBase = 0);
+
+// VERIFIABLE_EXEC_TELEMETRY is defined in InjectionTypes.h; forward-declared here so sampled
+// stub emission can pre-populate the Tier 2 FakeStack without pulling in the full header.
+struct VERIFIABLE_EXEC_TELEMETRY;
+
+DWORD	BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count, ULONG_PTR RemoteBase = 0, ULONG_PTR RingBase = 0, ULONG_PTR SysIdxAddr = 0, VERIFIABLE_EXEC_TELEMETRY * pTelemetryOut = nullptr, ULONG_PTR TargetNtdllBase = 0);
 
 #pragma region typed wrappers
 
@@ -181,6 +206,46 @@ using f_ScNtGetContextThread = NTSTATUS(NTAPI *)(
 using f_ScNtSetContextThread = NTSTATUS(NTAPI *)(
 	HANDLE	ThreadHandle,
 	CONTEXT *Context
+	);
+
+using f_ScNtCreateSection = NTSTATUS(NTAPI *)(
+	PHANDLE	SectionHandle,
+	ACCESS_MASK	DesiredAccess,
+	OBJECT_ATTRIBUTES *	ObjectAttributes,
+	LARGE_INTEGER *	MaximumSize,
+	ULONG	SectionPageProtection,
+	ULONG	AllocationAttributes,
+	HANDLE	FileHandle
+	);
+
+using f_ScNtMapViewOfSection = NTSTATUS(NTAPI *)(
+	HANDLE		SectionHandle,
+	HANDLE		ProcessHandle,
+	PVOID		*	BaseAddress,
+	ULONG_PTR	ZeroBits,
+	SIZE_T		CommitSize,
+	SIZE_T		*	SectionOffset,
+	SIZE_T		*	ViewSize,
+	ULONG		InheritDisposition,
+	ULONG		AllocationType,
+	ULONG		Win32Protect
+	);
+
+using f_ScNtUnmapViewOfSection = NTSTATUS(NTAPI *)(
+	HANDLE	ProcessHandle,
+	PVOID	BaseAddress
+	);
+
+using f_ScNtQuerySection = NTSTATUS(NTAPI *)(
+	HANDLE				SectionHandle,
+	SECTION_INFORMATION_CLASS	SectionInformationClass,
+	PVOID				SectionInformation,
+	ULONG				Length,
+	PULONG			ReturnLength
+	);
+
+using f_ScNtClose = NTSTATUS(NTAPI *)(
+	HANDLE	Handle
 	);
 
 #pragma endregion
@@ -377,6 +442,80 @@ __forceinline NTSTATUS ScNtSetContextThread(HANDLE ThreadHandle, CONTEXT * Conte
 	}
 
 	return Stub(ThreadHandle, Context);
+}
+
+__forceinline NTSTATUS ScNtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess, OBJECT_ATTRIBUTES * ObjectAttributes, LARGE_INTEGER * MaximumSize, ULONG PageProtection, ULONG AllocationAttributes, HANDLE FileHandle)
+{
+	auto Stub = ReCa<f_ScNtCreateSection>(SyscallStub(SC_NtCreateSection));
+	if (!Stub)
+	{
+		return STATUS_ENTRYPOINT_NOT_FOUND;
+	}
+
+	return Stub(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize, PageProtection, AllocationAttributes, FileHandle);
+}
+
+__forceinline NTSTATUS ScNtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID * BaseAddress,
+	ULONG_PTR ZeroBits, SIZE_T CommitSize, SIZE_T * SectionOffset, SIZE_T * ViewSize,
+	ULONG InheritDisposition, ULONG AllocationType, ULONG Win32Protect)
+{
+	auto Stub = ReCa<f_ScNtMapViewOfSection>(SyscallStub(SC_NtMapViewOfSection));
+	if (!Stub)
+	{
+		return STATUS_ENTRYPOINT_NOT_FOUND;
+	}
+
+	// Track B step 6: per-arg logging immediately before the syscall.
+	// Log both the pointer AND the pointed-to value for ViewSize / SectionOffset.
+	LOG(1, "[+] ScNtMapViewOfSection args: hSection=0x%08X hProc=0x%08X pBase=0x%08X ZeroBits=0x%08X CommitSize=0x%08X pOffset=0x%08X (val=%d) pViewSize=0x%08X (val=0x%08X) Inherit=0x%08X AllocType=0x%08X Win32Protect=0x%08X\n",
+		static_cast<unsigned>(reinterpret_cast<uintptr_t>(SectionHandle) & 0xFFFFFFFF),
+		static_cast<unsigned>(reinterpret_cast<uintptr_t>(ProcessHandle) & 0xFFFFFFFF),
+		static_cast<unsigned>(reinterpret_cast<uintptr_t>(BaseAddress) & 0xFFFFFFFF),
+		static_cast<unsigned>(ZeroBits),
+		static_cast<unsigned>(static_cast<ULONG>(CommitSize)),
+		static_cast<unsigned>(reinterpret_cast<uintptr_t>(SectionOffset) & 0xFFFFFFFF),
+		SectionOffset ? (int)*SectionOffset : -1,
+		static_cast<unsigned>(reinterpret_cast<uintptr_t>(ViewSize) & 0xFFFFFFFF),
+		ViewSize ? static_cast<unsigned>(static_cast<ULONG>(static_cast<ULONG_PTR>(*ViewSize)) & 0xFFFFFFFF) : 0,
+		static_cast<unsigned>(InheritDisposition),
+		static_cast<unsigned>(AllocationType),
+		static_cast<unsigned>(Win32Protect));
+
+	return Stub(SectionHandle, ProcessHandle, BaseAddress, ZeroBits, CommitSize, SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
+}
+
+__forceinline NTSTATUS ScNtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress)
+{
+	auto Stub = ReCa<f_ScNtUnmapViewOfSection>(SyscallStub(SC_NtUnmapViewOfSection));
+	if (!Stub)
+	{
+		return STATUS_ENTRYPOINT_NOT_FOUND;
+	}
+
+	return Stub(ProcessHandle, BaseAddress);
+}
+
+__forceinline NTSTATUS ScNtQuerySection(HANDLE SectionHandle, SECTION_INFORMATION_CLASS SectionInformationClass,
+	PVOID SectionInformation, ULONG Length, PULONG ReturnLength)
+{
+	auto Stub = ReCa<f_ScNtQuerySection>(SyscallStub(SC_NtQuerySection));
+	if (!Stub)
+	{
+		return STATUS_ENTRYPOINT_NOT_FOUND;
+	}
+
+	return Stub(SectionHandle, SectionInformationClass, SectionInformation, Length, ReturnLength);
+}
+
+__forceinline NTSTATUS ScNtClose(HANDLE Handle)
+{
+	auto Stub = ReCa<f_ScNtClose>(SyscallStub(SC_NtClose));
+	if (!Stub)
+	{
+		return STATUS_ENTRYPOINT_NOT_FOUND;
+	}
+
+	return Stub(Handle);
 }
 
 #pragma endregion

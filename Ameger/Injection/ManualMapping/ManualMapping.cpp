@@ -3,6 +3,7 @@
 
 #include <TlHelp32.h>
 #include <intrin.h>
+#include <cstdio>
 
 #include "Core/Foundation/Primitives/ResourceGuard.h"
 #include "Injection/ManualMapping/ManualMappingCore.h"
@@ -236,6 +237,15 @@ namespace
 
 
 
+	static void Hex16(const BYTE * b, char * out)
+	{
+		for (int i = 0; i < 16; ++i)
+		{
+			snprintf(out + i * 2, 3, "%02X", b[i]);
+		}
+		out[32] = 0;
+	}
+
 	DWORD HostMapRemoteImage(HANDLE hTargetProc, const INJECTION_SOURCE & source, const PE_IMAGE::VIEW & view,
 		MANUAL_MAPPING_DATA & data, void *& base_out, ERROR_DATA & error_data)
 	{
@@ -263,29 +273,180 @@ namespace
 
 
 
-		void * remote_base = ReCa<void *>(preferred_base);
-		SIZE_T remote_size = size_of_image;
-		NTSTATUS alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
-			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		// Vector 1: page-file-backed section with dual RW/RX views (keep private-map as fallback)
+		void * view_rw = nullptr;   // PAGE_READWRITE view: payload build/write surface (never executable)
+		void * view_rx = nullptr;   // PAGE_EXECUTE_READ view: execution surface
+		NTSTATUS alloc_status = STATUS_SUCCESS;
+		bool section_mapped = false;
 
-		if (NT_FAIL(alloc_status) || !remote_base)
 		{
-			remote_base = nullptr;
-			remote_size = size_of_image;
+			HANDLE section_handle = NULL;
+			OBJECT_ATTRIBUTES section_attrs{};
+			section_attrs.Length = sizeof(OBJECT_ATTRIBUTES);
+
+			LARGE_INTEGER max_size{};
+			max_size.QuadPart = static_cast<LONGLONG>(size_of_image);
+
+			// Page-file section (SEC_COMMIT, NOT SEC_IMAGE / NOT a file), max protection RWX
+			alloc_status = ScNtCreateSection(&section_handle, SECTION_ALL_ACCESS, &section_attrs,
+				&max_size, PAGE_EXECUTE_READWRITE, SEC_COMMIT, nullptr);
+
+			if (NT_SUCCESS(alloc_status) && section_handle)
+			{
+				LOG(1, "Host Map: [+] NtCreateSection: status=0x%08X handle=0x%08X maxsize=0x%08X\n",
+					static_cast<unsigned>(alloc_status),
+					static_cast<unsigned>(reinterpret_cast<uintptr_t>(section_handle) & 0xFFFFFFFF),
+					static_cast<unsigned>(max_size.QuadPart));
+
+				// Single writable+executable view (PAGE_EXECUTE_READWRITE). The shell executes its
+				// code and writes its internal .data/.bss globals through this one view, so it must
+				// be RWX during setup; MMI_SetPageProtections flips it to PAGE_EXECUTE_READ at the
+				// end of the shell (final VAD: MEM_MAPPED + PAGE_EXECUTE_READ = Vector 1).
+				void * base_view = nullptr;
+				SIZE_T view_size = size_of_image;
+				// Single-view: AllocationType=0, InheritDisposition=2 (ViewUnmap).
+				const NTSTATUS m1 = ScNtMapViewOfSection(section_handle, hTargetProc, &base_view, 0, view_size, nullptr, &view_size, 2, 0, PAGE_EXECUTE_READWRITE);
+
+				// Track B step 7: query the section's actual attributes (SectionBasicInformation) —
+				// answers whether the section is actually committed to its full size.
+				{
+					SECTION_BASIC_INFORMATION sec_info{};
+					ULONG ret_len = 0;
+					const NTSTATUS q_status = ScNtQuerySection(section_handle,
+						SECTION_INFORMATION_CLASS::SectionBasicInformation, &sec_info, sizeof(sec_info), &ret_len);
+					LOG(1, "Host Map: [i] NtQuerySection: status=0x%08X | Base=0x%llX | Attribute=0x%llX | MaximumSize=0x%llX | PageProtection=0x%08X | AllocAttributes=0x%08X\n",
+						static_cast<unsigned>(q_status),
+						static_cast<unsigned long long>(sec_info.BaseAddress.QuadPart),
+						static_cast<unsigned long long>(sec_info.Attribute.QuadPart),
+						static_cast<unsigned long long>(sec_info.MaximumSize.QuadPart),
+						static_cast<unsigned>(sec_info.PageProtection),
+						static_cast<unsigned>(sec_info.Attributes));
+				}
+
+				// Close the section handle immediately after both views are mapped
+				ScNtClose(section_handle);
+
+				// The section handle was closed right after mapping, so any residual handle
+				// (Vector 1 verifier step 3) sees 0 section handles in the target.
+				if (NT_SUCCESS(m1) && base_view)
+				{
+					view_rw = base_view;
+					view_rx = base_view;
+					section_mapped = true;
+
+					LOG(1, "Host Map: [+] Section Mapped (Single RWX View = %p | Size = 0x%X)\n",
+						base_view, size_of_image);
+					// The view is RWX only during shell setup; the shell flips it to
+					// PAGE_EXECUTE_READ at MMI_SetPageProtections (documented residual window).
+					LOG(1, "[!] Section View RWX During Shell Setup — Flipped To RX At MMI_SetPageProtections; Window Is Milliseconds\n");
+				}
+				else
+				{
+					// Track B step 8 — the RWX max-protection pagefile section was rejected by the
+					// kernel. Recreate with PAGE_READWRITE max protection + SEC_COMMIT and map a
+					// single RW view (remap-to-RX deviation).
+					LOG(1, "Host Map: [i] Section Map Failed (RWX=0x%08X) — PAGE_READWRITE Sanity Check (Step 8)\n",
+						static_cast<unsigned>(m1));
+
+					OBJECT_ATTRIBUTES section_attrs_rw{};
+					section_attrs_rw.Length = sizeof(OBJECT_ATTRIBUTES);
+					LARGE_INTEGER max_size_rw{};
+					max_size_rw.QuadPart = static_cast<LONGLONG>(size_of_image);
+					const NTSTATUS alloc_rw = ScNtCreateSection(&section_handle, SECTION_ALL_ACCESS, &section_attrs_rw,
+						&max_size_rw, PAGE_READWRITE, SEC_COMMIT, nullptr);
+
+					if (NT_SUCCESS(alloc_rw) && section_handle)
+					{
+						void * base_rw2 = nullptr;
+						SIZE_T view_size_rw2 = size_of_image;
+						// Single RW view of the PAGE_READWRITE section; AllocationType=0, InheritDisposition=2 (ViewUnmap).
+						const NTSTATUS m_rw = ScNtMapViewOfSection(section_handle, hTargetProc, &base_rw2, 0, view_size_rw2, nullptr, &view_size_rw2, 2, 0, PAGE_READWRITE);
+
+						{
+							SECTION_BASIC_INFORMATION sec_info_rw{};
+							ULONG ret_len = 0;
+							const NTSTATUS q_rw = ScNtQuerySection(section_handle,
+								SECTION_INFORMATION_CLASS::SectionBasicInformation, &sec_info_rw, sizeof(sec_info_rw), &ret_len);
+							LOG(1, "Host Map: [i] NtQuerySection (RW retry): status=0x%08X | MaximumSize=0x%llX | PageProtection=0x%08X | AllocAttributes=0x%08X\n",
+								static_cast<unsigned>(q_rw),
+								static_cast<unsigned long long>(sec_info_rw.MaximumSize.QuadPart),
+								static_cast<unsigned>(sec_info_rw.PageProtection),
+								static_cast<unsigned>(sec_info_rw.Attributes));
+						}
+
+						ScNtClose(section_handle);
+						section_handle = NULL;
+
+						if (NT_SUCCESS(m_rw) && base_rw2)
+						{
+							// PAGE_READWRITE max protection accepted → SEC_COMMIT + PAGE_EXECUTE_READWRITE
+							// is being rejected by the kernel. Remap-to-RX deviation: the single RW view
+							// is promoted to RX on the remote side by MMI_SetExecProtections at execution.
+							view_rw = base_rw2;
+							view_rx = base_rw2;   // same base; RX promotion deferred to the execute step
+							section_mapped = true;
+							LOG(1, "Host Map: [+] PAGE_READWRITE Retry Succeeded — RWX Max Protection Rejected; Remap-to-RX Deviation\n");
+						}
+						else
+						{
+							LOG(1, "Host Map: [!] RW Retry Map Failed (map=0x%08X) — MEM_PRIVATE Fallback Engaged; Vector 1 Unverified\n",
+								static_cast<unsigned>(m_rw));
+						}
+					}
+					else
+					{
+						LOG(1, "Host Map: [!] RW Retry Section Create Failed (0x%08X) — MEM_PRIVATE Fallback Engaged; Vector 1 Unverified\n",
+							static_cast<unsigned>(alloc_rw));
+					}
+					// If section_mapped stays false, flow continues to the private-map path below.
+				}
+			}
+			else
+			{
+				// Vector 1: NtCreateSection failed — log the MEM_PRIVATE fallback and continue (not silent).
+				LOG(1, "Host Map: [!] NtCreateSection Failed (0x%08X) — MEM_PRIVATE Fallback Engaged; Vector 1 Unverified\n",
+					static_cast<unsigned>(alloc_status));
+				// section_mapped stays false; flow continues to the private-map path below.
+			}
+		}
+
+		void * remote_base;
+		if (section_mapped)
+		{
+			remote_base = view_rx;   // shell executes from the RX view
+		}
+		else
+		{
+			// Fallback: existing private-map path (detectable MEM_PRIVATE)
+			view_rw = view_rx = nullptr;
+			remote_base = ReCa<void *>(preferred_base);
+			SIZE_T remote_size = size_of_image;
 			alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
 				MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+			if (NT_FAIL(alloc_status) || !remote_base)
+			{
+				remote_base = nullptr;
+				remote_size = size_of_image;
+				alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
+					MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+			}
+
+			if (NT_FAIL(alloc_status) || !remote_base)
+			{
+				INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
+
+				LOG(1, "Host Map: Image Allocation Failed = %08X\n", static_cast<unsigned>(alloc_status));
+
+				return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
+			}
+
+			LOG(1, "Host Map: [!] Section Mapping Unavailable; Private-Mem Fallback Engaged (MEM_PRIVATE, Detectable)\n");
 		}
 
-		if (NT_FAIL(alloc_status) || !remote_base)
-		{
-			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-			LOG(1, "Host Map: Image Allocation Failed = %08X\n", static_cast<unsigned>(alloc_status));
-
-			return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
-		}
-
-		RemoteAllocation image_guard(hTargetProc, remote_base);
+		// Guard only the RW view (section path); on the private path guard the allocated base.
+		void * guarded_base = section_mapped ? view_rw : remote_base;
+		RemoteAllocation image_guard(hTargetProc, guarded_base);
 
 		std::vector<BYTE> image;
 		try
@@ -344,6 +505,7 @@ namespace
 
 		const ULONG_PTR remote_address = ReCa<ULONG_PTR>(remote_base);
 		const ULONG_PTR delta = remote_address - preferred_base;
+		DWORD reloc_applied = 0;
 
 		if (delta)
 		{
@@ -393,6 +555,7 @@ namespace
 					memcpy(&value, image.data() + patch_rva, sizeof(value));
 					value += delta;
 					memcpy(image.data() + patch_rva, &value, sizeof(value));
+					++reloc_applied;
 				}
 
 				cursor += block->SizeOfBlock;
@@ -456,7 +619,12 @@ namespace
 		memcpy(data.CachedSections, mapped_sections, cached_sections * sizeof(IMAGE_SECTION_HEADER));
 		memcpy(data.CachedDataDirectory, mapped_nt->OptionalHeader.DataDirectory, sizeof(data.CachedDataDirectory));
 
-		if (!WriteRemoteExact(hTargetProc, remote_base, image.data(), size_of_image))
+		// Write the payload into the RW view (never executable). On the private fallback, write into the allocated base.
+		void * write_target = section_mapped ? view_rw : remote_base;
+		// [DIAG] image write step: which base the payload is written to vs where the shell reads.
+		LOG(1, "[DIAG] WriteRemoteExact target = 0x%p, size = 0x%08X, source = 0x%p | RW view = 0x%p, RX view (shell pImageBase) = 0x%p\n",
+			write_target, static_cast<unsigned>(size_of_image), (void *)image.data(), view_rw, remote_base);
+		if (!WriteRemoteExact(hTargetProc, write_target, image.data(), size_of_image))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -465,12 +633,24 @@ namespace
 			return INJ_ERR_WPM_FAIL;
 		}
 
+		// CHECK 1: [RELOC] evidence for relocation + entry points, logged before the shell runs.
+		{
+			const DWORD reloc_dir_size = mapped_nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+			LOG(1, "[RELOC] PreferredBase=0x%llX ActualBase=0x%llX Delta=0x%llX RelocationsApplied=%u RelocationSectionPresent=%c\n",
+				(unsigned long long)preferred_base, (unsigned long long)remote_address, (unsigned long long)delta,
+				reloc_applied, reloc_dir_size ? 'Y' : 'N');
+			LOG(1, "[RELOC] OriginalEntryPoint=0x%llX ResolvedEntryPoint=0x%llX\n",
+				(unsigned long long)mapped_nt->OptionalHeader.AddressOfEntryPoint,
+				(unsigned long long)(remote_address + mapped_nt->OptionalHeader.AddressOfEntryPoint));
+		}
+
 		data.pAllocationBase = ReCa<BYTE *>(remote_base);
 		data.pImageBase = ReCa<BYTE *>(remote_base);
 		data.pDosHeader = ReCa<IMAGE_DOS_HEADER *>(remote_base);
 		data.pNtHeaders = ReCa<IMAGE_NT_HEADERS *>(remote_address + mapped_dos->e_lfanew);
 		data.pOptionalHeader = &data.pNtHeaders->OptionalHeader;
 		data.pFileHeader = &data.pNtHeaders->FileHeader;
+		data.pSectionRwView = section_mapped ? ReCa<BYTE *>(view_rw) : nullptr;
 		data.ExecProtectionState = MM_EXEC_STATE_MAPPABLE;
 
 		const unsigned __int64 map_t1 = __rdtsc();
@@ -603,6 +783,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
+	// Tier 2: function scope so the resolved target ntdll base reaches BuildSyscallStubs
+	// (it rebases the fake-stack ret gadgets into the target's address space).
+	ULONG_PTR remote_ntdll = 0;
+
 	{
 		const ULONG_PTR local_ntdll = reinterpret_cast<ULONG_PTR>(g_hNTDLL);
 		if (!local_ntdll)
@@ -614,7 +798,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			return INJ_ERR_GET_MODULE_HANDLE_FAIL;
 		}
 
-		ULONG_PTR remote_ntdll = 0;
 		if (!ResolveRemoteNtdllBase(hTargetProc, remote_ntdll))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -655,7 +838,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
-	const SIZE_T stub_table_size	= static_cast<SIZE_T>(SC_REMOTE_STUB_COUNT) * SC_STUB_SIZE;
+	const SIZE_T stub_table_size	= static_cast<SIZE_T>(SC_REMOTE_STUB_COUNT) * SC_STUB_SIZE_SAMPLED;
 	const SIZE_T stub_area_size		= stub_table_size + sizeof(void *);
 	const SIZE_T exec_area_size		= static_cast<SIZE_T>(ShellSize) + stub_area_size;
 
@@ -749,13 +932,23 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
-		BYTE stub_slab[SC_REMOTE_STUB_COUNT * SC_STUB_SIZE + sizeof(void *)]
+		// Vector 7: target addresses of the sampler ring + index inside MANUAL_MAPPING_DATA.
+		// Both live in pArg (the PAGE_READWRITE MANUAL_MAPPING_DATA region), so the emitted
+		// stubs can write them RIP-relatively while pArg is still writable during mapping stages.
+		const ULONG_PTR ring_base = reinterpret_cast<ULONG_PTR>(pArg)
+			+ offsetof(MANUAL_MAPPING_DATA, ExecTelemetry)
+			+ offsetof(VERIFIABLE_EXEC_TELEMETRY, SyscallSamples);
+		const ULONG_PTR sysidx_addr = reinterpret_cast<ULONG_PTR>(pArg)
+			+ offsetof(MANUAL_MAPPING_DATA, ExecTelemetry)
+			+ offsetof(VERIFIABLE_EXEC_TELEMETRY, SyscallSampleIndex);
+
+		BYTE stub_slab[SC_REMOTE_STUB_COUNT * SC_STUB_SIZE_SAMPLED + sizeof(void *)]
 		{
 			0
 		};
 
 		const DWORD Built = BuildSyscallStubs(stub_slab, sizeof(stub_slab), remote_stub_hashes, SC_REMOTE_STUB_COUNT,
-			reinterpret_cast<ULONG_PTR>(pStubArea));
+			reinterpret_cast<ULONG_PTR>(pStubArea), ring_base, sysidx_addr, &data.ExecTelemetry, remote_ntdll);
 
 		if (Built != SC_REMOTE_STUB_COUNT)
 		{
@@ -768,17 +961,17 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		for (DWORD i = 0; i < SC_REMOTE_STUB_COUNT; ++i)
 		{
-			if (SyscallServiceOfStub(stub_slab + (i * SC_STUB_SIZE)) == 0)
+			if (SyscallServiceOfStub(stub_slab + (i * SC_STUB_SIZE_SAMPLED)) == 0)
 			{
 				continue;
 			}
 
 			switch (i)
 			{
-				case 0: table_local->NtAllocateVirtualMemory	= ReCa<f_NtAllocateVirtualMemory>(pStubArea + i * SC_STUB_SIZE); break;
-				case 1: table_local->NtProtectVirtualMemory	= ReCa<f_NtProtectVirtualMemory>	(pStubArea + i * SC_STUB_SIZE); break;
-				case 2: table_local->NtFreeVirtualMemory		= ReCa<f_NtFreeVirtualMemory>	(pStubArea + i * SC_STUB_SIZE); break;
-				case 3: table_local->NtQueryInformationProcess = ReCa<f_NtQueryInformationProcess>(pStubArea + i * SC_STUB_SIZE); break;
+				case 0: table_local->NtAllocateVirtualMemory	= ReCa<f_NtAllocateVirtualMemory>(pStubArea + i * SC_STUB_SIZE_SAMPLED); break;
+				case 1: table_local->NtProtectVirtualMemory	= ReCa<f_NtProtectVirtualMemory>	(pStubArea + i * SC_STUB_SIZE_SAMPLED); break;
+				case 2: table_local->NtFreeVirtualMemory		= ReCa<f_NtFreeVirtualMemory>	(pStubArea + i * SC_STUB_SIZE_SAMPLED); break;
+				case 3: table_local->NtQueryInformationProcess = ReCa<f_NtQueryInformationProcess>(pStubArea + i * SC_STUB_SIZE_SAMPLED); break;
 				default: break;
 			}
 		}
@@ -879,6 +1072,27 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	LOG(1, "Shells Written To Memory\n");
 
+	// CHECK 2: read-back of the shell entry's first 16 bytes vs the on-disk shell function.
+	{
+		BYTE expected[16];
+		memcpy(expected, ReCa<BYTE *>(ManualMapping_Shell), sizeof(expected));
+
+		BYTE actual[16] = { 0 };
+		SIZE_T read_back = 0;
+		const NTSTATUS rb_status = ScNtReadVirtualMemory(hTargetProc, ReCa<BYTE *>(pShells), actual, sizeof(actual), &read_back);
+		const bool rb_match = NT_SUCCESS(rb_status) && read_back == sizeof(actual) &&
+			memcmp(expected, actual, sizeof(actual)) == 0;
+
+		char expected_hex[33] = { 0 };
+		char actual_hex[33] = { 0 };
+		Hex16(expected, expected_hex);
+		Hex16(actual, actual_hex);
+
+		LOG(1, "[READBACK] ShellEntry=0x%llX First16=%s\n",
+			(unsigned long long)ReCa<ULONG_PTR>(pShells), actual_hex);
+		LOG(1, "[READBACK] Expected=%s Match=%c\n", expected_hex, rb_match ? 'Y' : 'N');
+	}
+
 	if (!WriteRemoteExact(hTargetProc, pFunctionTable, table_local.get(), sizeof(MANUAL_MAPPING_FUNCTION_TABLE)))
 
 	{
@@ -921,6 +1135,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 
 	DWORD remote_ret = 0;
+	// CHECK 1 (line 3): is the shell entry inside the section view?
+	{
+		const ULONG_PTR shell_entry = ReCa<ULONG_PTR>(pShells);
+		const ULONG_PTR section_start = ReCa<ULONG_PTR>(image_base);
+		const ULONG_PTR section_end = section_start + static_cast<ULONG_PTR>(image_span);
+		const bool shell_in_section = (shell_entry >= section_start && shell_entry < section_end);
+		LOG(1, "[RELOC] ShellEntry=0x%llX ShellEntryInSection=%c\n",
+			(unsigned long long)shell_entry, shell_in_section ? 'Y' : 'N');
+	}
+
 	DWORD dwRet = StartRoutine(hTargetProc, ReCa<f_Routine>(pShells), pArg, remote_flags, remote_ret, Timeout, SponsorThread, SponsorTid, completion_event.get(), error_data);
 
 	LOG(1, "Return From StartRoutine\n");
@@ -1699,7 +1923,7 @@ LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POI
 		return (Result); \
 	} while (0)
 
-#define MM_SHELL_STAGE(Field, Call) \
+#define MM_SHELL_STAGE(Name, Field, Call) \
 	do { \
 		const unsigned __int64 mm_stage_start = __rdtsc(); \
 		const DWORD mm_stage_ret = (Call); \
@@ -1744,16 +1968,6 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 	pData->pOptionalHeader	= &pData->pNtHeaders->OptionalHeader;
 	pData->pFileHeader		= &pData->pNtHeaders->FileHeader;
 
-
-
-
-
-
-
-
-
-
-
 	if (f->RtlAddVectoredExceptionHandler && f->RtlRemoveVectoredExceptionHandler)
 	{
 		pData->DebugPrintVehHandle = f->RtlAddVectoredExceptionHandler(1, MMI_DebugPrintVeh);
@@ -1763,11 +1977,11 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 		}
 	}
 
-	MM_SHELL_STAGE(ImportStageCycles, f->MMIP_LoadImports(pData));
-	MM_SHELL_STAGE(DelayImportStageCycles, f->MMIP_LoadDelayImports(pData));
-	MM_SHELL_STAGE(ExceptionStageCycles, f->MMIP_EnableExceptions(pData));
-	MM_SHELL_STAGE(TlsStageCycles, f->MMIP_HandleTLS(pData));
-	MM_SHELL_STAGE(TlsCallbackStageCycles, f->MMIP_RunTlsCallbacks(pData));
+	MM_SHELL_STAGE("MMI_LoadImports", ImportStageCycles, f->MMIP_LoadImports(pData));
+	MM_SHELL_STAGE("MMI_LoadDelayImports", DelayImportStageCycles, f->MMIP_LoadDelayImports(pData));
+	MM_SHELL_STAGE("MMI_EnableExceptions", ExceptionStageCycles, f->MMIP_EnableExceptions(pData));
+	MM_SHELL_STAGE("MMI_HandleTLS", TlsStageCycles, f->MMIP_HandleTLS(pData));
+	MM_SHELL_STAGE("MMI_RunTlsCallbacks", TlsCallbackStageCycles, f->MMIP_RunTlsCallbacks(pData));
 	{
 
 
@@ -1783,9 +1997,9 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 
 
 
-	MM_SHELL_STAGE(HeaderStageCycles, f->MMIP_CloakHeader(pData));
-	MM_SHELL_STAGE(DirectoryStageCycles, f->MMIP_CleanDataDirectories(pData));
-	MM_SHELL_STAGE(ProtectStageCycles, f->MMIP_SetPageProtections(pData));
+	MM_SHELL_STAGE("MMI_CloakHeader", HeaderStageCycles, f->MMIP_CloakHeader(pData));
+	MM_SHELL_STAGE("MMI_CleanDataDirectories", DirectoryStageCycles, f->MMIP_CleanDataDirectories(pData));
+	MM_SHELL_STAGE("MMI_SetPageProtections", ProtectStageCycles, f->MMIP_SetPageProtections(pData));
 
 	FreeDependencyNodeList(f, pData->pImportsHead);
 	FreeDependencyNodeList(f, pData->pDelayImportsHead);
@@ -1923,25 +2137,40 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 			break;
 		}
 
-		IMAGE_THUNK_DATA * pThunk	= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pImportDescr->OriginalFirstThunk);
-		IMAGE_THUNK_DATA * pIAT		= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pImportDescr->FirstThunk);
+		// Vector 1: derive thunk and IAT pointers from the RW (write) view when active. The shell
+		// writes resolved addresses into the IAT, which lives in the never-executable RW view.
+		BYTE * iat_base = pData->pSectionRwView ? pData->pSectionRwView : pData->pImageBase;
+
+		IMAGE_THUNK_DATA * pThunk	= ReCa<IMAGE_THUNK_DATA *>(iat_base + pImportDescr->OriginalFirstThunk);
+		IMAGE_THUNK_DATA * pIAT		= ReCa<IMAGE_THUNK_DATA *>(iat_base + pImportDescr->FirstThunk);
 
 		if (!pImportDescr->OriginalFirstThunk)
 		{
 			pThunk = pIAT;
 		}
 
-		if (!MMI_InImage(pData, pIAT, sizeof(*pIAT)) || !MMI_InImage(pData, pThunk, sizeof(*pThunk)))
 		{
-			ErrorBreak = true;
-			break;
+			const SIZE_T image_size_iat = MMI_SizeOfImage(pData);
+			const ULONG_PTR ib = ReCa<ULONG_PTR>(iat_base);
+			if (ReCa<ULONG_PTR>(pIAT) < ib || ReCa<ULONG_PTR>(pIAT) - ib + sizeof(*pIAT) > image_size_iat ||
+				ReCa<ULONG_PTR>(pThunk) < ib || ReCa<ULONG_PTR>(pThunk) - ib + sizeof(*pThunk) > image_size_iat)
+			{
+				ErrorBreak = true;
+				break;
+			}
 		}
 
-		for (; pThunk && MMI_InImage(pData, pThunk, sizeof(*pThunk)) && MMI_InImage(pData, pIAT, sizeof(*pIAT)) && pThunk->u1.AddressOfData; ++pThunk, ++pIAT)
+		// Vector 1: the IAT and thunk pointers live in the RW (write) view, so bound-check them
+		// against the RW view base (not pImageBase) to stay correct even if the two views differ.
+		const SIZE_T iat_span = MMI_SizeOfImage(pData);
+		const ULONG_PTR iat_ib = ReCa<ULONG_PTR>(iat_base);
+		for (; pThunk && pThunk->u1.AddressOfData &&
+			ReCa<ULONG_PTR>(pThunk) >= iat_ib && ReCa<ULONG_PTR>(pThunk) - iat_ib + sizeof(*pThunk) <= iat_span &&
+			ReCa<ULONG_PTR>(pIAT) >= iat_ib && ReCa<ULONG_PTR>(pIAT) - iat_ib + sizeof(*pIAT) <= iat_span; ++pThunk, ++pIAT)
 		{
 			UINT_PTR * pFuncRef = ReCa<UINT_PTR *>(pIAT);
 
-			IMAGE_IMPORT_BY_NAME * pImport;
+			IMAGE_IMPORT_BY_NAME * pImport = nullptr;
 			if (IMAGE_SNAP_BY_ORDINAL(pThunk->u1.Ordinal))
 			{
 
@@ -1993,7 +2222,6 @@ DWORD __declspec(code_seg(".code$06")) __stdcall MMI_LoadImports(MANUAL_MAPPING_
 
 			if (NT_FAIL(pData->ntRet))
 			{
-
 				ErrorBreak = true;
 				break;
 			}
@@ -2141,15 +2369,24 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 		ScrubFreeObject(f, ModNameW.szBuffer, ModNameW.MaxLength);
 
+		// Vector 1: the module-handle slot and the IAT are written in-target, so route them
+		// through the never-executable RW view when the section path is active.
+		BYTE * iat_base = pData->pSectionRwView ? pData->pSectionRwView : pData->pImageBase;
+
 		if (pDelayImportDescr->ModuleHandleRVA)
 		{
-			if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + pDelayImportDescr->ModuleHandleRVA), sizeof(HINSTANCE)))
 			{
-				ErrorBreak = true;
-				break;
+				const SIZE_T sz = MMI_SizeOfImage(pData);
+				const ULONG_PTR ib = ReCa<ULONG_PTR>(iat_base);
+				const ULONG_PTR mh = ib + pDelayImportDescr->ModuleHandleRVA;
+				if (mh < ib || mh - ib + sizeof(HINSTANCE) > sz)
+				{
+					ErrorBreak = true;
+					break;
+				}
 			}
 
-			HINSTANCE * pModule = ReCa<HINSTANCE *>(pData->pImageBase + pDelayImportDescr->ModuleHandleRVA);
+			HINSTANCE * pModule = ReCa<HINSTANCE *>(iat_base + pDelayImportDescr->ModuleHandleRVA);
 			*pModule = hDll;
 		}
 
@@ -2159,16 +2396,29 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 			break;
 		}
 
-		IMAGE_THUNK_DATA * pIAT			= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pDelayImportDescr->ImportAddressTableRVA);
+		IMAGE_THUNK_DATA * pIAT			= ReCa<IMAGE_THUNK_DATA *>(iat_base + pDelayImportDescr->ImportAddressTableRVA);
 		IMAGE_THUNK_DATA * pNameTable	= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pDelayImportDescr->ImportNameTableRVA);
 
-		if (!MMI_InImage(pData, pIAT, sizeof(*pIAT)) || !MMI_InImage(pData, pNameTable, sizeof(*pNameTable)))
 		{
-			ErrorBreak = true;
-			break;
+			const SIZE_T sz = MMI_SizeOfImage(pData);
+			const ULONG_PTR ib = ReCa<ULONG_PTR>(iat_base);
+			const ULONG_PTR ib2 = ReCa<ULONG_PTR>(pData->pImageBase);
+			const ULONG_PTR iat = ib + pDelayImportDescr->ImportAddressTableRVA;
+			const ULONG_PTR name_t = ib2 + pDelayImportDescr->ImportNameTableRVA;
+			if (iat < ib || iat - ib + sizeof(*pIAT) > sz || name_t < ib2 || name_t - ib2 + sizeof(*pNameTable) > sz)
+			{
+				ErrorBreak = true;
+				break;
+			}
 		}
 
-		for (; pIAT && MMI_InImage(pData, pIAT, sizeof(*pIAT)) && MMI_InImage(pData, pNameTable, sizeof(*pNameTable)) && pIAT->u1.Function; ++pIAT, ++pNameTable)
+		{
+			const SIZE_T sz = MMI_SizeOfImage(pData);
+			const ULONG_PTR ib = ReCa<ULONG_PTR>(iat_base);
+			const ULONG_PTR ib2 = ReCa<ULONG_PTR>(pData->pImageBase);
+			for (; pIAT && pIAT->u1.Function &&
+				ReCa<ULONG_PTR>(pIAT) >= ib && ReCa<ULONG_PTR>(pIAT) - ib + sizeof(*pIAT) <= sz &&
+				ReCa<ULONG_PTR>(pNameTable) >= ib2 && ReCa<ULONG_PTR>(pNameTable) - ib2 + sizeof(*pNameTable) <= sz; ++pIAT, ++pNameTable)
 		{
 			if (IMAGE_SNAP_BY_ORDINAL(pNameTable->u1.Ordinal))
 			{
@@ -2220,6 +2470,7 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 				break;
 			}
 		}
+	}
 
 		if (!ErrorBreak)
 		{
@@ -2257,6 +2508,11 @@ DWORD __declspec(code_seg(".code$08")) __stdcall MMI_SetPageProtections(MANUAL_M
 		return INJ_ERR_SUCCESS;
 	}
 
+	// Vector 1 (single-RWX-view section mapping): the per-section demotion below MUST run.
+	// NtProtectVirtualMemory works on this page-file section view (MMI_SetExecProtections
+	// and MMI_CloakHeader already flip it successfully); skipping it left the non-executable
+	// sections at the view's PAGE_EXECUTE_READWRITE, a W^X violation. This loop drops
+	// .rdata/.pdata/.reloc to PAGE_READONLY and .data/.tls to PAGE_READWRITE at end-of-shell.
 	auto f = pData->FunctionTable;
 
 	ULONG OldProtection = 0;
@@ -2399,7 +2655,8 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 			const RUNTIME_FUNCTION & first = pExceptionHandlers[0];
 			const ULONGLONG probe = ReCa<ULONGLONG>(pData->pImageBase) + first.BeginAddress;
 			ULONGLONG lookup_base = 0;
-			BYTE history[312]{};
+			BYTE history[312];
+			f->RtlZeroMemory(history, sizeof(history));
 			RUNTIME_FUNCTION * found = f->RtlLookupFunctionEntry(probe, &lookup_base, history);
 			dynamic_ok = (found != nullptr && lookup_base == ReCa<ULONGLONG>(pData->pImageBase));
 		}
@@ -3651,6 +3908,21 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 		pData->MapStats.RetainedAllocSize = 0;
 	}
 
+	// Vector 1: once the payload no longer needs to write, unmap the RW view of the page-file section.
+	if (pData->pSectionRwView && f->NtUnmapViewOfSection)
+	{
+		const NTSTATUS unmap_ret = f->NtUnmapViewOfSection(NtCurrentProcess(), ReCa<void *>(pData->pSectionRwView));
+		if (NT_FAIL(unmap_ret))
+		{
+			// Retain the address on failure so it is not silently lost.
+			pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pSectionRwView);
+		}
+		else
+		{
+			pData->pSectionRwView = nullptr;
+		}
+	}
+
 	return 0;
 }
 
@@ -3670,6 +3942,9 @@ MANUAL_MAPPING_FUNCTION_TABLE::MANUAL_MAPPING_FUNCTION_TABLE()
 	NT_FUNC_CONSTRUCTOR_INIT(NtFreeVirtualMemory);
 	NT_FUNC_CONSTRUCTOR_INIT(NtSetEvent);
 	NT_FUNC_CONSTRUCTOR_INIT(NtClose);
+	NT_FUNC_CONSTRUCTOR_INIT(NtCreateSection);
+	NT_FUNC_CONSTRUCTOR_INIT(NtMapViewOfSection);
+	NT_FUNC_CONSTRUCTOR_INIT(NtUnmapViewOfSection);
 
 	NT_FUNC_CONSTRUCTOR_INIT(memmove);
 	NT_FUNC_CONSTRUCTOR_INIT(RtlZeroMemory);
