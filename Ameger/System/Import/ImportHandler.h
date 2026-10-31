@@ -48,6 +48,10 @@ namespace NATIVE
 	NT_FUNC(NtSetEvent);
 	NT_FUNC(NtClose);
 
+	NT_FUNC(NtCreateSection);
+	NT_FUNC(NtMapViewOfSection);
+	NT_FUNC(NtUnmapViewOfSection);
+
 	NT_FUNC(LdrProtectMrdata);
 
 	NT_FUNC(LdrpHeap);
