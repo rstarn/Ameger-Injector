@@ -77,9 +77,6 @@ namespace MMAP_NATIVE
 		ALIGN NT_FUNC_LOCAL(NtFreeVirtualMemory);
 		ALIGN NT_FUNC_LOCAL(NtSetEvent);
 		ALIGN NT_FUNC_LOCAL(NtClose);
-		ALIGN NT_FUNC_LOCAL(NtCreateSection);
-		ALIGN NT_FUNC_LOCAL(NtMapViewOfSection);
-		ALIGN NT_FUNC_LOCAL(NtUnmapViewOfSection);
 
 		ALIGN NT_FUNC_LOCAL(memmove);
 		ALIGN NT_FUNC_LOCAL(RtlZeroMemory);
@@ -175,7 +172,6 @@ namespace MMAP_NATIVE
 
 	ALIGN BYTE *	pAllocationBase	= nullptr;
 	ALIGN BYTE *	pImageBase		= nullptr;
-	ALIGN BYTE *	pSectionRwView	= nullptr;
 
  	ALIGN IMAGE_DOS_HEADER		* pDosHeader		= nullptr;
  		ALIGN IMAGE_NT_HEADERS		* pNtHeaders		= nullptr;

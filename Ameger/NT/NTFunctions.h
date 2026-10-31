@@ -205,34 +205,6 @@ using f_NtProtectVirtualMemory = NTSTATUS (__stdcall *)
 	ULONG	*	OldAccess
 );
 
-using f_NtCreateSection = NTSTATUS (__stdcall *)
-(
-	PHANDLE			SectionHandle,
-	ACCESS_MASK		DesiredAccess,
-	OBJECT_ATTRIBUTES *	ObjectAttributes,
-	LARGE_INTEGER		*	SectionSize,
-	ULONG				PageProtection,
-	ULONG				AllocationAttributes,
-	UNICODE_STRING		*	FileName,
-	LARGE_INTEGER		*	MaximumSize
-);
-
-using f_NtMapViewOfSection = NTSTATUS (__stdcall *)
-(
-	HANDLE			SectionHandle,
-	PVOID			*	BaseAddress,
-	SIZE_T			*	ViewSize,
-	ULONG_PTR		Alignment,
-	SIZE_T			*	Offset,
-	PVOID			InheritFlags
-);
-
-using f_NtUnmapViewOfSection = NTSTATUS (__stdcall *)
-(
-	HANDLE		ProcessHandle,
-	PVOID		BaseAddress
-);
-
 using f_LdrProtectMrdata = VOID (__stdcall *)
 (
 	BOOL bProtected

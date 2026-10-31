@@ -145,30 +145,6 @@ static_assert(sizeof(STRING_STATS) == 24);
 
 
 
-#define SYSCALL_SAMPLE_COUNT	16
-
-// Tier 2: the fake-stack pivot frame is 8 ntdll `ret` gadgets + 1 restore gadget
-// (xchg rsp, rdi; ret) that hands RSP back to the real stack. Pre-populated at
-// build time by BuildSyscallStubs; the sampler pivots RSP onto it before the syscall.
-#define FAKE_STACK_SLOTS	9
-
-// Written by the emitted syscall stubs inside the target (one ring slot per syscall issued
-// through a sampled stub). The emitted sampler strides the ring by 96 bytes (`imul r14, 96`),
-// so the sample MUST be exactly 96 bytes; the static_assert below enforces that. Frames[8] are
-// the 8 stack qwords [rsp+0..56] captured AT SYSCALL TIME (while the shell stack is still
-// mapped), so the verifier resolves them from the ring instead of re-reading the released stack.
-struct SYSCALL_SAMPLE
-{
-	DWORD		ThreadId;		// offset 0   TEB->ClientId.UniqueThread (gs:0x48)
-	ULONGLONG	Rsp;			// offset 8   captured RSP at the instant the syscall fires
-	ULONGLONG	CycleCount;		// offset 16  TSC captured at the instant the syscall fires
-	BYTE		FunctionId;		// offset 24  which remote stub (0..SC_REMOTE_STUB_COUNT-1) issued it
-	ULONGLONG	Frames[8];		// offset 32  64 bytes = [rsp+0..56] captured at syscall time
-};
-
-static_assert(sizeof(SYSCALL_SAMPLE) == 96,
-	"SYSCALL_SAMPLE must stride the sampler ring by exactly 96 bytes");
-
 struct VERIFIABLE_EXEC_TELEMETRY
 {
 	ULONG_PTR LoaderLockCookie = 0;
@@ -237,33 +213,9 @@ struct VERIFIABLE_EXEC_TELEMETRY
 
 
 	DWORD DebugPrintVehInstalled = 0;
-
-	// Vector 7: live syscall-stack sampling ring, written by the emitted sampled stubs inside
-	// the target. SyscallSampleIndex is the next slot to write (wraps mod SYSCALL_SAMPLE_COUNT).
-	SYSCALL_SAMPLE SyscallSamples[SYSCALL_SAMPLE_COUNT];
-	volatile LONG  SyscallSampleIndex = 0;
-
-	// Tier 2 stack spoof: pre-populated at host build time by BuildSyscallStubs with 8 ntdll
-	// `ret` (C3) gadgets followed by 1 restore gadget (xchg rsp, rdi; ret). The sampler block
-	// pivots RSP onto FakeStack before the syscall; its RET chain unwinds FakeStack[0..7] then
-	// the restore gadget, which reads the real RSP the sampler parked in SavedRealRsp and in
-	// rdi, and returns to the shell's real return address.
-	ULONGLONG FakeStack[FAKE_STACK_SLOTS];
-	ULONGLONG SavedRealRsp = 0;
 };
 
-// Layout: 14 qwords + 26 dwords (no internal padding) + the 1536-byte ring (16 x 96) + the
-// 4-byte index + the Tier 2 fake stack (9 x 8 qwords) + SavedRealRsp (8 bytes). The 4-byte
-// index leaves 4 alignment bytes before the 8-byte FakeStack (and the round-up term also
-// covers any trailing pad), so round the sum to a multiple of 8 the same way the compiler
-// does. With the 96-byte sample the block is 1760 bytes; the 80-byte Tier 2 addition makes it 1840.
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) ==
-	((14 * sizeof(ULONG_PTR) + 26 * sizeof(DWORD)
-		+ SYSCALL_SAMPLE_COUNT * sizeof(SYSCALL_SAMPLE) + sizeof(LONG)
-		+ FAKE_STACK_SLOTS * sizeof(ULONGLONG) + sizeof(ULONGLONG)
-		+ (sizeof(ULONG_PTR) - 1)) & ~(sizeof(ULONG_PTR) - 1)),
-	"the telemetry block is published a word at a time, so its size must be exact");
-static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 1840,
-	"telemetry is 1760 + 80 (Tier 2 FakeStack[9] + SavedRealRsp) = 1840");
+static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) == 14 * sizeof(ULONG_PTR) + 26 * sizeof(DWORD),
+	"the telemetry block must have no padding, because it is published a word at a time");
 static_assert(sizeof(VERIFIABLE_EXEC_TELEMETRY) % sizeof(LONG) == 0,
 	"the telemetry block is published a word at a time, so its size must be a whole number of words");

@@ -207,10 +207,6 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	if (LoadSymbolNative(S_FUNC(NtSetEvent)))							return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(NtClose)))								return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
-	if (LoadSymbolNative(S_FUNC(NtCreateSection)))							return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
-	if (LoadSymbolNative(S_FUNC(NtMapViewOfSection)))						return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
-	if (LoadSymbolNative(S_FUNC(NtUnmapViewOfSection)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
-
 	if (LoadSymbolNative(S_FUNC(RtlInsertInvertedFunctionTable)))		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	if (LoadSymbolNative(S_FUNC(LdrpHandleTlsData)))					return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 

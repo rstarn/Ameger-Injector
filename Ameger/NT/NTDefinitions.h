@@ -69,12 +69,6 @@ typedef enum class _THREADINFOCLASS
 	ThreadBasicInformation			= 0
 } THREADINFOCLASS;
 
-typedef enum class _SECTION_INFORMATION_CLASS
-{
-	SectionBasicInformation			= 0,
-	SectionImageInformation			= 1
-} SECTION_INFORMATION_CLASS;
-
 
 
 
@@ -238,17 +232,6 @@ typedef struct _PROCESS_BASIC_INFORMATION
 	HANDLE		UniqueProcessId;
 	HANDLE		InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION, * PPROCESS_BASIC_INFORMATION;
-
-// NtQuerySection(SectionBasicInformation) result (Track B step 7):
-// answers whether the section is actually committed to its full size.
-typedef struct _SECTION_BASIC_INFORMATION
-{
-	LARGE_INTEGER	BaseAddress;
-	LARGE_INTEGER	Attribute;
-	LARGE_INTEGER	MaximumSize;
-	ULONG			PageProtection;
-	ULONG			Attributes;
-} SECTION_BASIC_INFORMATION, * PSECTION_BASIC_INFORMATION;
 
 typedef struct _SYSTEM_THREAD_INFORMATION
 {
