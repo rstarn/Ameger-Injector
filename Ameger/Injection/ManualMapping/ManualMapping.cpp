@@ -230,6 +230,334 @@ namespace
 		return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 	}
 
+	// Vector 11: splice a synthetic LDR_DATA_TABLE_ENTRY for winhttp.dll (DllBase = the mapped
+	// payload) into the target's three PEB Ldr list heads, so module/VAD cross-referencing sees the
+	// payload as a legitimate system DLL. The entry and its name buffer live in a single 0x400
+	// allocation: entry at +0, the shared "\Windows\System32\winhttp.dll" name (BaseDllName and
+	// FullDllName both point there) at +0x200. Non-fatal by contract: a failure logs and returns
+	// false, and the verifier reports the state.
+	bool HostLinkLdrEntry(HANDLE hTargetProc, ULONG_PTR image_base, SIZE_T image_size, DWORD entry_point_rva)
+	{
+		const DYNAMIC_NT_OFFSETS & dyno = g_DynamicOffsets;
+
+		const DWORD peb_ldr_offset = dyno.PebLdr ? dyno.PebLdr : static_cast<DWORD>(offsetof(PEB, Ldr));
+		const DWORD ldr_base_offset = dyno.LdrEntryDllBase ? dyno.LdrEntryDllBase
+			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DllBase));
+		const DWORD ldr_size_offset = dyno.LdrEntrySizeOfImage ? dyno.LdrEntrySizeOfImage
+			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, SizeOfImage));
+		const DWORD ldr_full_name_offset = dyno.LdrEntryFullDllName ? dyno.LdrEntryFullDllName
+			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, FullDllName));
+		const DWORD ldr_base_name_offset = dyno.LdrEntryBaseDllName ? dyno.LdrEntryBaseDllName
+			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, BaseDllName));
+
+		PROCESS_BASIC_INFORMATION basic{ };
+		const NTSTATUS basic_status = ScNtQueryInformationProcess(hTargetProc,
+			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
+		if (NT_FAIL(basic_status) || !basic.pPEB)
+		{
+			LOG(1, "[LdrSplice] Process Basic Information Query Failed (Status = %08X)\n",
+				static_cast<unsigned>(basic_status));
+			return false;
+		}
+
+		PEB_LDR_DATA * ldr = nullptr;
+		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
+		{
+			LOG(1, "[LdrSplice] The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
+				basic.pPEB, peb_ldr_offset);
+			return false;
+		}
+
+		// One 0x400 allocation: the entry at +0, the Ddag node at +0x180, the name buffer at
+		// +0x200. LdrpHandleTlsData dereferences the PEB entry's DdagNode, so it must be a
+		// valid node (the shell builds the same shape for its dummy entry).
+		constexpr SIZE_T kBlockAlign = 0x400;
+		constexpr ULONG_PTR kDdagOffset = 0x180;
+		constexpr ULONG_PTR kNameOffset = 0x200;
+
+		void * block = nullptr;
+		SIZE_T block_size = kBlockAlign;
+		const NTSTATUS block_status = ScNtAllocateVirtualMemory(hTargetProc, &block, 0, &block_size,
+			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		if (NT_FAIL(block_status) || !block)
+		{
+			LOG(1, "[LdrSplice] Entry Block Allocation Failed = %08X\n", static_cast<unsigned>(block_status));
+			return false;
+		}
+
+		RemoteAllocation block_guard(hTargetProc, block);
+
+		BYTE * entry_address = ReCa<BYTE *>(block);
+		const ULONG_PTR ddag_address = ReCa<ULONG_PTR>(block) + kDdagOffset;
+		const ULONG_PTR name_address = ReCa<ULONG_PTR>(block) + kNameOffset;
+
+		// Minimal valid LDR_DDAG_NODE: self-linked Modules list, State = LdrModulesReadyToInit.
+		// Without this the loader follows DdagNode == NULL while handling TLS (C0000005).
+		BYTE ddag_bytes[sizeof(LDR_DDAG_NODE_WIN11)]{};
+		memset(ddag_bytes, 0, sizeof(ddag_bytes));
+
+		LIST_ENTRY ddag_modules{};
+		ddag_modules.Flink = ReCa<LIST_ENTRY *>(ddag_address + offsetof(LDR_DDAG_NODE_WIN11, Modules));
+		ddag_modules.Blink = ddag_modules.Flink;
+		memcpy(ddag_bytes + offsetof(LDR_DDAG_NODE_WIN11, Modules), &ddag_modules, sizeof(ddag_modules));
+		*ReCa<int *>(ddag_bytes + offsetof(LDR_DDAG_NODE_WIN11, State)) = static_cast<int>(LdrModulesReadyToInit);
+
+		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(ddag_address), ddag_bytes, sizeof(ddag_bytes)))
+		{
+			LOG(1, "[LdrSplice] The Ddag Node Could Not Be Written\n");
+			return false;
+		}
+
+		// "\Windows\System32\winhttp.dll", shared by BaseDllName and FullDllName.
+		constexpr wchar_t kFakeName[] = L"\\Windows\\System32\\winhttp.dll";
+		constexpr USHORT name_length = static_cast<USHORT>(sizeof(kFakeName) - sizeof(wchar_t));
+
+		UNICODE_STRING name_us{};
+		name_us.Length = name_length;
+		name_us.MaxLength = name_length + sizeof(wchar_t);
+		name_us.szBuffer = ReCa<PWSTR>(name_address);
+
+		wchar_t name_buffer[64]{};
+		memcpy(name_buffer, kFakeName, sizeof(kFakeName));
+		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(name_address), name_buffer, sizeof(kFakeName)))
+		{
+			LOG(1, "[LdrSplice] The Name Buffer Could Not Be Written\n");
+			return false;
+		}
+
+		// Splice each of the three lists: read the heads, build the entry with each list's link
+		// pair (the entry sits right after the head), then patch head.Flink and next.Blink.
+		struct LIST_HEAD_INFO
+		{
+			const char * Name;
+			DWORD HeadOffset;       // offset within PEB_LDR_DATA
+			DWORD EntryLinkOffset;  // offset of that LIST_ENTRY within the entry
+			LIST_ENTRY Head{};
+			bool Readable = false;
+		};
+
+		LIST_HEAD_INFO heads[3] =
+		{
+			{ "InLoadOrder", offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks), {}, false },
+			{ "InMemoryOrder", offsetof(PEB_LDR_DATA, InMemoryOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InMemoryOrderLinks), {}, false },
+			{ "InInitializationOrder", offsetof(PEB_LDR_DATA, InInitializationOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InInitializationOrderLinks), {}, false },
+		};
+
+		for (auto & head : heads)
+		{
+			const BYTE * head_address = ReCa<BYTE *>(ldr) + head.HeadOffset;
+
+			// Circular LIST_HEAD anchor: the head's Blink is the list's LAST entry, and its Flink
+			// points back at the head. (head.Blink == head only for an empty list -- probe-verified
+			// against a live PEB on this build.)
+			LIST_ENTRY blink_node{};
+			head.Readable = ScReadProcessMemory(hTargetProc, head_address, &head.Head, sizeof(head.Head), nullptr) &&
+				head.Head.Blink &&
+				ScReadProcessMemory(hTargetProc, ReCa<LPCVOID>(head.Head.Blink), &blink_node, sizeof(blink_node), nullptr) &&
+				ReCa<ULONG_PTR>(blink_node.Flink) == ReCa<ULONG_PTR>(head_address);
+			if (!head.Readable)
+			{
+				LOG(1, "[LdrSplice] %s List Head Could Not Be Read (Ldr = %p | Offset = %08X)\n",
+					head.Name, ldr, head.HeadOffset);
+			}
+		}
+
+		if (!heads[0].Readable || !heads[1].Readable || !heads[2].Readable)
+		{
+			return false;
+		}
+
+		BYTE entry_bytes[sizeof(LDR_DATA_TABLE_ENTRY_WIN11)]{};
+		memset(entry_bytes, 0, sizeof(entry_bytes)); // every field starts zeroed; only the ones below are valid
+
+		*(ULONG_PTR *)(ReCa<BYTE *>(&entry_bytes) + ldr_base_offset) = image_base;
+		*(DWORD *)(ReCa<BYTE *>(&entry_bytes) + ldr_size_offset) = static_cast<DWORD>(image_size);
+
+		// EntryPoint = image_base + the payload's AddressOfEntryPoint RVA (offset 56 in the Win11
+		// entry layout, right after DllBase).
+		*(ULONG_PTR *)(ReCa<BYTE *>(&entry_bytes) + offsetof(LDR_DATA_TABLE_ENTRY_WIN11, EntryPoint)) =
+			image_base + entry_point_rva;
+		*(ULONG_PTR *)(ReCa<BYTE *>(&entry_bytes) + offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DdagNode)) =
+			ddag_address;
+
+		memcpy(entry_bytes + ldr_full_name_offset, &name_us, sizeof(name_us));
+		memcpy(entry_bytes + ldr_base_name_offset, &name_us, sizeof(name_us));
+
+		for (auto & head : heads)
+		{
+			LIST_ENTRY link{};
+			link.Flink = head.Head.Flink; // the first real entry of that list
+			link.Blink = ReCa<LIST_ENTRY *>(ReCa<BYTE *>(ldr) + head.HeadOffset); // the head itself
+			memcpy(entry_bytes + head.EntryLinkOffset, &link, sizeof(link));
+		}
+
+		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(entry_address), entry_bytes, sizeof(entry_bytes)))
+		{
+			LOG(1, "[LdrSplice] The Entry Could Not Be Written\n");
+			return false;
+		}
+
+		// The pages holding the list heads (inside PEB->Ldr) and the first real entries of each
+		// list (loader heap) can be read-only under anti-cheat hardening; NtWriteVirtualMemory
+		// refuses to write non-writable pages. Demote each page touched below to PAGE_READWRITE
+		// and restore its exact original protection (guard bits included) right after the pair
+		// of writes for that list, keeping the writable window as short as possible.
+		struct ProtectRecord
+		{
+			void * Page;
+			SIZE_T PageSize;
+			ULONG OldProtect;
+		};
+
+		std::vector<ProtectRecord> head_protections;
+
+		auto ensure_writable = [&](const char * list_name, BYTE * address) -> bool
+		{
+			// Single page only: the PEB/Ldr can sit at the end of a committed region, and a
+			// two-page region crosses into an uncommitted page (STATUS_NOT_COMMITTED C000002D).
+			void * page = ReCa<void *>(ReCa<ULONG_PTR>(address) & ~0xFFFUL);
+			SIZE_T page_size = 0x1000;
+
+			// The page holding the list head can be reserved but not committed, in which case
+			// NtProtectVirtualMemory refuses with STATUS_NOT_COMMITTED. Commit it first;
+			// STATUS_ALREADY_COMMITTED (0x40000000) means the page was already committed.
+			void * commit_address = page;
+			SIZE_T commit_size = page_size;
+			const NTSTATUS commit_status = ScNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
+				&commit_size, MEM_COMMIT, PAGE_READWRITE);
+
+			LOG(1, "[LdrSplice] Commit Page Status = 0x%08X (Addr = 0x%p)\n",
+				static_cast<unsigned>(commit_status), commit_address);
+
+			constexpr NTSTATUS kStatusAlreadyCommitted = static_cast<NTSTATUS>(0x40000000);
+			if (NT_FAIL(commit_status) && commit_status != kStatusAlreadyCommitted)
+			{
+				LOG(1, "[LdrSplice] %s Page Commit Failed = %08X (Page = %p)\n",
+					list_name, static_cast<unsigned>(commit_status), page);
+				return false;
+			}
+
+			ULONG old_protect = 0;
+
+			const NTSTATUS prot_status = ScNtProtectVirtualMemory(hTargetProc, &page, &page_size,
+				PAGE_READWRITE, &old_protect);
+
+			if (NT_FAIL(prot_status))
+			{
+				LOG(1, "[LdrSplice] %s Page Unprotect Failed = %08X (Page = %p)\n",
+					list_name, static_cast<unsigned>(prot_status), page);
+				return false;
+			}
+
+			head_protections.push_back({ page, page_size, old_protect });
+			return true;
+		};
+
+		auto restore_protections = [&]()
+		{
+			for (auto it = head_protections.rbegin(); it != head_protections.rend(); ++it)
+			{
+				void * page = it->Page;
+				SIZE_T page_size = it->PageSize;
+				ULONG dummy = 0;
+				ScNtProtectVirtualMemory(hTargetProc, &page, &page_size, it->OldProtect, &dummy);
+			}
+
+			head_protections.clear();
+		};
+
+		auto protect_guard = MakeScopeExit([&]() noexcept
+		{
+			restore_protections(); // restore even on an early return
+		});
+
+		for (auto & head : heads)
+		{
+			BYTE * head_address = ReCa<BYTE *>(ldr) + head.HeadOffset;
+			BYTE * entry_link_address = ReCa<BYTE *>(entry_address) + head.EntryLinkOffset;
+			BYTE * next_link = ReCa<BYTE *>(ReCa<ULONG_PTR>(head.Head.Flink));
+
+			// Head-only splice: the synthetic entry must sit immediately after the list head.
+			// The previous build fell back to a "deeper position" when the head page could not
+			// be demoted; inserting into a pair the loader is concurrently walking corrupted
+			// PEB->Ldr and crashed LdrpHandleTlsData. If the head page cannot be made writable,
+			// fail the load instead of touching any other position in the list.
+			bool inserted = false;
+
+			if (ensure_writable(head.Name, head_address) && ensure_writable(head.Name, next_link))
+			{
+				// Patch the entry's link field: Flink = old first entry, Blink = head.
+				LIST_ENTRY link{};
+				link.Flink = ReCa<LIST_ENTRY *>(next_link);
+				link.Blink = ReCa<LIST_ENTRY *>(head_address);
+				memcpy(entry_bytes + head.EntryLinkOffset, &link, sizeof(link));
+
+				if (WriteRemoteExact(hTargetProc, ReCa<void *>(entry_link_address), &link, sizeof(link)) &&
+					WriteRemoteExact(hTargetProc, ReCa<void *>(head_address), &entry_link_address, sizeof(void *)) &&
+					WriteRemoteExact(hTargetProc, ReCa<void *>(next_link + offsetof(LIST_ENTRY, Blink)),
+						&entry_link_address, sizeof(void *)))
+				{
+					inserted = true;
+				}
+			}
+
+			restore_protections(); // per-list restore; minimizes the writable window
+
+			if (!inserted)
+			{
+				LOG(1, "[LdrSplice] %s Could Not Be Linked At Head (Unprotect Or Write Failed)\n", head.Name);
+				return false;
+			}
+		}
+
+		block_guard.release(); // the entry must stay resident with the process
+
+		// Verify the splice: walk InLoadOrderModuleList from the head and confirm the new entry
+		// is reachable. This is the list the loader walks while handling TLS.
+		bool entry_reachable = false;
+		{
+			BYTE * load_head = ReCa<BYTE *>(ldr) + offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead);
+			BYTE * entry_links = ReCa<BYTE *>(entry_address) + offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
+			LIST_ENTRY head_now{};
+
+			if (ScReadProcessMemory(hTargetProc, load_head, &head_now, sizeof(head_now), nullptr))
+			{
+				BYTE * node = ReCa<BYTE *>(head_now.Flink);
+
+				for (int hop = 0; hop < 512 && node && node != load_head; ++hop)
+				{
+					if (node == entry_links)
+					{
+						entry_reachable = true;
+						break;
+					}
+
+					LIST_ENTRY node_links{};
+					if (!ScReadProcessMemory(hTargetProc, node, &node_links, sizeof(node_links), nullptr))
+					{
+						break;
+					}
+
+					node = ReCa<BYTE *>(node_links.Flink);
+				}
+			}
+		}
+
+		if (!entry_reachable)
+		{
+			LOG(1, "[LdrSplice] Verification Failed: Entry Is Not Reachable From The InLoadOrder Head\n");
+			return false;
+		}
+
+		LOG(1, "[LdrSplice] Verified entry is reachable from head\n");
+
+		LOG(1, "[LdrSplice] Successfully linked payload as winhttp.dll\n");
+		LOG(1, "[LdrSplice] [+] winhttp.dll Ldr Entry Spliced At %p (DllBase = %p | SizeOfImage = 0x%llX)\n",
+			entry_address, ReCa<void *>(image_base), static_cast<unsigned long long>(image_size));
+
+		return true;
+	}
+
 
 
 
@@ -263,27 +591,70 @@ namespace
 
 
 
-		void * remote_base = ReCa<void *>(preferred_base);
-		SIZE_T remote_size = size_of_image;
-		NTSTATUS alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
-			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		void * remote_base = nullptr;
 
-		if (NT_FAIL(alloc_status) || !remote_base)
-		{
-			remote_base = nullptr;
-			remote_size = size_of_image;
-			alloc_status = ScNtAllocateVirtualMemory(hTargetProc, &remote_base, 0, &remote_size,
-				MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-		}
+		// Vector 1: SEC_COMMIT pagefile-backed section with PAGE_EXECUTE_READWRITE max protection.
+		// SEC_IMAGE was tried and failed: the kernel maps file-backed image sections with their
+		// on-disk protections (.text = RX, .rdata = RO), which blocks the manual mapper from
+		// writing relocations/imports into the view. SEC_COMMIT gives a fully writable view.
+		// If NtCreateSection fails, we report the exact error and STOP (no MEM_PRIVATE fallback).
+		bool section_mapped = false;
 
-		if (NT_FAIL(alloc_status) || !remote_base)
+		SIZE_T map_size = (static_cast<SIZE_T>(size_of_image) + 0xFFF) & ~static_cast<SIZE_T>(0xFFF);
+
+		OBJECT_ATTRIBUTES obj_attr{};
+		obj_attr.Length = sizeof(OBJECT_ATTRIBUTES);
+		obj_attr.RootDirectory = nullptr;
+		obj_attr.ObjectName = nullptr;
+		obj_attr.Attributes = 0x00000040; // OBJ_CASE_INSENSITIVE
+		obj_attr.SecurityDescriptor = nullptr;
+		obj_attr.SecurityQualityOfService = nullptr;
+
+		LARGE_INTEGER max_size{};
+		max_size.QuadPart = static_cast<LONGLONG>(map_size);
+
+		HANDLE section_handle = nullptr;
+		NTSTATUS section_status = ScNtCreateSection(&section_handle,
+			SECTION_ALL_ACCESS, &obj_attr, &max_size, PAGE_EXECUTE_READWRITE, SEC_COMMIT, nullptr);
+
+		LOG(1, "Host Map: ScNtCreateSection: status=0x%08X handle=0x%p maxsize=0x%llX\n",
+			static_cast<unsigned>(section_status), section_handle, static_cast<unsigned long long>(map_size));
+
+		if (NT_FAIL(section_status) || !section_handle)
 		{
+			LOG(1, "Host Map: Section Creation Failed = %08X (obj_attr.Length=%u max_size=0x%llX)\n",
+				static_cast<unsigned>(section_status), static_cast<unsigned>(obj_attr.Length),
+				static_cast<unsigned long long>(max_size.QuadPart));
+			// STOP: do NOT fall back to MEM_PRIVATE.
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-			LOG(1, "Host Map: Image Allocation Failed = %08X\n", static_cast<unsigned>(alloc_status));
-
 			return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
 		}
+
+		PVOID base_address = nullptr;
+		SIZE_T view_size = map_size;
+		// Map the view with PAGE_EXECUTE_READWRITE (not PAGE_READWRITE): the shell later transitions
+		// executable sections to PAGE_EXECUTE_READ via NtProtectVirtualMemory. On a SEC_COMMIT
+		// (pagefile-backed) section view, NtProtectVirtualMemory cannot ADD execute permission to a
+		// view that was mapped without it (STATUS_SECTION_PROTECTION, 0xC000004E). Mapping the view
+		// RWX from the start lets those transitions succeed.
+		NTSTATUS map_status = ScNtMapViewOfSection(section_handle, hTargetProc, &base_address, 0,
+			view_size, nullptr, &view_size, 2 /* ViewUnmap */, 0, PAGE_EXECUTE_READWRITE);
+
+		LOG(1, "Host Map: ScNtMapViewOfSection: status=0x%08X base=0x%p size=0x%llX\n",
+			static_cast<unsigned>(map_status), base_address, static_cast<unsigned long long>(view_size));
+
+		ScNtClose(section_handle);
+
+		if (NT_FAIL(map_status) || !base_address)
+		{
+			LOG(1, "Host Map: Section Mapping Failed = %08X\n", static_cast<unsigned>(map_status));
+			return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
+		}
+
+		remote_base = base_address;
+		section_mapped = true;
+
+		LOG(1, "Host Map: Image Mapped As SEC_COMMIT Section View At %p\n", remote_base);
 
 		RemoteAllocation image_guard(hTargetProc, remote_base);
 
@@ -467,6 +838,7 @@ namespace
 
 		data.pAllocationBase = ReCa<BYTE *>(remote_base);
 		data.pImageBase = ReCa<BYTE *>(remote_base);
+		data.pSectionRwView = section_mapped ? ReCa<BYTE *>(remote_base) : nullptr;
 		data.pDosHeader = ReCa<IMAGE_DOS_HEADER *>(remote_base);
 		data.pNtHeaders = ReCa<IMAGE_NT_HEADERS *>(remote_address + mapped_dos->e_lfanew);
 		data.pOptionalHeader = &data.pNtHeaders->OptionalHeader;
@@ -564,9 +936,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
-
-
-
 	UniqueHandle completion_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
 	HANDLE completion_event_remote = nullptr;
 	if (completion_event)
@@ -603,6 +972,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
+	// Function-scoped so the stub build site (ret-gadget rebase) and the Ldr splice (Vector 11)
+	// can both use the target's verified ntdll base.
+	ULONG_PTR remote_ntdll = 0;
+
 	{
 		const ULONG_PTR local_ntdll = reinterpret_cast<ULONG_PTR>(g_hNTDLL);
 		if (!local_ntdll)
@@ -614,7 +987,6 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			return INJ_ERR_GET_MODULE_HANDLE_FAIL;
 		}
 
-		ULONG_PTR remote_ntdll = 0;
 		if (!ResolveRemoteNtdllBase(hTargetProc, remote_ntdll))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
@@ -655,6 +1027,10 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
+	// Vector 7 / Tier 2 revert: the remote stubs are the standard 16-byte indirect variant --
+	// prologue + service + jmp [rip] to the ntdll syscall gadget (SC_STUB_SIZE); the slab tail
+	// carries only the 8-byte gadget slot. The Tier 2 stack-pivot sampler geometry stays in
+	// Syscall.cpp/h as documented residual and is no longer emitted into the remote stubs.
 	const SIZE_T stub_table_size	= static_cast<SIZE_T>(SC_REMOTE_STUB_COUNT) * SC_STUB_SIZE;
 	const SIZE_T stub_area_size		= stub_table_size + sizeof(void *);
 	const SIZE_T exec_area_size		= static_cast<SIZE_T>(ShellSize) + stub_area_size;
@@ -749,13 +1125,18 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 
 
-		BYTE stub_slab[SC_REMOTE_STUB_COUNT * SC_STUB_SIZE + sizeof(void *)]
+		BYTE stub_slab[SC_REMOTE_STUB_COUNT * SC_STUB_SIZE + sizeof(void *)] =
 		{
 			0
 		};
 
+		// Vector 7 / Tier 2 revert: zero RingBase / SysIdxAddr selects the 16-byte non-sampled
+		// indirect stubs. The Tier 2 fake-stack pivot is unsound for any syscall with five or more
+		// arguments (the kernel writes arg 5 onward through the pivoted rsp, clobbering the ret
+		// chain), and every remote stub here is a 5+ argument syscall -- so the pivot is abandoned.
+		// No telemetry targets are published and the ret-gadget pool stays unused.
 		const DWORD Built = BuildSyscallStubs(stub_slab, sizeof(stub_slab), remote_stub_hashes, SC_REMOTE_STUB_COUNT,
-			reinterpret_cast<ULONG_PTR>(pStubArea));
+			reinterpret_cast<ULONG_PTR>(pStubArea), 0, 0, nullptr, 0);
 
 		if (Built != SC_REMOTE_STUB_COUNT)
 		{
@@ -977,6 +1358,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	image_guard.release();
 	remote_event_owned = false;
+
+	// Vector 11: splice the payload into PEB->Ldr as a synthetic winhttp.dll entry only AFTER the
+	// shell has completed. LdrpHandleTlsData (invoked by the shell) expects the module to be absent
+	// from the loader list while its TLS data is built; linking it before the shell makes TLS fail
+	// with STATUS_INVALID_IMAGE_FORMAT (C000004E). A failed splice is logged but no longer aborts an
+	// already-successful load.
+	if (!HostLinkLdrEntry(hTargetProc, ReCa<ULONG_PTR>(data.pImageBase), data.CachedSizeOfImage, data.CachedEntryPoint))
+	{
+		LOG(1, "[LdrSplice] Host-Side Ldr Link Failed After Successful Shell; Continuing Without Loader Visibility\n");
+	}
 
 	LOG(1, "Fetching Routine Data\n");
 

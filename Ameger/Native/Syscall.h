@@ -58,15 +58,23 @@ constexpr DWORD ScHash(const char * s)
 #define SC_STUB_OFFSET_SYSCALL		8
 #define SC_STUB_TAIL_INDIRECT	14
 
-// Vector 7 sampled stub: the 167-byte capture-only sampler block is emitted after the service
-// imm32 and before the gadget jmp. Layout below is derived from kSampleBlockRaw[167] in Syscall.cpp.
-// The block captures 8 real-stack frames and advances the ring index; it does NOT pivot the stack
-// (no Tier 2 fake-stack / restore gadget), so the tail after the gadget jmp is plain NOP padding.
+// Vector 7 / Tier 2 sampled stub: the 190-byte stack-pivot sampler block is emitted after the
+// service imm32 and before the gadget jmp. Layout below is derived from kSampleBlockRaw[190] in
+// Syscall.cpp. The block records one SYSCALL_SAMPLE ring slot, then pivots RSP onto the
+// pre-populated telemetry fake stack (8 rebased ntdll ret gadgets followed by the synthetic
+// restore gadget) and captures Frames[8] at the pivoted rsp; the subsequent RET chain unwinds the
+// fake stack and the restore gadget hands RSP back to the real one. The tail after the gadget jmp
+// is plain NOP padding.
 #define SC_STUB_OFFSET_SAMPLE			8
-#define SC_SAMPLE_BLOCK_SIZE			167
-#define SC_STUB_OFFSET_SAMPLED_SYSCALL	(SC_STUB_OFFSET_SAMPLE + SC_SAMPLE_BLOCK_SIZE) // 175: jmp [rip+disp]
-#define SC_STUB_TAIL_SAMPLED			(SC_STUB_OFFSET_SAMPLED_SYSCALL + 6)              // 181: NOP tail start
-#define SC_STUB_SIZE_SAMPLED			192                                                // 0xC0; tail (181..192) is NOP padding
+#define SC_SAMPLE_BLOCK_SIZE			190
+#define SC_STUB_OFFSET_SAMPLED_SYSCALL	(SC_STUB_OFFSET_SAMPLE + SC_SAMPLE_BLOCK_SIZE) // 198: jmp [rip+disp]
+#define SC_STUB_TAIL_SAMPLED			(SC_STUB_OFFSET_SAMPLED_SYSCALL + 6)              // 204: NOP tail start
+#define SC_STUB_SIZE_SAMPLED			208                                                // 0xD0; tail (204..208) is NOP padding
+
+// Tier 2: the synthetic restore gadget (xchg rsp, rdi; pop rdi; pop rsi; ret) emitted once per
+// sampled stub slab, immediately after the 8-byte gadget slot, and referenced by
+// telemetry->FakeStack[FAKE_STACK_SLOTS - 1].
+#define SC_RESTORE_GADGET_SIZE		6
 
 #pragma endregion
 

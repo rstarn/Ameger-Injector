@@ -2,6 +2,7 @@
 
 #include <new>
 
+#include "Core/Foundation/Primitives/InjectionTypes.h"
 #include "Native/Syscall.h"
 
 inline bool SyscallVerbose()
@@ -333,84 +334,115 @@ namespace
 	constexpr BYTE kOpJmpRip1 = 0x25;
 	constexpr BYTE kOpRet = 0xC3;
 
-	// Vector 7: the syscall-sampler block emitted into each sampled remote stub, right before the
-	// gadget jmp. 167 bytes (46 insns), verified byte-by-byte with capstone (keystone-assembled). It
-	// records one SYSCALL_SAMPLE ring slot (ThreadId, RSP, TSC, FunctionId, Frames[8]) and advances
-	// the ring index mod SYSCALL_SAMPLE_COUNT (16), while preserving every syscall argument register
-	// (rcx/rdx/r8/r9/r10 and the SSN in eax). Frames[8] = [rsp+0..56] captured AT SYSCALL TIME from
-	// the REAL stack (while the shell stack is still mapped), bracketed by push/pop rax so the SSN
-	// in eax survives into the gadget's syscall. The three rip-relative disp32 fields and the
-	// FunctionId imm8 are placeholders here and are filled per stub at emit time. r12 holds the real
-	// RSP, r13 the ring-slot base, r14/r15 the running index (r15 incremented & stored mod 16); rsi/
-	// rdi are never touched, and every callee-saved register used (r12-r15) is saved and restored.
-	constexpr BYTE kSampleBlockRaw[167] =
+	// Vector 7 / Tier 2: the stack-pivot sampler block emitted into each sampled remote stub, right
+	// before the gadget jmp. 190 bytes (51 insns), verified byte-by-byte with capstone
+	// (keystone-assembled). It records one SYSCALL_SAMPLE ring slot (ThreadId, Rsp, TSC, FunctionId,
+	// Frames[8]) and advances the ring index mod SYSCALL_SAMPLE_COUNT (16), while preserving every
+	// syscall argument register (rcx/rdx/r8/r9 and the SSN in eax -- restored to rax before the
+	// gadget). Tier 2: before the frames are captured, the block saves the caller's rsi/rdi on the
+	// REAL stack, parks the real RSP in rdi (which survives `syscall`) and in telemetry->SavedRealRsp,
+	// then pivots RSP onto telemetry->FakeStack (8 ntdll ret gadgets + the synthetic restore gadget)
+	// and captures Frames[8] there. The six rip-relative disp32 fields and the FunctionId imm8 are
+	// placeholders here and are filled per stub at emit time. rsi holds the ring-slot base across the
+	// pivot; r12-r15 are saved and restored before the pivot; r11 carries the SSN across the pivot
+	// and hands it back to rax for the gadget's syscall.
+	constexpr BYTE kSampleBlockRaw[190] =
 {
-	0x49,0x89,0xE4,                 // mov r12, rsp             r12 = real rsp (callee-saved, restored at end)
+	// ---- Phase -1: save callee-saved rsi/rdi (restored by the synthetic restore gadget) ----
+	0x56,                 // push rsi                 save the caller's rsi (callee-saved; restored by the restore gadget)
+	0x57,                 // push rdi                 save the caller's rdi (callee-saved; restored by the restore gadget)
+	// ---- Phase 0: capture real RSP into save-register rdi (survives `syscall`) ----
+	0x48,0x89,0xE7,                 // mov rdi, rsp             rdi = real rsp (captured after the 2 pushes); held until the restore gadget
+	// ---- Phase 1: save callee-saved r12-r15; write tid/cycle/funcid to the ring slot ----
 	0x41,0x54,                 // push r12
 	0x41,0x55,                 // push r13
 	0x41,0x56,                 // push r14
 	0x41,0x57,                 // push r15
-	0x65,0x44,0x8B,0x1C,0x25,0x48,0x00,0x00,0x00,                 // mov r11d, [gs:0x48]      TEB->ClientId.UniqueThread (TID); absolute gs:disp32 (ModRM 1C + SIB 25)
-	0x44,0x8B,0x35,0x00,0x00,0x00,0x00,                 // mov r14d, [rip+SYSIDX]   current ring index            (disp32 filled per stub)
-	0x4D,0x89,0xF7,                 // mov r15, r14             r15 = index (running copy for increment/store)
+	0x65,0x44,0x8B,0x1C,0x25,0x48,0x00,0x00,0x00,                 // mov r11d, [gs:0x48]  TEB->ClientId.UniqueThread (TID); absolute gs:disp32 (ModRM 1C + SIB 25)
+	0x44,0x8B,0x35,0x00,0x00,0x00,0x00,                 // mov r14d, [rip+SYSIDX]   current ring index
 	0x4D,0x6B,0xF6,0x60,                 // imul r14, r14, 96        index * stride(96)
-	0x4C,0x8D,0x2D,0x00,0x00,0x00,0x00,                 // lea r13, [rip+RING]      ring base (64-bit)            (disp32 filled per stub)
-	0x4D,0x01,0xF5,                 // add r13, r14             slot = ring + index*96  (r13 = ring slot)
-	0x45,0x89,0x5D,0x00,                 // mov [r13], r11d          ThreadId
-	0x4D,0x89,0x65,0x08,                 // mov [r13+8], r12         Rsp (real rsp captured in r12)
+	0x48,0x8D,0x35,0x00,0x00,0x00,0x00,                 // lea rsi, [rip+RING]      ring base (64-bit)
+	0x4C,0x01,0xF6,                 // add rsi, r14             slot = ring + index*96  (rsi held across the pivot)
+	0x44,0x89,0x1E,                 // mov [rsi+0],  r11d       ThreadId
+	0x48,0x89,0x7E,0x08,                 // mov [rsi+8],  rdi        Rsp (real rsp captured)
 	0x52,                 // push rdx                 save arg2 (rdtsc clobbers edx) -- REAL stack
 	0x50,                 // push rax                 save SSN  (rdtsc clobbers eax) -- REAL stack
 	0x0F,0x31,                 // rdtsc                    eax:edx = cycle
-	0x41,0x89,0x45,0x10,                 // mov [r13+16], eax        CycleCount low
-	0x41,0x89,0x55,0x14,                 // mov [r13+20], edx        CycleCount high
+	0x89,0x46,0x10,                 // mov [rsi+16], eax        CycleCount low
+	0x89,0x56,0x14,                 // mov [rsi+20], edx        CycleCount high
 	0x58,                 // pop rax                  restore SSN
 	0x5A,                 // pop rdx                  restore arg2
-	0x41,0xC6,0x45,0x18,0x00,                 // mov [r13+24], imm8       FunctionId (imm8 filled per stub)
-	0x50,                 // push rax                 push SSN so [rsp]=SSN; frame capture brackets the real stack
-	0x48,0x8B,0x04,0x24,                 // mov rax, [rsp]           Frames[0]
-	0x49,0x89,0x45,0x20,                 // mov [r13+32], rax
-	0x48,0x8B,0x44,0x24,0x08,                 // mov rax, [rsp+8]         Frames[1]
-	0x49,0x89,0x45,0x28,                 // mov [r13+40], rax
-	0x48,0x8B,0x44,0x24,0x10,                 // mov rax, [rsp+16]        Frames[2]
-	0x49,0x89,0x45,0x30,                 // mov [r13+48], rax
-	0x48,0x8B,0x44,0x24,0x18,                 // mov rax, [rsp+24]        Frames[3]
-	0x49,0x89,0x45,0x38,                 // mov [r13+56], rax
-	0x48,0x8B,0x44,0x24,0x20,                 // mov rax, [rsp+32]        Frames[4]
-	0x49,0x89,0x45,0x40,                 // mov [r13+64], rax
-	0x48,0x8B,0x44,0x24,0x28,                 // mov rax, [rsp+40]        Frames[5]
-	0x49,0x89,0x45,0x48,                 // mov [r13+72], rax
-	0x48,0x8B,0x44,0x24,0x30,                 // mov rax, [rsp+48]        Frames[6]
-	0x49,0x89,0x45,0x50,                 // mov [r13+80], rax
-	0x48,0x8B,0x44,0x24,0x38,                 // mov rax, [rsp+56]        Frames[7]
-	0x49,0x89,0x45,0x58,                 // mov [r13+88], rax
-	0x58,                 // pop rax                  pop the SSN (unwind the push)
-	0x41,0x83,0xC7,0x01,                 // add r15d, 1              index++
-	0x41,0x83,0xE7,0x0F,                 // and r15d, 15             index &= 15 (mod SYSCALL_SAMPLE_COUNT)
-	0x44,0x89,0x3D,0x00,0x00,0x00,0x00,                 // mov [rip+SYSIDX], r15d   store the new index           (disp32 filled per stub)
-	0x41,0x5F,                 // pop r15
+	0xC6,0x46,0x18,0x00,                 // mov [rsi+24], imm8       FunctionId (filled per stub)
+	0x41,0x5F,                 // pop r15                  restore callee-saved BEFORE the pivot (rsp still real)
 	0x41,0x5E,                 // pop r14
 	0x41,0x5D,                 // pop r13
 	0x41,0x5C,                 // pop r12
+	// ---- Phase 2: save real RSP, pivot onto the pre-populated fake stack ----
+	0x4C,0x8D,0x1D,0x00,0x00,0x00,0x00,                 // lea r11, [rip+FAKESTACK] fake-stack base (telemetry.FakeStack)
+	0x48,0x89,0x3D,0x00,0x00,0x00,0x00,                 // mov [rip+SAVEDRSP], rdi  telemetry.SavedRealRsp = real rsp
+	0x4C,0x89,0xDC,                 // mov rsp, r11             pivot: rsp -> fake stack
+	// ---- Phase 3: capture Frames[8] at the pivoted (fake) rsp ----
+	0x49,0x89,0xC3,                 // mov r11, rax             save SSN (no push/pop: rsp is now fake)
+	0x48,0x8B,0x04,0x24,                 // mov rax, [rsp+0]
+	0x48,0x89,0x46,0x20,                 // mov [rsi+32], rax        Frames[0] = FakeStack[0] (ret gadget 1)
+	0x48,0x8B,0x44,0x24,0x08,                 // mov rax, [rsp+8]
+	0x48,0x89,0x46,0x28,                 // mov [rsi+40], rax        Frames[1]
+	0x48,0x8B,0x44,0x24,0x10,                 // mov rax, [rsp+16]
+	0x48,0x89,0x46,0x30,                 // mov [rsi+48], rax       Frames[2]
+	0x48,0x8B,0x44,0x24,0x18,                 // mov rax, [rsp+24]
+	0x48,0x89,0x46,0x38,                 // mov [rsi+56], rax       Frames[3]
+	0x48,0x8B,0x44,0x24,0x20,                 // mov rax, [rsp+32]
+	0x48,0x89,0x46,0x40,                 // mov [rsi+64], rax       Frames[4]
+	0x48,0x8B,0x44,0x24,0x28,                 // mov rax, [rsp+40]
+	0x48,0x89,0x46,0x48,                 // mov [rsi+72], rax       Frames[5]
+	0x48,0x8B,0x44,0x24,0x30,                 // mov rax, [rsp+48]
+	0x48,0x89,0x46,0x50,                 // mov [rsi+80], rax       Frames[6]
+	0x48,0x8B,0x44,0x24,0x38,                 // mov rax, [rsp+56]
+	0x48,0x89,0x46,0x58,                 // mov [rsi+88], rax       Frames[7]
+	0x4C,0x89,0xD8,                 // mov rax, r11             restore SSN to eax (gadget syscall uses eax)
+	// ---- Phase 4: increment index and store ----
+	0x44,0x8B,0x1D,0x00,0x00,0x00,0x00,                 // mov r11d, [rip+SYSIDX]   reload the ring index
+	0x41,0x83,0xC3,0x01,                 // add r11d, 1              index++
+	0x41,0x83,0xE3,0x0F,                 // and r11d, 15             index &= 15 (mod SYSCALL_SAMPLE_COUNT)
+	0x44,0x89,0x1D,0x00,0x00,0x00,0x00,                 // mov [rip+SYSIDX], r11d   store the new index
 	};
 
-	static_assert(_countof(kSampleBlockRaw) == SC_SAMPLE_BLOCK_SIZE, "sampler block must be 167 bytes");
+	static_assert(_countof(kSampleBlockRaw) == SC_SAMPLE_BLOCK_SIZE, "sampler block must be 190 bytes");
+
+	// Tier 2: the synthetic restore gadget, emitted once per sampled stub slab (after the 8-byte
+	// gadget slot). `xchg rsp, rdi` restores the real RSP the sampler parked in rdi, then pops the
+	// rdi/rsi the sampler saved on the real stack before the pivot, then returns to the shell's
+	// real return address.
+	constexpr BYTE kRestoreGadgetBytes[SC_RESTORE_GADGET_SIZE] =
+	{
+		0x48,0x87,0xFC,                 // xchg rsp, rdi            rsp = real rsp (held in rdi)
+		0x57,                           // pop rdi                  restore the caller's rdi
+		0x56,                           // pop rsi                  restore the caller's rsi
+		0xC3,                           // ret                      return to the shell's real return address
+	};
 
 	// Block-internal offsets (instruction starts) of the rip-relative disp32 fields + the imm8.
-	// The 167-byte capture-only block has THREE rip-relative fields (SYSIDX-load, RING-lea,
-	// SYSIDX-store) and ONE imm8 (FuncId). disp32 always sits at insn_start+3. kSampleOffFuncId is
-	// the offset of the imm8 BYTE itself (WriteSampledStub writes FunctionId directly there); the
-	// instruction `mov [r13+24], imm8` is 5 bytes (41 C6 45 18 imm8), so the imm8 is at 66+4 = 70.
-	constexpr size_t kSampleOffSysIdxLoad  = 20;   // 44 8B 35 ..  (mov r14d, [rip+SYSIDX])
-	constexpr size_t kSampleOffRingLea     = 34;   // 4C 8D 2D ..  (lea r13, [rip+RING])
-	constexpr size_t kSampleOffFuncId      = 70;   // imm8 of 41 C6 45 18 imm8 (mov [r13+24], imm8)
-	constexpr size_t kSampleOffSysIdxStore = 152;  // 44 89 3D ..  (mov [rip+SYSIDX], r15d)
+	// The 190-byte Tier 2 block has SIX rip-relative fields (SYSIDX-load, RING-lea, FAKESTACK-lea,
+	// SAVEDRSP-store, SYSIDX-reload, SYSIDX-store) and ONE imm8 (FuncId). disp32 always sits at
+	// insn_start+3. kSampleOffFuncId is the offset of the imm8 BYTE itself (WriteSampledStub writes
+	// FunctionId directly there).
+	constexpr size_t kSampleOffSysIdxLoad   = 22;   // 44 8B 35 ..  (mov r14d, [rip+SYSIDX])
+	constexpr size_t kSampleOffRingLea      = 33;   // 48 8D 35 ..  (lea rsi, [rip+RING])
+	constexpr size_t kSampleOffFuncId       = 65;   // imm8 of C6 46 18 imm8 (mov [rsi+24], imm8)
+	constexpr size_t kSampleOffFakeStack    = 74;   // 4C 8D 1D ..  (lea r11, [rip+FAKESTACK])
+	constexpr size_t kSampleOffSavedRsp     = 81;   // 48 89 3D ..  (mov [rip+SAVEDRSP], rdi)
+	constexpr size_t kSampleOffSysIdxReload = 168;  // 44 8B 1D ..  (mov r11d, [rip+SYSIDX])
+	constexpr size_t kSampleOffSysIdxStore  = 183;  // 44 89 1D ..  (mov [rip+SYSIDX], r11d)
 
 	// Stub-space offset of the instruction that immediately FOLLOWS each rip-relative insn --
 	// that is the RIP against which the disp32 is computed (matching WriteStub's convention).
 	// Every rip-relative insn in this block is 7 bytes (REX+OP+ModRM+disp32).
-	constexpr size_t kSampleNextSysIdxLoad  = SC_STUB_OFFSET_SAMPLE + kSampleOffSysIdxLoad  + 7; // 35
-	constexpr size_t kSampleNextRingLea     = SC_STUB_OFFSET_SAMPLE + kSampleOffRingLea     + 7; // 49
-	constexpr size_t kSampleNextSysIdxStore = SC_STUB_OFFSET_SAMPLE + kSampleOffSysIdxStore + 7; // 167
+	constexpr size_t kSampleNextSysIdxLoad   = SC_STUB_OFFSET_SAMPLE + kSampleOffSysIdxLoad   + 7; // 37
+	constexpr size_t kSampleNextRingLea      = SC_STUB_OFFSET_SAMPLE + kSampleOffRingLea      + 7; // 48
+	constexpr size_t kSampleNextFakeStack    = SC_STUB_OFFSET_SAMPLE + kSampleOffFakeStack    + 7; // 89
+	constexpr size_t kSampleNextSavedRsp     = SC_STUB_OFFSET_SAMPLE + kSampleOffSavedRsp     + 7; // 96
+	constexpr size_t kSampleNextSysIdxReload = SC_STUB_OFFSET_SAMPLE + kSampleOffSysIdxReload + 7; // 183
+	constexpr size_t kSampleNextSysIdxStore  = SC_STUB_OFFSET_SAMPLE + kSampleOffSysIdxStore  + 7; // 198
 
 	struct NOP_PATTERN { BYTE Length; BYTE Bytes[4]; };
 
@@ -538,6 +570,53 @@ namespace
 		g_GadgetPrng.State = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(base) ^ 0x9E3779B9u);
 	}
 
+	// Tier 2: RVAs (offsets from the ntdll base) of bare `ret` (C3) instructions in ntdll's
+	// executable sections, spaced at least 8 bytes apart. The sampler's fake-stack slots hold these
+	// rebased onto the target's ntdll base; each slot's RET pops the next slot, so the chain unwinds
+	// FakeStack[0..7] and lands on FakeStack[8] (the synthetic restore gadget in the stub slab).
+	constexpr size_t kMaxRetGadgetPool = 32;
+	DWORD g_RetGadgetPool[kMaxRetGadgetPool]{};
+	size_t g_RetGadgetPoolCount = 0;
+
+	static void FindRetGadgetPool()
+	{
+		if (g_RetGadgetPoolCount)
+			return;
+
+		auto name = XOR_STR_W(L"ntdll.dll");
+		const BYTE * base = ReCa<const BYTE *>(GetModuleHandleW(name.get()));
+		if (!base) return;
+
+		const auto * dos = ReCa<const IMAGE_DOS_HEADER *>(base);
+		if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+		const auto * nt = ReCa<const IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
+		if (!nt || nt->Signature != IMAGE_NT_SIGNATURE) return;
+
+		const auto * sec = IMAGE_FIRST_SECTION(nt);
+		for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+		{
+			if (!(sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+				continue;
+
+			const BYTE * start = base + sec[i].VirtualAddress;
+			const DWORD size = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData;
+			LONG last = -1024;
+
+			for (DWORD j = 0; j < size; ++j)
+			{
+				if (start[j] != kOpRet || (LONG)(j - last) < 8)
+					continue;
+
+				g_RetGadgetPool[g_RetGadgetPoolCount++] = sec[i].VirtualAddress + j;
+				last = (LONG)j;
+
+				if (g_RetGadgetPoolCount >= kMaxRetGadgetPool)
+					return;
+			}
+		}
+	}
+
 	void * g_SyscallGadget = nullptr;
 
 	void * SyscallGadgetPick()
@@ -632,14 +711,18 @@ namespace
 		return true;
 	}
 
-	// Vector 7: emit a sampled remote stub -- prologue + service, then the 167-byte capture-only
-	// sampler block, then the gadget jmp, NOP-padded to SC_STUB_SIZE_SAMPLED. RingBase / SysIdxAddr
-	// are the target addresses of VERIFIABLE_EXEC_TELEMETRY::SyscallSamples / ::SyscallSampleIndex.
-	// The block captures 8 real-stack frames and advances the ring index; it does not pivot the stack.
+	// Vector 7 / Tier 2: emit a sampled remote stub -- prologue + service, then the 190-byte
+	// stack-pivot sampler block, then the gadget jmp, NOP-padded to SC_STUB_SIZE_SAMPLED. RingBase /
+	// SysIdxAddr / FakeStackAddr / SavedRspAddr are the target addresses of
+	// VERIFIABLE_EXEC_TELEMETRY::SyscallSamples / ::SyscallSampleIndex / ::FakeStack /
+	// ::SavedRealRsp. The block records the ring slot, pivots RSP onto the fake stack, captures
+	// Frames[8] there, and advances the ring index; the RET chain unwinds the fake stack to the
+	// synthetic restore gadget.
 	bool WriteSampledStub(BYTE * Destination, DWORD Service, ULONG_PTR GadgetSlotAddress, ULONG_PTR StubAddress,
-		ULONG_PTR RingBase, ULONG_PTR SysIdxAddr, BYTE FunctionId, bool GadgetHealthy)
+		ULONG_PTR RingBase, ULONG_PTR SysIdxAddr, ULONG_PTR FakeStackAddr, ULONG_PTR SavedRspAddr,
+		BYTE FunctionId, bool GadgetHealthy)
 	{
-		if (!Destination || !StubAddress || !RingBase || !SysIdxAddr)
+		if (!Destination || !StubAddress || !RingBase || !SysIdxAddr || !FakeStackAddr || !SavedRspAddr)
 		{
 			return false;
 		}
@@ -654,7 +737,7 @@ namespace
 
 		memcpy(Destination + SC_STUB_OFFSET_SAMPLE, kSampleBlockRaw, SC_SAMPLE_BLOCK_SIZE);
 
-		// Fill the three rip-relative disp32 fields. disp = target - (StubAddress + next_instr_off).
+		// Fill the six rip-relative disp32 fields. disp = target - (StubAddress + next_instr_off).
 		const auto FillDisp = [&](size_t block_field_off, ULONG_PTR Target, size_t next_stub_off) -> bool
 		{
 			const LONGLONG d = static_cast<LONGLONG>(Target) - static_cast<LONGLONG>(StubAddress + next_stub_off);
@@ -667,9 +750,12 @@ namespace
 			return true;
 		};
 
-		if (!FillDisp(kSampleOffSysIdxLoad,  SysIdxAddr, kSampleNextSysIdxLoad))  return false;
-		if (!FillDisp(kSampleOffRingLea,     RingBase,   kSampleNextRingLea))     return false;
-		if (!FillDisp(kSampleOffSysIdxStore, SysIdxAddr, kSampleNextSysIdxStore)) return false;
+		if (!FillDisp(kSampleOffSysIdxLoad,   SysIdxAddr,    kSampleNextSysIdxLoad))   return false;
+		if (!FillDisp(kSampleOffRingLea,      RingBase,      kSampleNextRingLea))      return false;
+		if (!FillDisp(kSampleOffFakeStack,    FakeStackAddr, kSampleNextFakeStack))    return false;
+		if (!FillDisp(kSampleOffSavedRsp,     SavedRspAddr,  kSampleNextSavedRsp))     return false;
+		if (!FillDisp(kSampleOffSysIdxReload, SysIdxAddr,    kSampleNextSysIdxReload)) return false;
+		if (!FillDisp(kSampleOffSysIdxStore,  SysIdxAddr,    kSampleNextSysIdxStore))  return false;
 
 		Destination[SC_STUB_OFFSET_SAMPLE + kSampleOffFuncId] = FunctionId;
 
@@ -1454,16 +1540,14 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 	const SIZE_T stub_stride = sampled ? SC_STUB_SIZE_SAMPLED : SC_STUB_SIZE;
 	const SIZE_T stub_bytes = static_cast<SIZE_T>(Count) * stub_stride;
 
+	// Sampled slabs carry an extra tail after the 8-byte gadget slot: the synthetic Tier 2
+	// restore gadget that FakeStack[FAKE_STACK_SLOTS - 1] points at.
+	const SIZE_T slab_tail = sizeof(void *) + (sampled ? SC_RESTORE_GADGET_SIZE : 0);
 
-	if (!Destination || !NameHashes || !Count || DestinationSize < stub_bytes + sizeof(void *))
+	if (!Destination || !NameHashes || !Count || DestinationSize < stub_bytes + slab_tail)
 	{
 		return 0;
 	}
-
-	// pTelemetryOut / TargetNtdllBase are unused by the capture-only sampler. They are kept in the
-	// signature so the ManualMapping call site -- and the later Tier 2 re-application -- do not change.
-	(void)pTelemetryOut;
-	(void)TargetNtdllBase;
 
 	if (!g_SyscallPoolReady.load(std::memory_order_acquire))
 	{
@@ -1501,8 +1585,45 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 			static_cast<unsigned>(ReCa<const BYTE *>(gadget)[1]));
 	}
 
-	// Capture-only sampler: no fake-stack pivot, no ret-gadget scan, no rebase.
-	// (Tier 2 stack spoof is deferred -- the block samples the real stack.)
+	// Tier 2 stack spoof: the sampler pivots RSP onto telemetry->FakeStack. Populate the slots
+	// with 8 ret gadgets rebased onto the target's ntdll (the caller has already verified the
+	// target's ntdll base matches the local image), and point the last slot at the synthetic
+	// restore gadget that BuildSyscallStubs emits into the slab tail.
+	const ULONG_PTR telemetry_base = sampled
+		? (RingBase - offsetof(VERIFIABLE_EXEC_TELEMETRY, SyscallSamples))
+		: 0;
+	const ULONG_PTR fake_stack_address = sampled
+		? (telemetry_base + offsetof(VERIFIABLE_EXEC_TELEMETRY, FakeStack))
+		: 0;
+	const ULONG_PTR saved_rsp_address = sampled
+		? (telemetry_base + offsetof(VERIFIABLE_EXEC_TELEMETRY, SavedRealRsp))
+		: 0;
+
+	const ULONG_PTR restore_gadget_address = (RemoteBase
+		? (RemoteBase + stub_bytes + sizeof(void *))
+		: (reinterpret_cast<ULONG_PTR>(Destination) + stub_bytes + sizeof(void *)));
+
+	FindRetGadgetPool();
+
+	if (sampled && g_RetGadgetPoolCount < (FAKE_STACK_SLOTS - 1))
+	{
+		SC_LOG_ERR("Tier 2 Fake Stack Unavailable: Only %llu Bare Ret Gadgets Found In ntdll (Need %u); Refusing Sampled Stubs",
+			static_cast<unsigned long long>(g_RetGadgetPoolCount), FAKE_STACK_SLOTS - 1);
+		return 0;
+	}
+
+	if (sampled && pTelemetryOut)
+	{
+		for (size_t i = 0; i < (FAKE_STACK_SLOTS - 1); ++i)
+		{
+			pTelemetryOut->FakeStack[i] = TargetNtdllBase
+				? (TargetNtdllBase + g_RetGadgetPool[i])
+				: static_cast<ULONGLONG>(g_RetGadgetPool[i]);
+		}
+
+		pTelemetryOut->FakeStack[FAKE_STACK_SLOTS - 1] = restore_gadget_address;
+		pTelemetryOut->SavedRealRsp = 0; // the sampler re-parks this value on every pivot
+	}
 
 	const ULONG_PTR gadget_slot_local = reinterpret_cast<ULONG_PTR>(Destination) + stub_bytes;
 	const ULONG_PTR gadget_slot_address = RemoteBase ? (RemoteBase + stub_bytes) : gadget_slot_local;
@@ -1531,9 +1652,11 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 
 			if (sampled)
 			{
-				// Vector 7: capture-only sampler block + gadget jmp (direct 0F 05; ret on HallWatch fallback).
+				// Vector 7 / Tier 2: stack-pivot sampler block + gadget jmp
+				// (direct 0F 05; ret on the HallWatch fallback -- the RET still unwinds the fake stack).
 				if (!WriteSampledStub(slot, g_SyscallTable[j].Service, gadget_slot_address, stub_address,
-					RingBase, SysIdxAddr, static_cast<BYTE>(i), gadget_healthy))
+					RingBase, SysIdxAddr, fake_stack_address, saved_rsp_address,
+					static_cast<BYTE>(i), gadget_healthy))
 				{
 					SC_LOG_ERR("Sampled Remote Syscall Stub %u Displacement Out Of Range", i);
 					break;
@@ -1564,6 +1687,13 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 			++Written;
 			break;
 		}
+	}
+
+	if (sampled && stub_bytes + slab_tail <= DestinationSize)
+	{
+		// Tier 2: the synthetic restore gadget lands after the 8-byte gadget slot. The slab is
+		// promoted to PAGE_EXECUTE_READ with the rest of the staging code, so it stays executable.
+		memcpy(Destination + stub_bytes + sizeof(void *), kRestoreGadgetBytes, SC_RESTORE_GADGET_SIZE);
 	}
 
 	if (Written && gadget_healthy)

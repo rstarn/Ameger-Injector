@@ -3108,13 +3108,15 @@ namespace stealth
 
     // Forward declarations for the Vector 1 / Vector 7 verifier steps (defined further down).
     void StealthVerifyMappingType(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total);
+        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total,
+        bool & mapping_type_ok);
     void StealthVerifyNoLoaderArtifact(HANDLE process, HINSTANCE hRemoteBase, DWORD survey_pid,
-        StealthVerifierBuffers & buffers, int & step, int total);
+        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok);
     void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total);
     void StealthReportKernelResiduals(int & step, int total);
     void StealthVerifyStackSpoofGeometry(HANDLE process, HINSTANCE hRemoteBase,
-        StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry);
+        StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
+        bool & geometry_ok);
     void StealthVerifyGadgetValidity(StealthVerifierBuffers & buffers, int & step, int total);
     void StealthVerifySpoofRandomization(HANDLE process, HINSTANCE hRemoteBase, int & step, int total);
 
@@ -3141,6 +3143,9 @@ namespace stealth
 
         bool string_gate_ok = true;
         bool posture_ok = true;
+        bool geometry_ok = true; // Vector 7: set false only on a [x] geometry verdict
+        bool mapping_type_ok = true; // Vector 1: false only when the VAD census sees MEM_PRIVATE
+        bool ldr_walk_ok = true;    // Vector 11: false only when the payload base is not found in the Ldr walk
 
         const bool step_enabled[kStealthStepCount] =
         {
@@ -3321,11 +3326,12 @@ namespace stealth
         // Vector 1: page-file section verification
         if (step_enabled[kStealthVerifyMappingType])
         {
-            StealthVerifyMappingType(process, hRemoteBase, have_local_nt, local_pe, local_pe_size, buffers, step, total);
+            StealthVerifyMappingType(process, hRemoteBase, have_local_nt, local_pe, local_pe_size, buffers, step, total,
+                mapping_type_ok);
         }
         if (step_enabled[kStealthVerifyNoLoaderArtifact])
         {
-            StealthVerifyNoLoaderArtifact(process, hRemoteBase, survey_pid, buffers, step, total);
+            StealthVerifyNoLoaderArtifact(process, hRemoteBase, survey_pid, buffers, step, total, ldr_walk_ok);
         }
         if (step_enabled[kStealthVerifySectionHandleClosed])
         {
@@ -3340,7 +3346,7 @@ namespace stealth
         // own emitted-stub syscall rings instead of snapshotting an idle target thread)
         if (step_enabled[kStealthVerifyStackSpoofGeometry])
         {
-            StealthVerifyStackSpoofGeometry(process, hRemoteBase, buffers, step, total, ExecTelemetry);
+            StealthVerifyStackSpoofGeometry(process, hRemoteBase, buffers, step, total, ExecTelemetry, geometry_ok);
         }
         if (step_enabled[kStealthVerifyGadgetValidity])
         {
@@ -3351,7 +3357,11 @@ namespace stealth
             StealthVerifySpoofRandomization(process, hRemoteBase, step, total);
         }
 
-        return string_gate_ok && posture_ok;
+        // The gate reflects the true security posture: it now also fails when the VAD census
+        // sees the MEM_PRIVATE private-map fallback (Vector 1) or the payload base is missing
+        // from the target's PEB Ldr lists (Vector 11). A failed gate exits Mapped-But-Unverified
+        // (code 4) instead of reporting a clean load.
+        return string_gate_ok && posture_ok && geometry_ok && mapping_type_ok && ldr_walk_ok;
     }
 
     bool SafeDebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
@@ -3578,7 +3588,8 @@ namespace stealth
     // ===== Vector 1 + Vector 7 verification steps =====
 
     void StealthVerifyMappingType(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
-        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total)
+        const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total,
+        bool & mapping_type_ok)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify Mapping Type (VAD)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3657,7 +3668,10 @@ namespace stealth
         }
         else if (mbi.Type == MEM_PRIVATE)
         {
-            LOG(0, L"  %ls[x]%ls VAD Mapping Type = MEM_PRIVATE (Private-Map Fallback; Detectable) | Base = 0x%llX | SizeOfImage = 0x%llX\n",
+            // Gate input: the private-map fallback is detectable; fail the verification gate.
+            mapping_type_ok = false;
+
+            LOG(0, L"  %ls[x]%ls VAD Mapping Type = MEM_PRIVATE (Private-Map Fallback; Detectable; Gate Fails) | Base = 0x%llX | SizeOfImage = 0x%llX\n",
                 kRed, kReset,
                 static_cast<unsigned long long>(base),
                 static_cast<unsigned long long>(size_of_image));
@@ -3687,7 +3701,7 @@ namespace stealth
     }
 
     void StealthVerifyNoLoaderArtifact(HANDLE process, HINSTANCE hRemoteBase, DWORD survey_pid,
-        StealthVerifierBuffers & buffers, int & step, int total)
+        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify No Loader Artifact (Ldr Walk)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3709,40 +3723,86 @@ namespace stealth
             return;
         }
 
+        // Vector 11 (expectation flipped): the host now SPLICES a synthetic winhttp.dll entry for
+        // the payload (DllBase = hRemoteBase) into all three of the target's PEB Ldr lists, so this
+        // walk must FIND it. PEB_LDR_DATA list heads sit at offsets 16/32/48 (Win11 layout,
+        // static_asserted in NTDefinitions.h); DllBase is at offset 48 of the entry (three
+        // LIST_ENTRYs ahead) and BaseDllName at offset 88.
         struct LDR_ENTRY
         {
             LIST_ENTRY InLoadOrder;
-            LIST_ENTRY LoadOrder;
-            LIST_ENTRY BaseAddressOrder;
+            LIST_ENTRY InMemoryOrder;
+            LIST_ENTRY InInitializationOrder;
             ULONG_PTR DllBase;
         };
-        static_assert(sizeof(LDR_ENTRY) >= 0x18, "LDR_ENTRY must expose DllBase at offset 24");
+        static_assert(sizeof(LDR_ENTRY) == 56, "LDR_ENTRY must expose DllBase at offset 48");
 
-        const SIZE_T head_offsets[] = { 0x28, 0x30, 0x38 };
-        ULONG_PTR matching = 0;
+        constexpr ULONG_PTR kBaseDllNameOffset = 88; // LDR_DATA_TABLE_ENTRY (Win11): BaseDllName
+
+        const SIZE_T head_offsets[] = { 16, 32, 48 };
+        // Per-list offset of the LIST_ENTRY link field inside LDR_DATA_TABLE_ENTRY:
+        // only InLoadOrderModuleList's Flink points at the entry base (offset 0);
+        // the other two point at their link fields (0x10 / 0x20).
+        const SIZE_T link_offsets[] = { 0x00, 0x10, 0x20 };
+        int lists_found = 0;   // lists whose walk read cleanly AND contained the entry
+        int lists_read = 0;    // lists whose walk read cleanly (whether or not it matched)
         ULONG_PTR scanned = 0;
+        std::wstring found_name;
 
         for (size_t h = 0; h < sizeof(head_offsets) / sizeof(head_offsets[0]); ++h)
         {
             const ULONG_PTR head_addr = ldr + head_offsets[h];
             LIST_ENTRY head{};
             got = 0;
-            if (!ReadProcessMemory(process, ReCa<LPCVOID>(head_addr), &head, sizeof(head), &got) || got != sizeof(head))
+
+            // Circular LIST_HEAD anchor: the head's Blink is the list's LAST entry, and its Flink
+            // points back at the head. (head.Blink == head only for an empty list.)
+            LIST_ENTRY blink_node{};
+            if (!ReadProcessMemory(process, ReCa<LPCVOID>(head_addr), &head, sizeof(head), &got) || got != sizeof(head) ||
+                !head.Blink ||
+                !ReadProcessMemory(process, ReCa<LPCVOID>(head.Blink), &blink_node, sizeof(blink_node), &got) ||
+                ReCa<ULONG_PTR>(blink_node.Flink) != head_addr)
             {
-                continue;
+                LOG(0, L"  %ls[!]%ls Ldr List #%llu Head Unreadable Or Not Circular (Ldr = 0x%llX)\n",
+                    kYellow, kReset, static_cast<unsigned long long>(h + 1), static_cast<unsigned long long>(ldr));
+                continue; // inconclusive for this list
             }
+
+            ++lists_read;
+            bool list_matched = false;
+
+            const SIZE_T link_offset = link_offsets[h];
 
             ULONG_PTR cur = ReCa<ULONG_PTR>(head.Flink);
             while (cur && cur != head_addr && scanned < 4096)
             {
-                LDR_ENTRY entry{};
+                const ULONG_PTR entry_base = cur - link_offset;
+
+                ULONG_PTR dll_base = 0;
                 got = 0;
-                if (ReadProcessMemory(process, ReCa<LPCVOID>(cur), &entry, sizeof(entry), &got) && got == sizeof(entry))
+                if (ReadProcessMemory(process, ReCa<LPCVOID>(entry_base + 0x30), &dll_base, sizeof(dll_base), &got) &&
+                    got == sizeof(dll_base))
                 {
                     ++scanned;
-                    if (ReCa<ULONG_PTR>(hRemoteBase) == entry.DllBase)
+                    if (ReCa<ULONG_PTR>(hRemoteBase) == dll_base)
                     {
-                        ++matching;
+                        list_matched = true;
+
+                        if (found_name.empty())
+                        {
+                            UNICODE_STRING name{};
+                            got = 0;
+                            if (ReadProcessMemory(process, ReCa<LPCVOID>(entry_base + kBaseDllNameOffset), &name, sizeof(name), &got) &&
+                                got == sizeof(name) && name.szBuffer && name.Length > 0 && name.Length < 260)
+                            {
+                                std::vector<BYTE> name_bytes(name.Length);
+                                got = 0;
+                                if (ReadProcessMemory(process, name.szBuffer, name_bytes.data(), name.Length, &got) && got == name.Length)
+                                {
+                                    found_name.assign(ReCa<const wchar_t *>(name_bytes.data()), name.Length / sizeof(wchar_t));
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -3758,18 +3818,47 @@ namespace stealth
                     break;
                 }
             }
+
+            if (list_matched)
+            {
+                ++lists_found;
+            }
         }
 
-        if (matching == 0)
+        const wchar_t * name_display = found_name.empty() ? L"winhttp.dll (name unread)" : found_name.c_str();
+        constexpr const wchar_t * kExpectedName = L"\\Windows\\System32\\winhttp.dll";
+        const bool name_ok = found_name.empty() || found_name == kExpectedName;
+
+        if (lists_found == 3 && name_ok)
         {
-            LOG(0, L"  %ls[+]%ls Ldr Walk Clean: 0 Of %llu Scanned Entries Match Remote Base %p\n",
-                kGreen, kReset, static_cast<unsigned long long>(scanned), hRemoteBase);
+            LOG(0, L"  %ls[+]%ls Ldr Walk Clean: Payload Linked As winhttp.dll In 3 Of 3 Lists (DllBase = %p | %llu Entries Scanned)\n",
+                kGreen, kReset, hRemoteBase, static_cast<unsigned long long>(scanned));
+        }
+        else if (lists_found == 3)
+        {
+            LOG(0, L"  %ls[x]%ls Ldr Entry Name Mismatch: Expected \\Windows\\System32\\winhttp.dll, Read %ls (DllBase = %p)\n",
+                kRed, kReset, name_display, hRemoteBase);
+        }
+        else if (lists_found > 0)
+        {
+            LOG(0, L"  %ls[x]%ls Fake Ldr Entry Partial: %ls In %d Of 3 Ldr Lists (DllBase = %p)\n",
+                kRed, kReset, name_display, lists_found, hRemoteBase);
+        }
+        else if (lists_read < 3)
+        {
+            LOG(0, L"  %ls[!]%ls Fake Ldr Entry Inconclusive: Only %d Of 3 Ldr Lists Read Cleanly (DllBase = %p)\n",
+                kYellow, kReset, lists_read, hRemoteBase);
         }
         else
         {
-            LOG(0, L"  %ls[!]%ls Loader Artifact Present: %llu Ldr Entries Point At Remote Base %p\n",
-                kYellow, kReset, static_cast<unsigned long long>(matching), hRemoteBase);
+            LOG(0, L"  %ls[x]%ls Fake Ldr Entry Missing: 0 Of %llu Scanned Entries Match Remote Base %p\n",
+                kRed, kReset, static_cast<unsigned long long>(scanned), hRemoteBase);
         }
+
+        // Gate input: the payload base must be present in all three Ldr lists under the expected
+        // name (an unreadable name is tolerated -- the match on DllBase is the proof). Anything
+        // short of that fails the verification gate.
+        ldr_walk_ok = (lists_found == 3 && name_ok);
     }
 
     void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total)
@@ -3887,7 +3976,8 @@ namespace stealth
     }
 
     void StealthVerifyStackSpoofGeometry(HANDLE process, HINSTANCE hRemoteBase,
-        StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry)
+        StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
+        bool & geometry_ok)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 7: Verify Stack Spoof Geometry...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -4326,6 +4416,8 @@ namespace stealth
         {
             LOG(0, L"  %ls[x]%ls VerifyStackSpoofGeometry: 0/%d Frames In Module — Spoof Broken (all pointer frames outside modules)\n",
                 kRed, kReset, total_frames);
+
+            geometry_ok = false; // the only verdict that gates the verification pass
         }
 
         // Note: each sample captured RSP at the instant the payload's own emitted stub fired a
