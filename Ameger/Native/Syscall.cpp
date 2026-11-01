@@ -327,6 +327,10 @@ namespace
 	constexpr BYTE kPrologueA[3] = { 0x4C, 0x8B, 0xD1 };
 	constexpr BYTE kPrologueB[3] = { 0x49, 0x89, 0xCA };
 
+	// The first four bytes of every safe stack-spoof stub: `mov r11, [rsp]`. It distinguishes the
+	// spoof layout from the plain prologue layout.
+	constexpr BYTE kSpoofStubPrefix[4] = { 0x4C, 0x8B, 0x1C, 0x24 };
+
 	constexpr BYTE kOpMovEaxImm32 = 0xB8;
 	constexpr BYTE kOpSyscall0 = 0x0F;
 	constexpr BYTE kOpSyscall1 = 0x05;
@@ -419,6 +423,23 @@ namespace
 		0x57,                           // pop rdi                  restore the caller's rdi
 		0x56,                           // pop rsi                  restore the caller's rsi
 		0xC3,                           // ret                      return to the shell's real return address
+	};
+
+	// The safe stack-spoof restore gadget. It lives inside every spoof stub (at
+	// SC_STUB_RESTORE_OFFSET) and is reached through the return chain:
+	//   ntdll 'syscall; ret' gadget -> ret pops the spoofed slot -> the spoofed ntdll 'ret'
+	//   -> ret pops the gadget slot -> this gadget.
+	// On entry RSP = stub entry RSP + 16 (two slots were popped by the chain) and [rsp+0x10]
+	// holds the real return address stashed by the stub. It restores RSP and returns to the
+	// real caller, leaving the caller's stack exactly as the callee entry left it.
+	constexpr BYTE kSpoofRestoreGadget[SC_SPOOF_RESTORE_GADGET_SIZE] =
+	{
+		0x49,0x89,0xE3,                 // mov r11, rsp             r11 = chain rsp (= entry rsp + 16)
+		0x49,0x83,0xEB,0x10,            // sub r11, 0x10            r11 = the stub's entry rsp
+		0x4D,0x8B,0x53,0x10,            // mov r10, [r11+0x10]      r10 = the real return address
+		0x4D,0x89,0x13,                 // mov [r11], r10           put the real return address back
+		0x4C,0x89,0xDC,                 // mov rsp, r11             rsp = the stub's entry rsp
+		0xC3,                           // ret                      return to the real caller
 	};
 
 	// Block-internal offsets (instruction starts) of the rip-relative disp32 fields + the imm8.
@@ -658,19 +679,42 @@ namespace
 
 
 
-		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
-		const BYTE * prologue = (mix & 1u) ? kPrologueB : kPrologueA;
-		Destination[0] = prologue[0];
-		Destination[1] = prologue[1];
-		Destination[2] = prologue[2];
-		Destination[3] = kOpMovEaxImm32;
+		const ULONG_PTR ret_gadget = reinterpret_cast<ULONG_PTR>(Gadget) + 2; // ntdll `ret` (C3) after syscall
+		const ULONG_PTR restore_gadget = StubAddress + SC_STUB_RESTORE_OFFSET;
+
+		// Safe return-address stack spoof (no RSP pivot, ABI preserving):
+		//   mov r11, [rsp]        ; save the real return address
+		//   mov [rsp+0x10], r11   ; stash it in the caller's shadow space
+		//   mov rax, restore      ; the in-stub restore gadget
+		//   mov [rsp+8], rax      ; chain hop: the 2nd ret lands on the restore gadget
+		//   mov rax, ret_gadget   ; ntdll ret gadget
+		//   mov [rsp], rax        ; SPOOF: the kernel / walker sees an ntdll return address
+		//   mov eax, ssn          ; service number (upper bits cleared)
+		//   mov r10, rcx          ; first arg
+		//   jmp [rip+0]           ; -> ntdll syscall gadget
+		// Nothing is pushed before the syscall, so RSP is unchanged when the syscall executes and
+		// the 5th/6th syscall arguments are still where the Windows x64 ABI put them.
+		Destination[SC_STUB_OFFSET_MOV_R11 + 0] = 0x4C; Destination[SC_STUB_OFFSET_MOV_R11 + 1] = 0x8B;
+		Destination[SC_STUB_OFFSET_MOV_R11 + 2] = 0x1C; Destination[SC_STUB_OFFSET_MOV_R11 + 3] = 0x24; // mov r11, [rsp]
+		Destination[SC_STUB_OFFSET_STASH_R + 0] = 0x4C; Destination[SC_STUB_OFFSET_STASH_R + 1] = 0x89;
+		Destination[SC_STUB_OFFSET_STASH_R + 2] = 0x5C; Destination[SC_STUB_OFFSET_STASH_R + 3] = 0x24;
+		Destination[SC_STUB_OFFSET_STASH_R + 4] = 0x10; // mov [rsp+0x10], r11
+		Destination[SC_STUB_OFFSET_MOV_RAX_Y + 0] = 0x48; Destination[SC_STUB_OFFSET_MOV_RAX_Y + 1] = 0xB8; // mov rax, imm64
+		*ReCa<ULONG_PTR *>(Destination + SC_STUB_OFFSET_MOV_RAX_Y + 2) = restore_gadget;
+		Destination[SC_STUB_OFFSET_STORE_Y + 0] = 0x48; Destination[SC_STUB_OFFSET_STORE_Y + 1] = 0x89;
+		Destination[SC_STUB_OFFSET_STORE_Y + 2] = 0x44; Destination[SC_STUB_OFFSET_STORE_Y + 3] = 0x24;
+		Destination[SC_STUB_OFFSET_STORE_Y + 4] = 0x08; // mov [rsp+8], rax
+		Destination[SC_STUB_OFFSET_MOV_RAX_X + 0] = 0x48; Destination[SC_STUB_OFFSET_MOV_RAX_X + 1] = 0xB8; // mov rax, imm64
+		*ReCa<ULONG_PTR *>(Destination + SC_STUB_OFFSET_MOV_RAX_X + 2) = ret_gadget;
+		Destination[SC_STUB_OFFSET_SPOOF + 0] = 0x48; Destination[SC_STUB_OFFSET_SPOOF + 1] = 0x89;
+		Destination[SC_STUB_OFFSET_SPOOF + 2] = 0x04; Destination[SC_STUB_OFFSET_SPOOF + 3] = 0x24; // mov [rsp], rax
+		Destination[SC_STUB_OFFSET_OPCODE] = kOpMovEaxImm32;
 		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
-
-
-
+		Destination[SC_STUB_OFFSET_MOV_R10 + 0] = 0x4C; Destination[SC_STUB_OFFSET_MOV_R10 + 1] = 0x8B;
+		Destination[SC_STUB_OFFSET_MOV_R10 + 2] = 0xD1; // mov r10, rcx
 
 		const LONGLONG delta = static_cast<LONGLONG>(GadgetSlotAddress)
-			- static_cast<LONGLONG>(StubAddress + SC_STUB_TAIL_INDIRECT);
+			- static_cast<LONGLONG>(StubAddress + SC_STUB_EMITTED);
 
 		if (delta < INT32_MIN || delta > INT32_MAX)
 		{
@@ -682,7 +726,58 @@ namespace
 
 		*ReCa<LONG *>(Destination + SC_STUB_OFFSET_SYSCALL + 2) = static_cast<LONG>(delta);
 
-		FillNoOpTail(Destination + SC_STUB_TAIL_INDIRECT, SC_STUB_SIZE - SC_STUB_TAIL_INDIRECT, Service);
+		// The in-stub restore gadget closes the return chain (see kSpoofRestoreGadget). It is
+		// emitted at a fixed offset past the instruction stream so the stream can never run into
+		// it -- the layout asserts in Syscall.h pin that order at compile time.
+		memcpy(Destination + SC_STUB_RESTORE_OFFSET, kSpoofRestoreGadget, SC_SPOOF_RESTORE_GADGET_SIZE);
+
+		// HallWatch fallback trampoline. The spoof stub always ends in `jmp [rip+disp32]`; when
+		// the ntdll gadget still starts with `0F 05` that jump goes straight to the gadget's
+		// `syscall`. When the gadget was patched, the jump lands on the trampoline's own
+		// `syscall; ret` instead -- the stub layout (and therefore the spoofed return chain)
+		// stays byte-identical, only the target of the tail changes.
+		bool trampoline_emitted = false;
+		const LONGLONG trampoline_delta = static_cast<LONGLONG>(GadgetSlotAddress)
+			- static_cast<LONGLONG>(StubAddress + SC_STUB_TRAMPOLINE_OFFSET + 6);
+
+		if (trampoline_delta >= INT32_MIN && trampoline_delta <= INT32_MAX)
+		{
+			Destination[SC_STUB_TRAMPOLINE_OFFSET + 0] = kOpJmpRip0;
+			Destination[SC_STUB_TRAMPOLINE_OFFSET + 1] = kOpJmpRip1;
+			*ReCa<LONG *>(Destination + SC_STUB_TRAMPOLINE_OFFSET + 2) = static_cast<LONG>(trampoline_delta);
+			Destination[SC_STUB_TRAMPOLINE_OFFSET + 6] = kOpSyscall0;
+			Destination[SC_STUB_TRAMPOLINE_OFFSET + 7] = kOpSyscall1;
+			Destination[SC_STUB_TRAMPOLINE_OFFSET + 8] = kOpRet;
+			trampoline_emitted = true;
+		}
+
+		// Layout verification: the instruction stream is 52 bytes by construction (see the
+		// per-instruction lengths in SC_STUB_EMITTED), so if it ever grew past
+		// SC_STUB_RESTORE_OFFSET it would overwrite the restore gadget. Report the emitted count
+		// and the remaining slack in SC_STUB_SIZE.
+		constexpr int kEmitted = static_cast<int>(SC_STUB_EMITTED);
+		constexpr int kUsed = static_cast<int>(SC_STUB_USED_SIZE);
+
+		if (AmegerDiagEnabled())
+		{
+			SC_LOG_INFO("Stub Emit Check: emitted=%d bytes, SC_STUB_SIZE=%d, delta=%d",
+				kEmitted, static_cast<int>(SC_STUB_SIZE), static_cast<int>(SC_STUB_SIZE) - kEmitted);
+			SC_LOG_INFO("Stub Layout Check: insns=[4 5 10 5 10 4 5 3 6]=%d | Restore Gadget=[%d..%d) %d | Trampoline=[%d..%d) %d | Used=%d | Slack=%d",
+				kEmitted,
+				static_cast<int>(SC_STUB_RESTORE_OFFSET), static_cast<int>(SC_STUB_RESTORE_SIZE),
+				static_cast<int>(SC_SPOOF_RESTORE_GADGET_SIZE),
+				static_cast<int>(SC_STUB_TRAMPOLINE_OFFSET), static_cast<int>(SC_STUB_USED_SIZE),
+				trampoline_emitted ? static_cast<int>(SC_STUB_TRAMPOLINE_SIZE) : 0,
+				kUsed, static_cast<int>(SC_STUB_SIZE) - kUsed);
+		}
+
+		if (!trampoline_emitted)
+		{
+			SC_LOG_WARN("Stub Trampoline Displacement Out Of Range (%lld); Only The Direct Gadget Path Is Usable",
+				static_cast<long long>(trampoline_delta));
+		}
+
+		FillNoOpTail(Destination + SC_STUB_USED_SIZE, SC_STUB_SIZE - SC_STUB_USED_SIZE, Service);
 		return true;
 	}
 
@@ -696,18 +791,19 @@ namespace
 
 		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
 		const BYTE * prologue = (mix & 1u) ? kPrologueB : kPrologueA;
-		Destination[0] = prologue[0];
-		Destination[1] = prologue[1];
-		Destination[2] = prologue[2];
-		Destination[3] = kOpMovEaxImm32;
-		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 0] = prologue[0];
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 1] = prologue[1];
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 2] = prologue[2];
+		Destination[SC_STUB_LEGACY_OFFSET_OPCODE] = kOpMovEaxImm32;
+		*ReCa<DWORD *>(Destination + SC_STUB_LEGACY_OFFSET_SERVICE) = Service;
 
-		// Direct syscall: 0F 05 (SYSCALL) at the opcode slot, then a RET.
-		Destination[SC_STUB_OFFSET_SYSCALL] = kOpSyscall0;
-		Destination[SC_STUB_OFFSET_SYSCALL + 1] = kOpSyscall1;
-		Destination[SC_STUB_OFFSET_SYSCALL + 2] = kOpRet;
+		// Direct syscall: 0F 05 (SYSCALL) at offset 8, then a RET.
+		Destination[SC_STUB_LEGACY_OFFSET_SYSCALL + 0] = kOpSyscall0;
+		Destination[SC_STUB_LEGACY_OFFSET_SYSCALL + 1] = kOpSyscall1;
+		Destination[SC_STUB_LEGACY_OFFSET_SYSCALL + 2] = kOpRet;
 
-		FillNoOpTail(Destination + SC_STUB_TAIL_INDIRECT, SC_STUB_SIZE - SC_STUB_TAIL_INDIRECT, Service);
+		FillNoOpTail(Destination + SC_STUB_LEGACY_OFFSET_SYSCALL + 3,
+			SC_STUB_SIZE - (SC_STUB_LEGACY_OFFSET_SYSCALL + 3), Service);
 		return true;
 	}
 
@@ -729,11 +825,14 @@ namespace
 
 		const DWORD mix = (Service * 2654435761u) ^ (Service >> 13);
 		const BYTE * prologue = (mix & 1u) ? kPrologueB : kPrologueA;
-		Destination[0] = prologue[0];
-		Destination[1] = prologue[1];
-		Destination[2] = prologue[2];
-		Destination[3] = kOpMovEaxImm32;
-		*ReCa<DWORD *>(Destination + SC_STUB_OFFSET_SERVICE) = Service;
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 0] = prologue[0];
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 1] = prologue[1];
+		Destination[SC_STUB_LEGACY_OFFSET_PROLOGUE + 2] = prologue[2];
+		Destination[SC_STUB_LEGACY_OFFSET_OPCODE] = kOpMovEaxImm32;
+		// The service immediate belongs to the `mov eax, imm32` at the legacy opcode slot; it must
+		// not land on SC_STUB_OFFSET_SERVICE (that slot belongs to the spoof layout) or it would
+	// corrupt the sampler block that follows.
+		*ReCa<DWORD *>(Destination + SC_STUB_LEGACY_OFFSET_SERVICE) = Service;
 
 		memcpy(Destination + SC_STUB_OFFSET_SAMPLE, kSampleBlockRaw, SC_SAMPLE_BLOCK_SIZE);
 
@@ -1418,23 +1517,44 @@ DWORD SyscallServiceOfStub(const void * Stub)
 
 	const BYTE * Bytes = ReCa<const BYTE *>(Stub);
 
-	const bool prologue_a = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueA, sizeof(kPrologueA)) == 0;
-	const bool prologue_b = memcmp(Bytes + SC_STUB_OFFSET_PROLOGUE, kPrologueB, sizeof(kPrologueB)) == 0;
-	if (!prologue_a && !prologue_b)
+	// Layout 1: the safe stack-spoof stub (WriteStub). It starts with `mov r11, [rsp]`, not with
+	// the ntdll prologue, and carries its service immediate / gadget jmp at the spoof offsets.
+	const bool spoof_layout = memcmp(Bytes, kSpoofStubPrefix, sizeof(kSpoofStubPrefix)) == 0;
+
+	size_t opcode_off = 0;
+	size_t service_off = 0;
+	size_t syscall_off = 0;
+
+	if (spoof_layout)
+	{
+		opcode_off = SC_STUB_OFFSET_OPCODE;
+		service_off = SC_STUB_OFFSET_SERVICE;
+		syscall_off = SC_STUB_OFFSET_SYSCALL;
+	}
+	else
+	{
+		// Layout 2: the plain prologue stub (WriteDirectStub / WriteSampledStub).
+		const bool prologue_a = memcmp(Bytes + SC_STUB_LEGACY_OFFSET_PROLOGUE, kPrologueA, sizeof(kPrologueA)) == 0;
+		const bool prologue_b = memcmp(Bytes + SC_STUB_LEGACY_OFFSET_PROLOGUE, kPrologueB, sizeof(kPrologueB)) == 0;
+		if (!prologue_a && !prologue_b)
+		{
+			return 0;
+		}
+
+		opcode_off = SC_STUB_LEGACY_OFFSET_OPCODE;
+		service_off = SC_STUB_LEGACY_OFFSET_SERVICE;
+
+		// Vector 7: sampled stubs place the sampler block at SC_STUB_OFFSET_SAMPLE, so the syscall
+		// opcode (the gadget jmp, or a direct 0F 05 under the HallWatch fallback) lives at
+		// SC_STUB_OFFSET_SAMPLED_SYSCALL instead of the legacy syscall slot.
+		const bool sampled_layout = memcmp(Bytes + SC_STUB_OFFSET_SAMPLE, kSampleBlockRaw, 3) == 0;
+		syscall_off = sampled_layout ? SC_STUB_OFFSET_SAMPLED_SYSCALL : SC_STUB_LEGACY_OFFSET_SYSCALL;
+	}
+
+	if (Bytes[opcode_off] != kOpMovEaxImm32)
 	{
 		return 0;
 	}
-
-	if (Bytes[SC_STUB_OFFSET_OPCODE] != kOpMovEaxImm32)
-	{
-		return 0;
-	}
-
-	// Vector 7: sampled stubs place the 167-byte sampler block at SC_STUB_OFFSET_SAMPLE,
-	// so the syscall opcode (the gadget jmp, or a direct 0F 05 under the HallWatch fallback)
-	// lives at SC_STUB_OFFSET_SAMPLED_SYSCALL instead of SC_STUB_OFFSET_SYSCALL.
-	const bool sampled_layout = memcmp(Bytes + SC_STUB_OFFSET_SAMPLE, kSampleBlockRaw, 3) == 0;
-	const size_t syscall_off = sampled_layout ? SC_STUB_OFFSET_SAMPLED_SYSCALL : SC_STUB_OFFSET_SYSCALL;
 
 	const BYTE op0 = Bytes[syscall_off];
 	const BYTE op1 = Bytes[syscall_off + 1];
@@ -1450,7 +1570,7 @@ DWORD SyscallServiceOfStub(const void * Stub)
 		return 0;
 	}
 
-	const DWORD Service = *ReCa<const DWORD *>(Bytes + SC_STUB_OFFSET_SERVICE);
+	const DWORD Service = *ReCa<const DWORD *>(Bytes + service_off);
 	if (!Service || Service > 0xFFFF)
 	{
 		return 0;
@@ -1533,6 +1653,12 @@ DWORD ScGetProcessImageName(HANDLE ProcessHandle, wchar_t * Buffer, DWORD Charac
 	return 0;
 }
 
+// The remote stubs carry the safe stack spoof (WriteStub): the syscall still executes from ntdll's
+// 'syscall; ret' gadget, and the return address the kernel / a stack walker reads at [rsp] is an
+// ntdll 'ret' gadget instead of the caller's own return address. Nothing is pushed before the
+// syscall, so the syscall arguments and the caller's stack are untouched; the in-stub restore
+// gadget closes the return chain and hands RSP and the return address back unchanged.
+// The Tier 2 RSP-pivot sampler remains disabled (RingBase/SysIdxAddr = 0) for stability.
 DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD * NameHashes, DWORD Count, ULONG_PTR RemoteBase, ULONG_PTR RingBase, ULONG_PTR SysIdxAddr, VERIFIABLE_EXEC_TELEMETRY * pTelemetryOut, ULONG_PTR TargetNtdllBase)
 {
 	// Vector 7: RingBase/SysIdxAddr non-zero -> emit the sampled variant (SC_STUB_SIZE_SAMPLED).
@@ -1571,6 +1697,8 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 		SC_LOG_ERR("Remote Syscall Stubs Require The ntdll Syscall Gadget");
 		return 0;
 	}
+
+	SC_LOG_INFO("Safe Stack Spoof: Overwriting [rsp] with ntdll Ret Gadget at 0x%p", (void *)(reinterpret_cast<BYTE *>(gadget) + 2));
 
 	// Vector 7: HallWatch — re-read the gadget's first two bytes; if not 0F 05, use direct stubs.
 	const bool gadget_healthy =
@@ -1664,9 +1792,12 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 			}
 			else if (!gadget_healthy)
 			{
-				// HallWatch fallback: direct 0F 05 embedded in the stub (detectable).
-				if (!WriteDirectStub(slot, g_SyscallTable[j].Service))
+				// HallWatch fallback: the spoof stub is still the layout, its tail trampoline carries
+				// the `syscall; ret` because the ntdll gadget lost its `0F 05` opcode. The spoofed
+				// return chain is identical either way, so frame synthesis stays valid.
+				if (!WriteStub(slot, g_SyscallTable[j].Service, gadget, gadget_slot_address, stub_address))
 				{
+					SC_LOG_ERR("Remote Syscall Stub %u Displacement Out Of Range", i);
 					break;
 				}
 			}
@@ -1696,8 +1827,10 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 		memcpy(Destination + stub_bytes + sizeof(void *), kRestoreGadgetBytes, SC_RESTORE_GADGET_SIZE);
 	}
 
-	if (Written && gadget_healthy)
+	if (Written)
 	{
+		// The gadget slot has to hold the gadget even on the HallWatch path: the fallback
+		// trampoline inside each stub jumps through it, and so does frame synthesis.
 		*reinterpret_cast<void **>(gadget_slot_local) = gadget;
 	}
 

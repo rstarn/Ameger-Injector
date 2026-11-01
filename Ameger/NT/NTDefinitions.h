@@ -87,11 +87,65 @@ typedef enum class _KTHREAD_STATE : ULONG
 	Waiting = 0x05
 } KTHREAD_STATE;
 
+// The complete KWAIT_REASON table, transcribed from the installed SDK's
+// 10.0.26100.0/km/wdm.h (`Executive`..`MaximumWaitReason`, 0x00..0x2B). Every ordinal has to
+// stay numerically identical to the SDK's: one shifted entry turns WrQueue into a "self-waking
+// delay" and rejects the one donor a wake nudge can actually reach.
 typedef enum class _KWAIT_REASON : ULONG
 {
-	Unknown = 0x00,
-	WrQueue = 0x10
+	Executive			= 0x00,
+	FreePage			= 0x01,
+	PageIn				= 0x02,
+	PoolAllocation		= 0x03,
+	DelayExecution		= 0x04,
+	Suspended			= 0x05,
+	UserRequest			= 0x06,
+	WrExecutive			= 0x07,
+	WrFreePage			= 0x08,
+	WrPageIn			= 0x09,
+	WrPoolAllocation	= 0x0A,
+	WrDelayExecution	= 0x0B,
+	WrSuspended			= 0x0C,
+	WrUserRequest		= 0x0D,
+	WrSpare0			= 0x0E,
+	WrQueue				= 0x0F,
+	WrLpcReceive		= 0x10,
+	WrLpcReply			= 0x11,
+	WrVirtualMemory		= 0x12,
+	WrPageOut			= 0x13,
+	WrRendezvous		= 0x14,
+	WrKeyedEvent		= 0x15,
+	WrTerminated		= 0x16,
+	WrProcessInSwap		= 0x17,
+	WrCpuRateControl	= 0x18,
+	WrCalloutStack		= 0x19,
+	WrKernel			= 0x1A,
+	WrResource			= 0x1B,
+	WrPushLock			= 0x1C,
+	WrMutex				= 0x1D,
+	WrQuantumEnd		= 0x1E,
+	WrDispatchInt		= 0x1F,
+	WrPreempted			= 0x20,
+	WrYieldExecution	= 0x21,
+	WrFastMutex			= 0x22,
+	WrGuardedMutex		= 0x23,
+	WrRundown			= 0x24,
+	WrAlertByThreadId	= 0x25,
+	WrDeferredPreempt	= 0x26,
+	WrPhysicalFault		= 0x27,
+	WrIoRing			= 0x28,
+	WrMdlCache			= 0x29,
+	WrRcu				= 0x2A,
+	MaximumWaitReason	= 0x2B
 } KWAIT_REASON;
+
+static_assert(static_cast<ULONG>(KWAIT_REASON::DelayExecution) == 4 &&
+	static_cast<ULONG>(KWAIT_REASON::UserRequest) == 6 &&
+	static_cast<ULONG>(KWAIT_REASON::WrDelayExecution) == 11 &&
+	static_cast<ULONG>(KWAIT_REASON::WrUserRequest) == 13 &&
+	static_cast<ULONG>(KWAIT_REASON::WrQueue) == 15 &&
+	static_cast<ULONG>(KWAIT_REASON::MaximumWaitReason) == 43,
+	"KWAIT_REASON must stay ordinal-identical to the SDK's wdm.h");
 
 namespace WAIT_REASON_SAFE
 {
@@ -106,27 +160,86 @@ namespace WAIT_REASON_SAFE
 
 
 
-	constexpr unsigned char UserRequest		= 4;
-	constexpr unsigned char UserDelay		= 7;
-	constexpr unsigned char WrUserRequest	= 12;
-	constexpr unsigned char WrUserDelay	= 15;
-	constexpr unsigned char WrUserRequest2	= 22;
-
+	// The four reasons a suspended donor can be resumed out of. The ordinals come from
+	// KWAIT_REASON above; the previous parallel byte table was shifted, so WrQueue (15) was
+	// read as WrDelayExecution and treated as a self-waking delay, while WrUserRequest (13) -
+	// a GUI thread parked in GetMessage, the one donor a PostThreadMessage can actually wake -
+	// was rejected as unsafe.
 	__forceinline bool IsSafe(unsigned char reason)
 	{
-		return reason == UserRequest || reason == UserDelay ||
-			reason == WrUserRequest || reason == WrUserDelay ||
-			reason == WrUserRequest2;
+		const KWAIT_REASON r = static_cast<KWAIT_REASON>(reason);
+
+		return r == KWAIT_REASON::DelayExecution || r == KWAIT_REASON::UserRequest ||
+			r == KWAIT_REASON::WrDelayExecution || r == KWAIT_REASON::WrUserRequest;
 	}
 
-
-
-
-
-
+	// True for the reasons whose wait expires on its own, so a failed wake nudge is tolerable
+	// as long as the startup probe stays bounded.
 	__forceinline bool IsDelay(unsigned char reason)
 	{
-		return reason == UserDelay || reason == WrUserDelay;
+		const KWAIT_REASON r = static_cast<KWAIT_REASON>(reason);
+
+		return r == KWAIT_REASON::DelayExecution || r == KWAIT_REASON::WrDelayExecution;
+	}
+
+	// Wakeability ranking, shared by both donor pickers (the launcher's snapshot walk and the
+	// runtime's own thread walk) so the two can never disagree. A donor only has to be woken so
+	// it executes the stub the hijack parked on its RIP; how reliably that wake lands decides
+	// the order candidates are tried in:
+	//   Running       executes the stub as soon as it is resumed; nothing to wake.
+	//   Nudgeable     WrUserRequest (13): a GUI thread parked in GetMessage, the one class
+	//                 PostThreadMessageW reliably wakes.
+	//   SelfExpiring  DelayExecution (4) / WrDelayExecution (11): the timer wakes it, so a nudge
+	//                 failure is tolerable while the startup probe stays bounded.
+	//   Unwakeable    UserRequest (6): neither nudgeable nor self-expiring, so a nudge failure
+	//                 has to abandon the donor instead of burning the whole probe.
+	//   Reject        not a donor at all (not running/waiting, or outside the safe set).
+	enum class WAKE_CLASS : unsigned char
+	{
+		Running			= 0,
+		Nudgeable		= 1,
+		SelfExpiring	= 2,
+		Unwakeable		= 3,
+		Reject			= 4
+	};
+
+	struct WAIT_CANDIDATE
+	{
+		unsigned char State;
+		unsigned char Reason;
+	};
+
+	__forceinline WAKE_CLASS Classify(const WAIT_CANDIDATE & Candidate)
+	{
+		if (Candidate.State == static_cast<unsigned char>(KTHREAD_STATE::Running))
+		{
+			return WAKE_CLASS::Running;
+		}
+
+		if (Candidate.State != static_cast<unsigned char>(KTHREAD_STATE::Waiting) || !IsSafe(Candidate.Reason))
+		{
+			return WAKE_CLASS::Reject;
+		}
+
+		const KWAIT_REASON r = static_cast<KWAIT_REASON>(Candidate.Reason);
+
+		if (r == KWAIT_REASON::WrUserRequest)
+		{
+			return WAKE_CLASS::Nudgeable;
+		}
+
+		if (r == KWAIT_REASON::DelayExecution || r == KWAIT_REASON::WrDelayExecution)
+		{
+			return WAKE_CLASS::SelfExpiring;
+		}
+
+		return WAKE_CLASS::Unwakeable;
+	}
+
+	// Lower is better; Reject sorts last so a caller can compare ranks without special-casing.
+	__forceinline int WakeRank(const WAIT_CANDIDATE & Candidate)
+	{
+		return static_cast<int>(Classify(Candidate));
 	}
 }
 

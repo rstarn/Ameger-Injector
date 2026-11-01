@@ -3723,7 +3723,7 @@ namespace stealth
             return;
         }
 
-        // Vector 11 (expectation flipped): the host now SPLICES a synthetic winhttp.dll entry for
+        // Vector 11 (expectation flipped): the host now SPLICES a synthetic system-DLL entry for
         // the payload (DllBase = hRemoteBase) into all three of the target's PEB Ldr lists, so this
         // walk must FIND it. PEB_LDR_DATA list heads sit at offsets 16/32/48 (Win11 layout,
         // static_asserted in NTDefinitions.h); DllBase is at offset 48 of the entry (three
@@ -3825,19 +3825,14 @@ namespace stealth
             }
         }
 
-        const wchar_t * name_display = found_name.empty() ? L"winhttp.dll (name unread)" : found_name.c_str();
-        constexpr const wchar_t * kExpectedName = L"\\Windows\\System32\\winhttp.dll";
-        const bool name_ok = found_name.empty() || found_name == kExpectedName;
+        // The spoof name is chosen at run time (not necessarily winhttp.dll), so the name is
+        // informational only; a DllBase match across all 3 lists is the proof.
+        const wchar_t * name_display = found_name.empty() ? L"(name unread)" : found_name.c_str();
 
-        if (lists_found == 3 && name_ok)
+        if (lists_found == 3)
         {
-            LOG(0, L"  %ls[+]%ls Ldr Walk Clean: Payload Linked As winhttp.dll In 3 Of 3 Lists (DllBase = %p | %llu Entries Scanned)\n",
-                kGreen, kReset, hRemoteBase, static_cast<unsigned long long>(scanned));
-        }
-        else if (lists_found == 3)
-        {
-            LOG(0, L"  %ls[x]%ls Ldr Entry Name Mismatch: Expected \\Windows\\System32\\winhttp.dll, Read %ls (DllBase = %p)\n",
-                kRed, kReset, name_display, hRemoteBase);
+            LOG(0, L"  %ls[+]%ls Ldr Walk Clean: Payload Linked As %ls In 3 Of 3 Lists (DllBase = %p | %llu Entries Scanned)\n",
+                kGreen, kReset, name_display, hRemoteBase, static_cast<unsigned long long>(scanned));
         }
         else if (lists_found > 0)
         {
@@ -3855,10 +3850,9 @@ namespace stealth
                 kRed, kReset, static_cast<unsigned long long>(scanned), hRemoteBase);
         }
 
-        // Gate input: the payload base must be present in all three Ldr lists under the expected
-        // name (an unreadable name is tolerated -- the match on DllBase is the proof). Anything
-        // short of that fails the verification gate.
-        ldr_walk_ok = (lists_found == 3 && name_ok);
+        // Gate input: the payload base must be present in all three Ldr lists. The name is
+        // informational (it is picked at run time), so the DllBase match is the proof.
+        ldr_walk_ok = (lists_found == 3);
     }
 
     void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total)
@@ -3969,10 +3963,7 @@ namespace stealth
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Kernel Residuals (Not User-Mode Fixable)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
 
-        LOG(0, L"  %ls[!]%ls ETW-TI: Kernel Residual (Not User-Mode Fixable)\n", kYellow, kReset);
-        LOG(0, L"  %ls[!]%ls KernelVAD: Kernel Residual (Not User-Mode Fixable)\n", kYellow, kReset);
-        LOG(0, L"  %ls[!]%ls HWStackIntegrity: Kernel Residual (Not User-Mode Fixable)\n", kYellow, kReset);
-        LOG(0, L"  %ls[!]%ls ObCallbacks: Kernel Residual (Not User-Mode Fixable)\n", kYellow, kReset);
+        LOG(0, L"  %ls[!]%ls Kernel Residuals: ETW-TI, KernelVAD, HWStackIntegrity, ObCallbacks (Not Usermode-Fixable; Documented as Residuals)\n", kYellow, kReset);
     }
 
     void StealthVerifyStackSpoofGeometry(HANDLE process, HINSTANCE hRemoteBase,

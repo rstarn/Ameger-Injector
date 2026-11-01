@@ -16,6 +16,22 @@ namespace
 	MAP_STATS g_LastMapStats{};
 	VERIFIABLE_EXEC_TELEMETRY g_LastExecTelemetry{};
 
+	// The manual mapper calls ntdll directly instead of going through the syscall stub pool: these
+	// run before the pool is usable (the section/view calls) or while a remote thread is parked.
+	typedef NTSTATUS (NTAPI * f_NtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+	typedef NTSTATUS (NTAPI * f_NtAllocateVirtualMemory)(HANDLE, PVOID *, ULONG_PTR, PSIZE_T, ULONG, ULONG);
+	typedef NTSTATUS (NTAPI * f_NtProtectVirtualMemory)(HANDLE, PVOID *, PSIZE_T, ULONG, PULONG);
+	typedef NTSTATUS (NTAPI * f_NtCreateSection)(PHANDLE, ACCESS_MASK, OBJECT_ATTRIBUTES *, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
+	typedef NTSTATUS (NTAPI * f_NtMapViewOfSection)(HANDLE, HANDLE, PVOID *, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, ULONG, ULONG, ULONG);
+
+	template <typename Fn>
+	Fn NtdllProc(const char * Name)
+	{
+		const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+
+		return ntdll ? ReCa<Fn>(GetProcAddress(ntdll, Name)) : nullptr;
+	}
+
 
 
 
@@ -27,7 +43,7 @@ namespace
 		}
 
 		SIZE_T written = 0;
-		if (!ScWriteProcessMemory(hTargetProc, address, buffer, size, &written))
+		if (!WriteProcessMemory(hTargetProc, address, buffer, size, &written))
 		{
 			return false;
 		}
@@ -143,7 +159,8 @@ namespace
 		base_out = 0;
 
 		PROCESS_BASIC_INFORMATION basic{ };
-		const NTSTATUS basic_status = ScNtQueryInformationProcess(hTargetProc,
+		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>("NtQueryInformationProcess");
+		const NTSTATUS basic_status = pNtQueryInformationProcess(hTargetProc,
 			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
 		if (NT_FAIL(basic_status) || !basic.pPEB)
 		{
@@ -168,7 +185,7 @@ namespace
 		PEB_LDR_DATA * ldr = nullptr;
 
 
-		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
+		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
 			LOG(1, "ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
 				basic.pPEB, peb_ldr_offset);
@@ -176,7 +193,7 @@ namespace
 		}
 
 		LIST_ENTRY head{ };
-		if (!ScReadProcessMemory(hTargetProc, &ldr->InLoadOrderModuleListHead, &head, sizeof(head), nullptr))
+		if (!ReadProcessMemory(hTargetProc, &ldr->InLoadOrderModuleListHead, &head, sizeof(head), nullptr))
 		{
 			LOG(1, "ResolveRemoteNtdllBase: The Loader List Head Could Not Be Read (Ldr = %p)\n", ldr);
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
@@ -191,7 +208,7 @@ namespace
 		for (; current && current != head_address && depth < 4096; ++depth)
 		{
 			LIST_ENTRY link{ };
-			if (!ScReadProcessMemory(hTargetProc, current, &link, sizeof(link), nullptr))
+			if (!ReadProcessMemory(hTargetProc, current, &link, sizeof(link), nullptr))
 			{
 				LOG(1, "ResolveRemoteNtdllBase: A Loader List Link Could Not Be Read (Depth = %lu | Address = %p)\n",
 					static_cast<unsigned long>(depth), current);
@@ -203,15 +220,15 @@ namespace
 			const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
 
 			UNICODE_STRING name{ };
-			if (ScReadProcessMemory(hTargetProc, entry + ldr_name_offset, &name, sizeof(name), nullptr) &&
+			if (ReadProcessMemory(hTargetProc, entry + ldr_name_offset, &name, sizeof(name), nullptr) &&
 				name.Length == sizeof(L"ntdll.dll") - sizeof(wchar_t) && name.szBuffer)
 			{
 				wchar_t buffer[16]{ 0 };
-				if (ScReadProcessMemory(hTargetProc, name.szBuffer, buffer, sizeof(L"ntdll.dll"), nullptr) &&
+				if (ReadProcessMemory(hTargetProc, name.szBuffer, buffer, sizeof(L"ntdll.dll"), nullptr) &&
 					_wcsicmp(buffer, L"ntdll.dll") == 0)
 				{
 					ULONG_PTR base = 0;
-					if (!ScReadProcessMemory(hTargetProc, entry + ldr_base_offset, &base, sizeof(base), nullptr))
+					if (!ReadProcessMemory(hTargetProc, entry + ldr_base_offset, &base, sizeof(base), nullptr))
 					{
 						return false;
 					}
@@ -230,12 +247,13 @@ namespace
 		return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 	}
 
-	// Vector 11: splice a synthetic LDR_DATA_TABLE_ENTRY for winhttp.dll (DllBase = the mapped
-	// payload) into the target's three PEB Ldr list heads, so module/VAD cross-referencing sees the
-	// payload as a legitimate system DLL. The entry and its name buffer live in a single 0x400
-	// allocation: entry at +0, the shared "\Windows\System32\winhttp.dll" name (BaseDllName and
-	// FullDllName both point there) at +0x200. Non-fatal by contract: a failure logs and returns
-	// false, and the verifier reports the state.
+	// Vector 11: splice a synthetic LDR_DATA_TABLE_ENTRY (DllBase = the mapped payload) into the
+	// target's three PEB Ldr list heads, so module/VAD cross-referencing sees the payload as a
+	// legitimate system DLL. The name is picked at run time from modules that are not already
+	// loaded in the target. The entry and its name buffer live in a single 0x400 allocation:
+	// entry at +0, the shared "\Windows\System32\<name>" (BaseDllName and FullDllName both point
+	// there) at +0x200. Non-fatal by contract: a failure logs and returns false, and the verifier
+	// reports the state.
 	bool HostLinkLdrEntry(HANDLE hTargetProc, ULONG_PTR image_base, SIZE_T image_size, DWORD entry_point_rva)
 	{
 		const DYNAMIC_NT_OFFSETS & dyno = g_DynamicOffsets;
@@ -251,7 +269,8 @@ namespace
 			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, BaseDllName));
 
 		PROCESS_BASIC_INFORMATION basic{ };
-		const NTSTATUS basic_status = ScNtQueryInformationProcess(hTargetProc,
+		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>("NtQueryInformationProcess");
+		const NTSTATUS basic_status = pNtQueryInformationProcess(hTargetProc,
 			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
 		if (NT_FAIL(basic_status) || !basic.pPEB)
 		{
@@ -261,7 +280,7 @@ namespace
 		}
 
 		PEB_LDR_DATA * ldr = nullptr;
-		if (!ScReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
+		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
 			LOG(1, "[LdrSplice] The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
 				basic.pPEB, peb_ldr_offset);
@@ -277,7 +296,8 @@ namespace
 
 		void * block = nullptr;
 		SIZE_T block_size = kBlockAlign;
-		const NTSTATUS block_status = ScNtAllocateVirtualMemory(hTargetProc, &block, 0, &block_size,
+		const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>("NtAllocateVirtualMemory");
+		const NTSTATUS block_status = pNtAllocateVirtualMemory(hTargetProc, &block, 0, &block_size,
 			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 		if (NT_FAIL(block_status) || !block)
 		{
@@ -308,18 +328,71 @@ namespace
 			return false;
 		}
 
-		// "\Windows\System32\winhttp.dll", shared by BaseDllName and FullDllName.
-		constexpr wchar_t kFakeName[] = L"\\Windows\\System32\\winhttp.dll";
-		constexpr USHORT name_length = static_cast<USHORT>(sizeof(kFakeName) - sizeof(wchar_t));
+		// "\Windows\System32\<name>", shared by BaseDllName and FullDllName.
+		// Select a spoof module name that is NOT already loaded in the target, to avoid
+		// the two-modules-same-name anomaly scanners can flag.
+		std::vector<std::wstring> loaded_names;
+		{
+			BYTE * load_head = ReCa<BYTE *>(ldr) + offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead);
+			LIST_ENTRY head_now{};
+			if (ReadProcessMemory(hTargetProc, load_head, &head_now, sizeof(head_now), nullptr))
+			{
+				BYTE * node = ReCa<BYTE *>(head_now.Flink);
+				for (int hop = 0; hop < 4096 && node && node != load_head; ++hop)
+				{
+					UNICODE_STRING name_us_tmp{};
+					if (ReadProcessMemory(hTargetProc, ReCa<LPCVOID>(node + ldr_base_name_offset), &name_us_tmp, sizeof(name_us_tmp), nullptr) &&
+						name_us_tmp.szBuffer && name_us_tmp.Length > 0 && name_us_tmp.Length < 520)
+					{
+						std::vector<BYTE> buf(name_us_tmp.Length);
+						if (ReadProcessMemory(hTargetProc, name_us_tmp.szBuffer, buf.data(), name_us_tmp.Length, nullptr))
+						{
+							std::wstring n(ReCa<const wchar_t *>(buf.data()), name_us_tmp.Length / sizeof(wchar_t));
+							for (auto & c : n) if (c >= L'A' && c <= L'Z') c = c - L'A' + L'a';
+							loaded_names.push_back(n);
+						}
+					}
+					LIST_ENTRY nl{};
+					if (!ReadProcessMemory(hTargetProc, node, &nl, sizeof(nl), nullptr)) break;
+					node = ReCa<BYTE *>(nl.Flink);
+					if (node == load_head) break;
+				}
+			}
+		}
+
+		std::wstring selected_name;
+		const wchar_t * candidates[] = { L"msvcr100.dll", L"d3dx11_43.dll", L"winmmbase.dll", L"dxva2.dll" };
+		for (auto cand : candidates)
+		{
+			std::wstring lc(cand);
+			for (auto & c : lc) if (c >= L'A' && c <= L'Z') c = c - L'A' + L'a';
+			bool found = false;
+			for (auto & ln : loaded_names) if (ln == lc) { found = true; break; }
+			if (!found) { selected_name = cand; break; }
+		}
+		if (selected_name.empty())
+		{
+			static const wchar_t * hex = L"0123456789abcdef";
+			unsigned int seed = static_cast<unsigned int>(image_base ^ 0xA5A5A5A5u);
+			wchar_t buf[16]{};
+			for (int i = 0; i < 8; ++i) { seed = seed * 1103515245u + 12345u; buf[i] = hex[(seed >> 16) & 0xF]; }
+			buf[8] = L'.'; buf[9] = L'd'; buf[10] = L'l'; buf[11] = L'l';
+			selected_name = buf;
+		}
+
+		LOG(1, "[LdrSplice] Selected spoof name: %ls (Not present in target)\n", selected_name.c_str());
+
+		std::wstring full_name = L"\\Windows\\System32\\" + selected_name;
+		const USHORT name_length = static_cast<USHORT>(full_name.size() * sizeof(wchar_t));
 
 		UNICODE_STRING name_us{};
 		name_us.Length = name_length;
 		name_us.MaxLength = name_length + sizeof(wchar_t);
 		name_us.szBuffer = ReCa<PWSTR>(name_address);
 
-		wchar_t name_buffer[64]{};
-		memcpy(name_buffer, kFakeName, sizeof(kFakeName));
-		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(name_address), name_buffer, sizeof(kFakeName)))
+		wchar_t name_buffer[128]{};
+		memcpy(name_buffer, full_name.c_str(), (full_name.size() + 1) * sizeof(wchar_t));
+		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(name_address), name_buffer, (full_name.size() + 1) * sizeof(wchar_t)))
 		{
 			LOG(1, "[LdrSplice] The Name Buffer Could Not Be Written\n");
 			return false;
@@ -351,9 +424,9 @@ namespace
 			// points back at the head. (head.Blink == head only for an empty list -- probe-verified
 			// against a live PEB on this build.)
 			LIST_ENTRY blink_node{};
-			head.Readable = ScReadProcessMemory(hTargetProc, head_address, &head.Head, sizeof(head.Head), nullptr) &&
+			head.Readable = ReadProcessMemory(hTargetProc, head_address, &head.Head, sizeof(head.Head), nullptr) &&
 				head.Head.Blink &&
-				ScReadProcessMemory(hTargetProc, ReCa<LPCVOID>(head.Head.Blink), &blink_node, sizeof(blink_node), nullptr) &&
+				ReadProcessMemory(hTargetProc, ReCa<LPCVOID>(head.Head.Blink), &blink_node, sizeof(blink_node), nullptr) &&
 				ReCa<ULONG_PTR>(blink_node.Flink) == ReCa<ULONG_PTR>(head_address);
 			if (!head.Readable)
 			{
@@ -421,25 +494,33 @@ namespace
 			// The page holding the list head can be reserved but not committed, in which case
 			// NtProtectVirtualMemory refuses with STATUS_NOT_COMMITTED. Commit it first;
 			// STATUS_ALREADY_COMMITTED (0x40000000) means the page was already committed.
+			constexpr NTSTATUS kStatusAlreadyCommitted = static_cast<NTSTATUS>(0x40000000);
+
+			// Always attempt to commit first (handles reserved-but-not-committed pages).
+			// MEM_COMMIT alone can return STATUS_CONFLICTING_ADDRESSES on some builds; fall
+			// back to MEM_COMMIT|MEM_RESERVE, and if that also fails, proceed to protect
+			// (the page may already be committed).
 			void * commit_address = page;
 			SIZE_T commit_size = page_size;
-			const NTSTATUS commit_status = ScNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
+			const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>("NtAllocateVirtualMemory");
+			NTSTATUS commit_status = pNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
 				&commit_size, MEM_COMMIT, PAGE_READWRITE);
-
 			LOG(1, "[LdrSplice] Commit Page Status = 0x%08X (Addr = 0x%p)\n",
 				static_cast<unsigned>(commit_status), commit_address);
 
-			constexpr NTSTATUS kStatusAlreadyCommitted = static_cast<NTSTATUS>(0x40000000);
 			if (NT_FAIL(commit_status) && commit_status != kStatusAlreadyCommitted)
 			{
-				LOG(1, "[LdrSplice] %s Page Commit Failed = %08X (Page = %p)\n",
-					list_name, static_cast<unsigned>(commit_status), page);
-				return false;
+				commit_address = page;
+				commit_size = page_size;
+				commit_status = pNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
+					&commit_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+				LOG(1, "[LdrSplice] Commit (MEM_COMMIT|MEM_RESERVE) Page Status = 0x%08X (Addr = 0x%p)\n",
+					static_cast<unsigned>(commit_status), commit_address);
 			}
 
 			ULONG old_protect = 0;
-
-			const NTSTATUS prot_status = ScNtProtectVirtualMemory(hTargetProc, &page, &page_size,
+			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+			const NTSTATUS prot_status = pNtProtectVirtualMemory(hTargetProc, &page, &page_size,
 				PAGE_READWRITE, &old_protect);
 
 			if (NT_FAIL(prot_status))
@@ -460,7 +541,8 @@ namespace
 				void * page = it->Page;
 				SIZE_T page_size = it->PageSize;
 				ULONG dummy = 0;
-				ScNtProtectVirtualMemory(hTargetProc, &page, &page_size, it->OldProtect, &dummy);
+				const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+				pNtProtectVirtualMemory(hTargetProc, &page, &page_size, it->OldProtect, &dummy);
 			}
 
 			head_protections.clear();
@@ -520,7 +602,7 @@ namespace
 			BYTE * entry_links = ReCa<BYTE *>(entry_address) + offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
 			LIST_ENTRY head_now{};
 
-			if (ScReadProcessMemory(hTargetProc, load_head, &head_now, sizeof(head_now), nullptr))
+			if (ReadProcessMemory(hTargetProc, load_head, &head_now, sizeof(head_now), nullptr))
 			{
 				BYTE * node = ReCa<BYTE *>(head_now.Flink);
 
@@ -533,7 +615,7 @@ namespace
 					}
 
 					LIST_ENTRY node_links{};
-					if (!ScReadProcessMemory(hTargetProc, node, &node_links, sizeof(node_links), nullptr))
+					if (!ReadProcessMemory(hTargetProc, node, &node_links, sizeof(node_links), nullptr))
 					{
 						break;
 					}
@@ -551,9 +633,9 @@ namespace
 
 		LOG(1, "[LdrSplice] Verified entry is reachable from head\n");
 
-		LOG(1, "[LdrSplice] Successfully linked payload as winhttp.dll\n");
-		LOG(1, "[LdrSplice] [+] winhttp.dll Ldr Entry Spliced At %p (DllBase = %p | SizeOfImage = 0x%llX)\n",
-			entry_address, ReCa<void *>(image_base), static_cast<unsigned long long>(image_size));
+		LOG(1, "[LdrSplice] Successfully linked payload as %ls\n", selected_name.c_str());
+		LOG(1, "[LdrSplice] [+] %ls Ldr Entry Spliced At %p (DllBase = %p | SizeOfImage = 0x%llX)\n",
+			selected_name.c_str(), entry_address, ReCa<void *>(image_base), static_cast<unsigned long long>(image_size));
 
 		return true;
 	}
@@ -614,10 +696,12 @@ namespace
 		max_size.QuadPart = static_cast<LONGLONG>(map_size);
 
 		HANDLE section_handle = nullptr;
-		NTSTATUS section_status = ScNtCreateSection(&section_handle,
-			SECTION_ALL_ACCESS, &obj_attr, &max_size, PAGE_EXECUTE_READWRITE, SEC_COMMIT, nullptr);
+		const auto pNtCreateSection = NtdllProc<f_NtCreateSection>("NtCreateSection");
+		NTSTATUS section_status = pNtCreateSection ? pNtCreateSection(&section_handle, SECTION_ALL_ACCESS,
+			&obj_attr, &max_size, PAGE_EXECUTE_READWRITE, SEC_COMMIT, nullptr)
+			: STATUS_ENTRYPOINT_NOT_FOUND;
 
-		LOG(1, "Host Map: ScNtCreateSection: status=0x%08X handle=0x%p maxsize=0x%llX\n",
+		LOG(1, "Host Map: NtCreateSection: status=0x%08X handle=0x%p maxsize=0x%llX\n",
 			static_cast<unsigned>(section_status), section_handle, static_cast<unsigned long long>(map_size));
 
 		if (NT_FAIL(section_status) || !section_handle)
@@ -637,18 +721,32 @@ namespace
 		// (pagefile-backed) section view, NtProtectVirtualMemory cannot ADD execute permission to a
 		// view that was mapped without it (STATUS_SECTION_PROTECTION, 0xC000004E). Mapping the view
 		// RWX from the start lets those transitions succeed.
-		NTSTATUS map_status = ScNtMapViewOfSection(section_handle, hTargetProc, &base_address, 0,
+		const auto pNtMapViewOfSection = NtdllProc<f_NtMapViewOfSection>("NtMapViewOfSection");
+		NTSTATUS map_status = pNtMapViewOfSection(section_handle, hTargetProc, &base_address, 0,
 			view_size, nullptr, &view_size, 2 /* ViewUnmap */, 0, PAGE_EXECUTE_READWRITE);
 
-		LOG(1, "Host Map: ScNtMapViewOfSection: status=0x%08X base=0x%p size=0x%llX\n",
+		LOG(1, "Host Map: NtMapViewOfSection: status=0x%08X base=0x%p size=0x%llX\n",
 			static_cast<unsigned>(map_status), base_address, static_cast<unsigned long long>(view_size));
 
-		ScNtClose(section_handle);
+		CloseHandle(section_handle);
 
 		if (NT_FAIL(map_status) || !base_address)
 		{
 			LOG(1, "Host Map: Section Mapping Failed = %08X\n", static_cast<unsigned>(map_status));
 			return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
+		}
+
+		// Demote the view from RWX to RW immediately after mapping, closing the RWX VAD window.
+		// The shell promotes .text to RX / .rdata to RO later via MMI_SetPageProtections.
+		{
+			void * demote_base = base_address;
+			SIZE_T demote_size = view_size;
+			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+			ULONG old_prot = 0;
+			const NTSTATUS demote_status = pNtProtectVirtualMemory(hTargetProc, &demote_base, &demote_size,
+				PAGE_READWRITE, &old_prot);
+			LOG(1, "[Host Map] [+] View Demoted to PAGE_READWRITE (RWX Window Closed) Status = 0x%08X\n",
+				static_cast<unsigned>(demote_status));
 		}
 
 		remote_base = base_address;
@@ -1359,7 +1457,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	image_guard.release();
 	remote_event_owned = false;
 
-	// Vector 11: splice the payload into PEB->Ldr as a synthetic winhttp.dll entry only AFTER the
+	// Vector 11: splice the payload into PEB->Ldr as a synthetic system-DLL entry only AFTER the
 	// shell has completed. LdrpHandleTlsData (invoked by the shell) expects the module to be absent
 	// from the loader list while its TLS data is built; linking it before the shell makes TLS fail
 	// with STATUS_INVALID_IMAGE_FORMAT (C000004E). A failed splice is logged but no longer aborts an
@@ -1371,7 +1469,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	LOG(1, "Fetching Routine Data\n");
 
-	if (!ScReadProcessMemory(hTargetProc, pAllocBase, &data, sizeof(MANUAL_MAPPING_DATA), nullptr))
+	if (!ReadProcessMemory(hTargetProc, pAllocBase, &data, sizeof(MANUAL_MAPPING_DATA), nullptr))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 

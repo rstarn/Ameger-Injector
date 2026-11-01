@@ -49,14 +49,70 @@ constexpr DWORD ScHash(const char * s)
 
 #pragma region stub layout
 
-#define SC_STUB_SIZE			16
-#define SC_STUB_AREA_ALIGN		0x10
+// The safe stack-spoof stub is 52 bytes of instructions plus an 18-byte in-stub restore gadget:
+//   mov r11, [rsp]        (4)   save the real return address
+//   mov [rsp+0x10], r11   (5)   stash it in the caller's shadow space
+//   mov rax, imm64       (10)   the in-stub restore gadget
+//   mov [rsp+8], rax      (5)   chain hop: the second ret lands on the restore gadget
+//   mov rax, imm64       (10)   the ntdll 'ret' gadget
+//   mov [rsp], rax        (4)   SPOOF: the kernel / stack walker sees an ntdll return address
+//   mov eax, imm32        (5)   the service number
+//   mov r10, rcx          (3)   the first argument
+//   jmp [rip+disp32]      (6)   -> the ntdll 'syscall; ret' gadget
+//                            = 52 bytes, + 18 bytes of restore gadget + 9 bytes of fallback
+//                            trampoline = 79 bytes, padded to SC_STUB_SIZE.
+//
+// Every instruction sits at a fixed offset, so SC_STUB_EMITTED is the exact byte count and the
+// static_asserts below pin the stream, the restore gadget and the trampoline into disjoint
+// ranges: a stub can never spill into its neighbour.
+//
+// Nothing is pushed before the syscall, so RSP is unchanged when the syscall executes and the
+// 5th/6th syscall arguments stay exactly where the Windows x64 ABI placed them ([rsp+0x28] and
+// [rsp+0x30] relative to the stub's entry RSP). The return path is the ntdll 'syscall; ret'
+// gadget -> the spoofed ntdll 'ret' -> the in-stub restore gadget, which restores RSP and
+// returns to the real caller.
+#define SC_STUB_SIZE			96  // 79 used bytes, padded to a 0x20 multiple so stubs stay aligned
+#define SC_STUB_AREA_ALIGN		0x20
 
-#define SC_STUB_OFFSET_PROLOGUE	0
-#define SC_STUB_OFFSET_OPCODE		3
-#define SC_STUB_OFFSET_SERVICE		4
-#define SC_STUB_OFFSET_SYSCALL		8
-#define SC_STUB_TAIL_INDIRECT	14
+#define SC_STUB_OFFSET_MOV_R11		0   // mov r11, [rsp]       (4 bytes)
+#define SC_STUB_OFFSET_STASH_R		4   // mov [rsp+0x10], r11  (5 bytes)
+#define SC_STUB_OFFSET_MOV_RAX_Y	9   // mov rax, imm64       (10 bytes)
+#define SC_STUB_OFFSET_STORE_Y		19  // mov [rsp+8], rax     (5 bytes)
+#define SC_STUB_OFFSET_MOV_RAX_X	24  // mov rax, imm64       (10 bytes)
+#define SC_STUB_OFFSET_SPOOF		34  // mov [rsp], rax       (4 bytes)
+#define SC_STUB_OFFSET_OPCODE		38  // mov eax, imm32       (5 bytes)
+#define SC_STUB_OFFSET_SERVICE		39  // mov eax imm32 immediate (4 bytes)
+#define SC_STUB_OFFSET_MOV_R10		43  // mov r10, rcx         (3 bytes)
+#define SC_STUB_OFFSET_SYSCALL		46  // jmp [rip+0]          (6 bytes)
+#define SC_STUB_RESTORE_OFFSET		52  // in-stub restore gadget, immediately past the stream
+#define SC_SPOOF_RESTORE_GADGET_SIZE	18
+#define SC_STUB_RESTORE_SIZE		(SC_STUB_RESTORE_OFFSET + SC_SPOOF_RESTORE_GADGET_SIZE) // 70
+// The end of the spoof stub's emitted instruction stream. Every instruction is written at a fixed
+// offset, so the byte count is a compile-time constant and the assert below pins it. The tail
+// `jmp [rip+disp32]` computes its displacement from here, so this is also the rip base.
+#define SC_STUB_EMITTED			(SC_STUB_OFFSET_SYSCALL + 6) // 52: 4+5+10+5+10+4+5+3+6
+
+// The HallWatch fallback trampoline is emitted past the restore gadget so it can never collide
+// with the restore gadget's bytes: `jmp [rip+disp32]` (6 bytes) -> the indirect gadget slot, then
+// `syscall; ret` (3 bytes). It is reached from the spoof stub's own `jmp [rip+disp32]` only when
+// the ntdll gadget lost its `0F 05` opcode, so one stub layout covers both cases and the restore
+// chain is byte-identical whichever tail is taken.
+#define SC_STUB_TRAMPOLINE_OFFSET	SC_STUB_RESTORE_SIZE // 70: exactly past the restore gadget
+#define SC_STUB_TRAMPOLINE_SIZE		9   // jmp [rip+disp32] (6) + syscall; ret (3)
+#define SC_STUB_USED_SIZE			(SC_STUB_TRAMPOLINE_OFFSET + SC_STUB_TRAMPOLINE_SIZE) // 79
+
+static_assert(SC_STUB_SIZE >= 40, "Stub size must accommodate the safe stack spoof layout");
+static_assert(SC_STUB_EMITTED <= SC_STUB_RESTORE_OFFSET, "The spoof instruction stream must not reach the restore gadget");
+static_assert(SC_STUB_RESTORE_SIZE <= SC_STUB_TRAMPOLINE_OFFSET, "The restore gadget must not reach the trampoline");
+static_assert(SC_STUB_SIZE >= SC_STUB_USED_SIZE, "Stub size must accommodate the safe stack spoof layout plus its trampoline");
+static_assert(SC_STUB_SIZE % SC_STUB_AREA_ALIGN == 0, "Stub size must keep every slab entry area-aligned");
+
+// The plain (non-spoofing) stub layout: the ntdll prologue, `mov eax, imm32` and either an
+// inline `syscall; ret` (the HallWatch fallback) or the Tier 2 sampler block.
+#define SC_STUB_LEGACY_OFFSET_PROLOGUE	0
+#define SC_STUB_LEGACY_OFFSET_OPCODE	3
+#define SC_STUB_LEGACY_OFFSET_SERVICE	4
+#define SC_STUB_LEGACY_OFFSET_SYSCALL	8
 
 // Vector 7 / Tier 2 sampled stub: the 190-byte stack-pivot sampler block is emitted after the
 // service imm32 and before the gadget jmp. Layout below is derived from kSampleBlockRaw[190] in
@@ -64,12 +120,22 @@ constexpr DWORD ScHash(const char * s)
 // pre-populated telemetry fake stack (8 rebased ntdll ret gadgets followed by the synthetic
 // restore gadget) and captures Frames[8] at the pivoted rsp; the subsequent RET chain unwinds the
 // fake stack and the restore gadget hands RSP back to the real one. The tail after the gadget jmp
-// is plain NOP padding.
-#define SC_STUB_OFFSET_SAMPLE			8
+// is plain NOP padding. The block starts at 17 rather than 8 because the 5-byte `mov eax, imm32`
+// at SC_STUB_LEGACY_OFFSET_OPCODE (3) would otherwise overwrite its first byte.
+#define SC_STUB_OFFSET_SAMPLE			17 // past the 3-byte prologue and the 5-byte `mov eax, imm32`
 #define SC_SAMPLE_BLOCK_SIZE			190
-#define SC_STUB_OFFSET_SAMPLED_SYSCALL	(SC_STUB_OFFSET_SAMPLE + SC_SAMPLE_BLOCK_SIZE) // 198: jmp [rip+disp]
-#define SC_STUB_TAIL_SAMPLED			(SC_STUB_OFFSET_SAMPLED_SYSCALL + 6)              // 204: NOP tail start
-#define SC_STUB_SIZE_SAMPLED			208                                                // 0xD0; tail (204..208) is NOP padding
+#define SC_STUB_OFFSET_SAMPLED_SYSCALL	(SC_STUB_OFFSET_SAMPLE + SC_SAMPLE_BLOCK_SIZE) // 207: gadget jmp
+#define SC_STUB_TAIL_SAMPLED			(SC_STUB_OFFSET_SAMPLED_SYSCALL + 6)              // 213: NOP tail start
+#define SC_STUB_SIZE_SAMPLED			224                                                // 0xE0; tail (213..224) is NOP padding
+// The sampled slot's preamble is what the emitter actually writes: the 3-byte prologue, then the
+// 5-byte `mov eax, imm32` at SC_STUB_LEGACY_OFFSET_OPCODE (3). That is 8 bytes; the block starts
+// at 17, so bytes 8..17 stay as the slab's zero fill. A healthy gadget is reached by the block's
+// own tail jmp at SC_STUB_OFFSET_SAMPLED_SYSCALL, and the fallback embeds `syscall; ret` at that
+// same tail (WriteSampledStub), so the gap is never executed.
+static_assert(SC_STUB_LEGACY_OFFSET_SERVICE + 4 <= SC_STUB_OFFSET_SAMPLE,
+	"The sampled service imm32 must not overlap the sampler block");
+static_assert(SC_STUB_SIZE_SAMPLED >= SC_STUB_TAIL_SAMPLED && SC_STUB_SIZE_SAMPLED % SC_STUB_AREA_ALIGN == 0,
+	"The sampled stride must hold the whole slot and keep slab entries aligned");
 
 // Tier 2: the synthetic restore gadget (xchg rsp, rdi; pop rdi; pop rsi; ret) emitted once per
 // sampled stub slab, immediately after the 8-byte gadget slot, and referenced by

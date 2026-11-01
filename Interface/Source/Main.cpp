@@ -1695,24 +1695,14 @@ wchar_t name[48]{};
                 const size_t threads_base = offset + offsetof(SYSTEM_PROCESS_INFORMATION, Threads);
                 const ULONG thread_count = proc->NumberOfThreads;
 
-                auto is_safe_wait = [](unsigned char state, unsigned char reason) -> bool
-                {
-                    if (state != 5)
-                    {
-                        return false;
-                    }
-                    return WAIT_REASON_SAFE::IsSafe(reason);
-                };
-
-
-
-
-
+                // Rank by wakeability with the same classifier the runtime uses, so this picker
+                // and the runtime's own thread walk can never choose differently: a running
+                // thread first, then a GUI thread parked in GetMessage (the one waiter a wake
+                // nudge reaches), then a self-expiring delay, and a UserRequest waiter last.
+                int best_rank = static_cast<int>(WAIT_REASON_SAFE::WAKE_CLASS::Reject);
                 auto score_walk = [&](DWORD avoid_tid, bool allow_wait) -> bool
                 {
                     bool found = false;
-                    bool delay_found = false;
-                    DWORD delay_tid = 0;
                     for (ULONG index = 0; index < thread_count; ++index)
                     {
                         const size_t entry = threads_base + static_cast<size_t>(index) * sizeof(SYSTEM_THREAD_INFORMATION);
@@ -1728,36 +1718,32 @@ wchar_t name[48]{};
                             continue;
                         }
 
-                        const unsigned char thread_state = static_cast<unsigned char>(thread->ThreadState);
-                        const unsigned char thread_reason = static_cast<unsigned char>(thread->WaitReason);
-                        if (thread_state != 2 && !(allow_wait && is_safe_wait(thread_state, thread_reason)))
+                        const WAIT_REASON_SAFE::WAIT_CANDIDATE candidate{
+                            static_cast<unsigned char>(thread->ThreadState),
+                            static_cast<unsigned char>(thread->WaitReason) };
+                        const WAIT_REASON_SAFE::WAKE_CLASS wake_class = WAIT_REASON_SAFE::Classify(candidate);
+
+                        if (wake_class == WAIT_REASON_SAFE::WAKE_CLASS::Reject)
                         {
                             continue;
                         }
 
-                        const bool delay_wait = thread_state == 5 && WAIT_REASON_SAFE::IsDelay(thread_reason);
-                        if (delay_wait)
+                        if (wake_class != WAIT_REASON_SAFE::WAKE_CLASS::Running && !allow_wait)
                         {
-                            if (!delay_found || tid < delay_tid)
-                            {
-                                delay_tid = tid;
-                                delay_found = true;
-                            }
                             continue;
                         }
 
-                        if (!found || tid < best_tid)
+                        const int rank = static_cast<int>(wake_class);
+                        if (found && (rank > best_rank || (rank == best_rank && tid >= best_tid)))
                         {
-                            best_tid = tid;
-                            found = true;
+                            continue;
                         }
-                    }
 
-                    if (!found && delay_found)
-                    {
-                        best_tid = delay_tid;
+                        best_tid = tid;
+                        best_rank = rank;
                         found = true;
                     }
+
                     return found;
                 };
 
@@ -2359,6 +2345,10 @@ wchar_t name[48]{};
             else if (general && EqualsNoCase(key, XOR_STR_W(L"VerboseTrace").get()))
             {
                 config.verbose_trace = ParseConfigBool(value, config.verbose_trace);
+            }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"Diagnostics").get()))
+            {
+                config.diagnostics = ParseConfigBool(value, config.diagnostics);
             }
             else if (general && EqualsNoCase(key, XOR_STR_W(L"Quiet").get()))
             {
@@ -4266,6 +4256,13 @@ DWORD BuildFlags(const WizardConfig & config)
         if (config.verbose_trace || FullThreadCensusEnabled())
         {
             SetEnvironmentVariableW(L"AMEGER_CENSUS", L"1");
+        }
+        if (config.diagnostics)
+        {
+            // Gates the "[*] Hijack Diag" / "[*] Stub ... Check" trace lines inside the payload.
+            // The payload reads the variable from its own environment, and the target inherits it
+            // from this process, so the switch survives elevation.
+            SetEnvironmentVariableW(L"AMEGER_DIAG", L"1");
         }
         g_DiscardResultLogOnSuccess = config.discard_result_log_on_success;
         g_TestMode = config.test_mode;

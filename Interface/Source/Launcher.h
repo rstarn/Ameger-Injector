@@ -227,6 +227,8 @@ struct WizardConfig
     bool sponsor_roundtrip = true;
     bool verbose_trace = true;
 
+    bool diagnostics = false;
+
     bool quiet = false;
 
     bool detach_console = false;

@@ -75,3 +75,18 @@ DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print);
 #else
 #define LOG(...) ((void)0)
 #endif
+
+// Diagnostics gate for the "[*] ... Diag" / "[*] Stub ... Check" trace lines. The launcher sets
+// AMEGER_DIAG=1 when Configuration.ini's Diagnostics switch is on; an elevated launcher cannot be
+// handed an environment variable from the shell, so the switch travels through the config and
+// the child target inherits the variable from the launcher. Off (the default) means silent.
+inline bool AmegerDiagEnabled()
+{
+    static const bool enabled = []() -> bool
+    {
+        wchar_t buffer[8] = {};
+        const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_DIAG").get(), buffer, 4);
+        return got == 1 && buffer[0] == L'1';
+    }();
+    return enabled;
+}

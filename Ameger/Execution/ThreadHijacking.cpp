@@ -77,9 +77,85 @@ namespace
 
 	constexpr DWORD kMaxHandleProbes = 4;
 
+	// How long a donor may take to reach the stub before the round gives up on it. A nudgeable
+	// (WrUserRequest) donor and a self-expiring (DelayExecution) donor are both allowed the full
+	// probe: the first is woken by the nudge, the second by its own timer. A UserRequest donor is
+	// neither - and a PostThreadMessageW that returns TRUE only queues a message, it does not end
+	// the wait - so it gets a short probe instead of the full one.
 	constexpr DWORD kStartupProbeMs = 2000;
+	constexpr DWORD kUnwakeableProbeMs = 500;
 
 	constexpr int kMaxDonorRounds = 16;
+
+	const char * DiagMemState(DWORD State)
+	{
+		switch (State)
+		{
+		case MEM_COMMIT:	return "MEM_COMMIT";
+		case MEM_RESERVE:	return "MEM_RESERVE";
+		case MEM_FREE:		return "MEM_FREE";
+		default:			return "MEM_OTHER";
+		}
+	}
+
+	const char * DiagProtect(DWORD Protect)
+	{
+		switch (Protect & 0xFF)
+		{
+		case PAGE_NOACCESS:				return "PAGE_NOACCESS";
+		case PAGE_READONLY:				return "PAGE_READONLY";
+		case PAGE_READWRITE:			return "PAGE_READWRITE";
+		case PAGE_WRITECOPY:			return "PAGE_WRITECOPY";
+		case PAGE_EXECUTE:				return "PAGE_EXECUTE";
+		case PAGE_EXECUTE_READ:			return "PAGE_EXECUTE_READ";
+		case PAGE_EXECUTE_READWRITE:	return "PAGE_EXECUTE_READWRITE";
+		case PAGE_EXECUTE_WRITECOPY:	return "PAGE_EXECUTE_WRITECOPY";
+		default:						return "PAGE_OTHER";
+		}
+	}
+
+	void DiagRegion(HANDLE hProcess, const void * Address, const char * Label)
+	{
+		MEMORY_BASIC_INFORMATION mbi{ };
+		if (!VirtualQueryEx(hProcess, Address, &mbi, sizeof(mbi)))
+		{
+			LOG(1, "[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX query=fail err=%u\n",
+				Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)), GetLastError());
+
+			return;
+		}
+
+		const DWORD prot = mbi.Protect & 0xFF;
+		const bool readable = prot == PAGE_READONLY || prot == PAGE_READWRITE || prot == PAGE_WRITECOPY ||
+			prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
+		const bool writable = prot == PAGE_READWRITE || prot == PAGE_WRITECOPY ||
+			prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
+		const bool executable = prot == PAGE_EXECUTE || prot == PAGE_EXECUTE_READ ||
+			prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
+
+		LOG(1, "[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX base=0x%llX size=0x%llX state=%s protect=%s(0x%X) commit=%d read=%d write=%d exec=%d\n",
+			Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)),
+			static_cast<unsigned long long>(ReCa<ULONG_PTR>(mbi.BaseAddress)),
+			static_cast<unsigned long long>(mbi.RegionSize),
+			DiagMemState(mbi.State), DiagProtect(prot), prot,
+			mbi.State == MEM_COMMIT ? 1 : 0, readable ? 1 : 0, writable ? 1 : 0, executable ? 1 : 0);
+	}
+
+	void DiagMitigations(HANDLE hProcess)
+	{
+		PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{ };
+		PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY sig{ };
+		PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dyn{ };
+
+		const BOOL cfg_ok = GetProcessMitigationPolicy(hProcess, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg));
+		const BOOL sig_ok = GetProcessMitigationPolicy(hProcess, ProcessSignaturePolicy, &sig, sizeof(sig));
+		const BOOL dyn_ok = GetProcessMitigationPolicy(hProcess, ProcessDynamicCodePolicy, &dyn, sizeof(dyn));
+
+		LOG(1, "[ThreadHijack] [*] Hijack Diag: mitigations cfg_query=%d cfg_guard=%d cfg_strict=%d acg_query=%d acg_microsoft_signed_only=%d acg_store_signed_only=%d dyn_query=%d dynamic_code_prohibited=%d\n",
+			cfg_ok ? 1 : 0, (cfg.Flags & 0x1) ? 1 : 0, (cfg.Flags & 0x4) ? 1 : 0,
+			sig_ok ? 1 : 0, (sig.Flags & 0x1) ? 1 : 0, (sig.Flags & 0x2) ? 1 : 0,
+			dyn_ok ? 1 : 0, (dyn.Flags & 0x1) ? 1 : 0);
+	}
 
 	bool IsSafeWaitReason(KWAIT_REASON reason)
 	{
@@ -357,7 +433,8 @@ namespace
 		return best_exe ? best_exe : best;
 	}
 
-	DWORD FindHijackThread(ProcessInformation & processInformation, const std::vector<DWORD> & excluded, bool * out_was_running = nullptr, bool allow_waiting = true)
+	DWORD FindHijackThread(ProcessInformation & processInformation, const std::vector<DWORD> & excluded,
+		bool * out_was_running = nullptr, bool allow_waiting = true, unsigned char * out_reason = nullptr)
 	{
 
 		if (!g_DynamicOffsetsReady.load(std::memory_order_acquire))
@@ -365,12 +442,15 @@ namespace
 			LOG(2, "FindAcquireThread: Dynamic Offsets Not Ready, Refusing\n");
 			return 0;
 		}
-	const KTHREAD_STATE running = static_cast<KTHREAD_STATE>(g_DynamicOffsets.ThreadStateRunning);
-	const KTHREAD_STATE waiting = KTHREAD_STATE::Waiting;
+	// Rank by wakeability, not by TID: a GUI thread parked in GetMessage (WrUserRequest) is the
+	// only waiter a PostThreadMessageW nudge reliably wakes, a delay waiter wakes on its own
+	// timer, and a UserRequest waiter does neither - so it is the last resort. The ranking is
+	// WAIT_REASON_SAFE::Classify, shared with the launcher's own picker so the two cannot disagree.
 	DWORD probes = 0;
-	DWORD fallback = 0;
-	DWORD delay_fallback = 0;
 	DWORD fallback_probes = 0;
+	DWORD best = 0;
+	int best_rank = static_cast<int>(WAIT_REASON_SAFE::WAKE_CLASS::Reject);
+	unsigned char best_reason = 0;
 	do
 	{
 		KWAIT_REASON reason;
@@ -386,64 +466,77 @@ namespace
 			continue;
 		}
 
-		if (state == running)
+		const WAIT_REASON_SAFE::WAIT_CANDIDATE entry{ static_cast<unsigned char>(state),
+			static_cast<unsigned char>(reason) };
+		const WAIT_REASON_SAFE::WAKE_CLASS wake_class = WAIT_REASON_SAFE::Classify(entry);
+
+		if (wake_class == WAIT_REASON_SAFE::WAKE_CLASS::Reject)
+		{
+			continue;
+		}
+
+		if (wake_class != WAIT_REASON_SAFE::WAKE_CLASS::Running && !allow_waiting)
+		{
+			continue;
+		}
+
+		if (wake_class == WAIT_REASON_SAFE::WAKE_CLASS::Running)
 		{
 			if (probes >= kMaxHandleProbes)
 			{
 				continue;
 			}
 			++probes;
-
-			if (processInformation.IsThreadWorkerThread())
-			{
-				continue;
-			}
-
-			if (out_was_running)
-			{
-				*out_was_running = true;
-			}
-			return candidate;
 		}
-
-
-
-
-
-
-		if (allow_waiting && state == waiting && IsSafeWaitReason(reason))
+		else
 		{
 			if (fallback_probes >= kMaxHandleProbes)
 			{
 				continue;
 			}
 			++fallback_probes;
-
-			if (processInformation.IsThreadWorkerThread())
-			{
-				continue;
-			}
-
-			if (!WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(reason)))
-			{
-				if (!fallback)
-				{
-					fallback = candidate;
-				}
-			}
-			else if (!delay_fallback)
-			{
-				delay_fallback = candidate;
-			}
 		}
+
+		if (processInformation.IsThreadWorkerThread())
+		{
+			continue;
+		}
+
+		// The first candidate of the best wakeability class wins; a later, harder-to-wake
+		// candidate never displaces it.
+		const int rank = static_cast<int>(wake_class);
+		if (best && rank >= best_rank)
+		{
+			continue;
+		}
+
+		best = candidate;
+		best_rank = rank;
+		best_reason = entry.Reason;
 	}
 	while (processInformation.NextThread());
 
+	if (!best)
+	{
+		if (out_was_running)
+		{
+			*out_was_running = false;
+		}
+
+		return 0;
+	}
+
 	if (out_was_running)
 	{
-		*out_was_running = false;
+		*out_was_running = best_rank == static_cast<int>(WAIT_REASON_SAFE::WAKE_CLASS::Running);
 	}
-	return fallback ? fallback : delay_fallback;
+
+	if (out_reason)
+	{
+		*out_reason = best_reason;
+	}
+
+	return best;
 	}
 
 	struct DeferredTrampoline
@@ -830,6 +923,17 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 {
 	LOG(2, "Begin SR_AcquireThread\n");
 
+	{
+		static DWORD diag_mitigation_pid = 0;
+		const DWORD diag_pid = AmegerDiagEnabled() ? GetProcessId(hTargetProc) : 0;
+		if (diag_pid && diag_pid != diag_mitigation_pid)
+		{
+			diag_mitigation_pid = diag_pid;
+
+			DiagMitigations(hTargetProc);
+		}
+	}
+
 	ProcessInformation processInformation;
 	if (!processInformation.SetProcess(hTargetProc))
 	{
@@ -847,6 +951,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	DWORD ThreadID = 0;
 	UniqueHandle hThread;
 	bool selected_was_running = false;
+	// How the selected donor can be woken, so a failed nudge can decide between waiting for the
+	// poll and abandoning the donor. Reject means "unknown" (the snapshot fallback carries no
+	// wait reason); an unknown donor is never abandoned early.
+	WAIT_REASON_SAFE::WAKE_CLASS donor_wake = WAIT_REASON_SAFE::WAKE_CLASS::Reject;
 
 	if ((Flags & INJ_HANDLE_HIJACKING) && SponsorThread && SponsorTid)
 	{
@@ -856,6 +964,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		bool sponsor_usable = false;
 		bool sponsor_still_running = false;
 		bool sponsor_still_usable = false;
+		unsigned char sponsor_reason = 0;
 		HANDLE Duplicated = nullptr;
 		if (TargetPidForSponsor && SponsorTidActual && ScGetProcessIdOfThread(Sponsor) == TargetPidForSponsor
 			&& SponsorTidActual == SponsorTid && SponsorTidActual != GetCurrentThreadId()
@@ -971,6 +1080,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 
 									sponsor_still_usable = true;
+									sponsor_reason = static_cast<unsigned char>(rwr);
 								}
 							}
 							break;
@@ -989,6 +1099,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 				ThreadID = SponsorTidActual;
 				selected_was_running = sponsor_still_running;
+				donor_wake = WAIT_REASON_SAFE::Classify(WAIT_REASON_SAFE::WAIT_CANDIDATE{
+					sponsor_still_running ? static_cast<unsigned char>(KTHREAD_STATE::Running)
+						: static_cast<unsigned char>(KTHREAD_STATE::Waiting),
+					sponsor_reason });
 				hThread.reset(Duplicated);
 				Duplicated = nullptr;
 
@@ -1057,12 +1171,23 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			attempt_excluded.push_back(exclude_tid);
 		}
 
-		ThreadID = FindHijackThread(processInformation, attempt_excluded, &selected_was_running, attempt >= 7);
+		unsigned char selected_reason = 0;
+		ThreadID = FindHijackThread(processInformation, attempt_excluded, &selected_was_running, attempt >= 7,
+			&selected_reason);
+
+		if (ThreadID)
+		{
+			donor_wake = WAIT_REASON_SAFE::Classify(WAIT_REASON_SAFE::WAIT_CANDIDATE{
+				selected_was_running ? static_cast<unsigned char>(KTHREAD_STATE::Running)
+					: static_cast<unsigned char>(KTHREAD_STATE::Waiting),
+				selected_reason });
+		}
 
 		if (!ThreadID && exclude_tid)
 		{
 			ThreadID = FindHijackThreadToolhelp(hTargetProc, attempt_excluded);
 			selected_was_running = false;
+			donor_wake = WAIT_REASON_SAFE::WAKE_CLASS::Reject;
 			if (ThreadID)
 			{
 				LOG(2, "Second-Pass Snapshot Fallback = %06X\n", ThreadID);
@@ -1074,6 +1199,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			ThreadID = FindHijackThreadToolhelp(hTargetProc, excluded);
 			selected_was_running = false;
+			donor_wake = WAIT_REASON_SAFE::WAKE_CLASS::Reject;
 			if (ThreadID)
 			{
 				LOG(2, "Acquired Target Thread Via Snapshot Fallback = %06X\n", ThreadID);
@@ -1100,6 +1226,43 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	else
 	{
 		LOG(2, "[ThreadHijack] [*] Census Skipped (Not Requested; No Thread Opens)\n");
+	}
+
+	{
+		static bool diag_census_done = false;
+		if (!diag_census_done && AmegerDiagEnabled())
+		{
+			diag_census_done = true;
+
+			ProcessInformation diag_pi;
+			if (diag_pi.SetProcess(hTargetProc))
+			{
+				LOG(1, "[ThreadHijack] [*] Hijack Diag: donor_census_begin\n");
+
+				do
+				{
+					const DWORD diag_tid = diag_pi.GetThreadId();
+					if (!diag_tid)
+					{
+						continue;
+					}
+
+					KTHREAD_STATE diag_state{ };
+					KWAIT_REASON diag_reason{ };
+					const bool diag_have = diag_pi.GetThreadState(diag_state, diag_reason);
+
+					LOG(1, "[ThreadHijack] [*] Hijack Diag: donor tid=0x%04X state=%d reason=%d safe=%d delay=%d\n",
+						diag_tid,
+						diag_have ? static_cast<int>(diag_state) : -1,
+						diag_have ? static_cast<int>(diag_reason) : -1,
+						(diag_have && IsSafeWaitReason(diag_reason)) ? 1 : 0,
+						(diag_have && WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(diag_reason))) ? 1 : 0);
+				}
+				while (diag_pi.NextThread());
+
+				LOG(1, "[ThreadHijack] [*] Hijack Diag: donor_census_end\n");
+			}
+		}
 	}
 
 
@@ -1495,7 +1658,57 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		LOG(2, "Acquired Code Promoted RW->RX, State Stays RW\n");
 	}
 
-	if (NT_FAIL(ScNtSetContextThread(hThread, &OldContext)))
+	if (AmegerDiagEnabled())
+	{
+		LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_base=0x%llX state_page=0x%llX code_size=0x%llX staged=0x%llX return_target=0x%llX\n",
+			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pCode)),
+			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pState)),
+			static_cast<unsigned long long>(code_size),
+			static_cast<unsigned long long>(staged.size()),
+			static_cast<unsigned long long>(OldRIP));
+
+		DiagRegion(hTargetProc, pCode, "stub_code");
+		DiagRegion(hTargetProc, pState, "state_page");
+		DiagRegion(hTargetProc, ReCa<BYTE *>(pMem) + kHijackCodePage + kHijackStatePage, "guard_page");
+
+		std::vector<BYTE> readback(staged.size(), 0x00);
+		SIZE_T readback_size = 0;
+		const bool readback_ok = ScReadProcessMemory(hTargetProc, pMem, readback.data(), readback.size(), &readback_size) &&
+			readback_size == readback.size();
+
+		long long first_diff = -1;
+		if (readback_ok)
+		{
+			for (size_t i = 0; i < staged.size(); ++i)
+			{
+				if (readback[i] != staged[i])
+				{
+					first_diff = static_cast<long long>(i);
+					break;
+				}
+			}
+		}
+
+		LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_readback ok=%d read=0x%llX expect=0x%llX match=%d first_diff=%lld\n",
+			readback_ok ? 1 : 0,
+			static_cast<unsigned long long>(readback_size),
+			static_cast<unsigned long long>(staged.size()),
+			first_diff < 0 ? 1 : 0,
+			first_diff);
+
+		if (readback_ok)
+		{
+			DWORD head[12] = { };
+			memcpy(head, readback.data(), sizeof(head));
+
+			LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_bytes=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n",
+				head[0], head[1], head[2], head[3], head[4], head[5],
+				head[6], head[7], head[8], head[9], head[10], head[11]);
+		}
+	}
+
+	const NTSTATUS set_context_status = ScNtSetContextThread(hThread, &OldContext);
+	if (NT_FAIL(set_context_status))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1506,11 +1719,33 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		return SR_HT_ERR_SET_CONTEXT_FAIL;
 	}
 
+	if (AmegerDiagEnabled())
+	{
+		CONTEXT verify{ };
+		verify.ContextFlags = CONTEXT_CONTROL;
+		const NTSTATUS verify_status = ScNtGetContextThread(hThread, &verify);
+
+		LOG(1, "[ThreadHijack] [*] Hijack Diag: set_context status=0x%08X want_rip=0x%llX get_status=0x%08X rip_after=0x%llX stuck=%d\n",
+			static_cast<unsigned>(set_context_status),
+			static_cast<unsigned long long>(OldContext.Rip),
+			static_cast<unsigned>(verify_status),
+			static_cast<unsigned long long>(verify.Rip),
+			(NT_SUCCESS(verify_status) && verify.Rip == OldContext.Rip) ? 1 : 0);
+	}
+
 	LOG(2, "RIP Replaced\n");
 
 	{
 		ULONG sr_resume = 0;
-		if (NT_FAIL(ScNtResumeThread(hThread, &sr_resume)))
+		const NTSTATUS resume_status = ScNtResumeThread(hThread, &sr_resume);
+
+		if (AmegerDiagEnabled())
+		{
+			LOG(1, "[ThreadHijack] [*] Hijack Diag: resume status=0x%08X previous_suspend=%u\n",
+				static_cast<unsigned>(resume_status), sr_resume);
+		}
+
+		if (NT_FAIL(resume_status))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1687,7 +1922,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	DWORD consecutive_read_failures = 0;
 	DWORD poll_iterations = 0;
 
+	// The donor's wake class decides how long its stub may stay unscheduled (see kStartupProbeMs).
+	const DWORD startup_probe_ms =
+		donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable ? kUnwakeableProbeMs : kStartupProbeMs;
+
 	DWORD poll_wait_ms = 1;
+	DWORD diag_probe = 0;
+	const DWORD kDiagProbeMs[] = { 600, 1900 };
 
 
 
@@ -1816,10 +2057,57 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			const ULONGLONG waited = GetTickCount64() - Timer;
 
-			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending && waited >= kStartupProbeMs)
+			if (AmegerDiagEnabled() &&
+				data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending &&
+				diag_probe < sizeof(kDiagProbeMs) / sizeof(kDiagProbeMs[0]) &&
+				waited >= kDiagProbeMs[diag_probe])
 			{
-				LOG(2, "Stub Not Scheduled Within %u ms (Sampled State Was %s); Failing Fast\n",
-					kStartupProbeMs, selected_was_running ? "Running" : "Waiting");
+				++diag_probe;
+
+				CONTEXT live{ };
+				live.ContextFlags = CONTEXT_CONTROL;
+				const NTSTATUS live_context = ScNtGetContextThread(hThread, &live);
+
+				DWORD live_exit = 0;
+				const bool live_alive = ScGetExitCodeProcess(hTargetProc, live_exit) && live_exit == STILL_ACTIVE;
+
+				KTHREAD_STATE live_state{ };
+				KWAIT_REASON live_reason{ };
+				bool live_have = false;
+				{
+					ProcessInformation live_pi;
+					if (live_pi.SetProcess(hTargetProc))
+					{
+						do
+						{
+							if (live_pi.GetThreadId() == ThreadID)
+							{
+								live_have = live_pi.GetThreadState(live_state, live_reason);
+								break;
+							}
+						}
+						while (live_pi.NextThread());
+					}
+				}
+
+				LOG(1, "[ThreadHijack] [*] Hijack Diag: pending t=%llu rip=0x%llX rip_at_stub=%d ctx_status=0x%08X thread_state=%d wait_reason=%d target_alive=%d exit=0x%08X\n",
+					static_cast<unsigned long long>(waited),
+					static_cast<unsigned long long>(live.Rip),
+					(NT_SUCCESS(live_context) && live.Rip == ReCa<ULONG_PTR>(pCode)) ? 1 : 0,
+					static_cast<unsigned>(live_context),
+					live_have ? static_cast<int>(live_state) : -1,
+					live_have ? static_cast<int>(live_reason) : -1,
+					live_alive ? 1 : 0, live_exit);
+			}
+
+			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending && waited >= startup_probe_ms)
+			{
+				LOG(2, "Stub Not Scheduled Within %u ms (Sampled State Was %s, %s Donor); Failing Fast\n",
+					startup_probe_ms, selected_was_running ? "Running" : "Waiting",
+					donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable ? "UserRequest"
+						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? "Delay"
+						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Nudgeable ? "WrUserRequest"
+						: "Unclassified");
 
 				break;
 			}
@@ -1830,7 +2118,19 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 				if (!PostThreadMessageW(ThreadID, WM_NULL, 0, 0))
 				{
-					LOG(2, "Wake Nudge Failed For TID %06X; Relying On The Poll Alone\n", ThreadID);
+					// A UserRequest waiter is neither nudgeable nor self-expiring: with the wake
+					// gone nothing will schedule the stub, so waiting out kStartupProbeMs only
+					// delays the next (wakeable) donor. Advance immediately instead. A delay
+					// waiter still wakes on its own timer, so the poll keeps its bound.
+					if (donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable)
+					{
+						LOG(2, "Wake Nudge Failed For TID %06X (UserRequest Waiter, Not Self-Expiring); Abandoning Donor\n", ThreadID);
+
+						break;
+					}
+
+					LOG(2, "Wake Nudge Failed For TID %06X (%s Waiter); Relying On The Poll Alone\n", ThreadID,
+						donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? "Delay" : "Unclassified");
 				}
 				else
 				{
