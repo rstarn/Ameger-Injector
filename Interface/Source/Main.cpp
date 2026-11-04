@@ -23,7 +23,7 @@ namespace
 
     class StdoutParkGuard
     {
-        int saved_stdout_fd_ = -1;  
+        int saved_stdout_fd_ = -1;
         int saved_stderr_fd_ = -1;
         HANDLE saved_stdout_handle_ = nullptr;
         HANDLE saved_stderr_handle_ = nullptr;
