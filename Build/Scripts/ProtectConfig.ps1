@@ -72,22 +72,48 @@ function Get-IniValue([string]$Text, [string]$Key) {
     return $null
 }
 
-function Set-IniKeys([string]$Text, $Pairs) {
-    $order = @("PayloadName", "RuntimeName", "ExportMap", "DllDir", "TestTarget")
-    $rx = '^\s*(PayloadName|RuntimeName|ExportMap|DllDir|TestTarget)\s*='
+function Set-IniValueInPlace([string]$Text, [string]$Key, [string]$Value) {
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($line in [regex]::Split($Text, "\r?\n")) {
-        if ($line -match $rx) { continue }
         $lines.Add($line)
     }
-
-    $insert = New-Object System.Collections.Generic.List[string]
-    foreach ($k in $order) {
-        if ($Pairs.ContainsKey($k) -and -not [string]::IsNullOrEmpty($Pairs[$k])) {
-            $insert.Add($k + " = " + $Pairs[$k])
+    $rx = '^\s*' + [regex]::Escape($Key) + '\s*='
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match $rx) {
+            $lines[$i] = $Key + " = " + $Value
+            return ($lines -join "`r`n")
         }
     }
-    if ($insert.Count -eq 0) { return ($lines -join "`r`n") }
+    return $null
+}
+
+function Set-IniKeys([string]$Text, $Pairs) {
+    # Only the keys this script owns are written. Every other key the master
+    # carries is left exactly where the master put it, so a master knob cannot
+    # be dropped on the way to the release config. A key that is already in the
+    # text is rewritten in place; a key that is absent is inserted after the
+    # anchor.
+    $order = @("PayloadName", "RuntimeName", "ExportMap", "DllDir", "TestTarget")
+    $result = $Text
+    $insert = New-Object System.Collections.Generic.List[string]
+
+    foreach ($k in $order) {
+        if (-not $Pairs.ContainsKey($k)) { continue }
+        $value = "" + $Pairs[$k]
+        if ([string]::IsNullOrEmpty($value)) { continue }
+        $replaced = Set-IniValueInPlace $result $k $value
+        if ($null -ne $replaced) {
+            $result = $replaced
+        } else {
+            $insert.Add($k + " = " + $value)
+        }
+    }
+    if ($insert.Count -eq 0) { return $result }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in [regex]::Split($result, "\r?\n")) {
+        $lines.Add($line)
+    }
 
     $anchor = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -196,9 +222,16 @@ if (-not [string]::IsNullOrEmpty($DllDir)) {
 }
 if (-not [string]::IsNullOrEmpty($TestTarget)) {
     $pairs["TestTarget"] = $TestTarget
-} elseif ($null -ne $preserved) {
-    $carry = Get-IniValue $preserved "TestTarget"
-    if (-not [string]::IsNullOrEmpty($carry)) { $pairs["TestTarget"] = $carry }
+} else {
+    # The master owns the static knobs. A stale copy in a previously deployed
+    # config never overwrites what the master says.
+    $masterTarget = Get-IniValue $text "TestTarget"
+    if (-not [string]::IsNullOrEmpty($masterTarget)) {
+        $pairs["TestTarget"] = $masterTarget
+    } elseif ($null -ne $preserved) {
+        $carry = Get-IniValue $preserved "TestTarget"
+        if (-not [string]::IsNullOrEmpty($carry)) { $pairs["TestTarget"] = $carry }
+    }
 }
 
 if ($pairs.Count -gt 0) {

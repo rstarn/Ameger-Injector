@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Embed", "Magic", "DeployedPin", "ConfigKeys")]
+    [ValidateSet("Embed", "Magic", "DeployedPin", "ConfigKeys", "ConfigParity")]
     [string]$Check,
 
     [Parameter(Mandatory = $true)]
@@ -10,7 +10,9 @@ param(
 
     [string]$Magic,
 
-    [string]$ExpectPin
+    [string]$ExpectPin,
+
+    [string]$MasterPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +35,53 @@ function Write-Ok([string]$Text) {
 
 function Write-Fail([string]$Text) {
     Write-Host ("  " + (Get-Painted $script:C_Red "[x]") + " " + $Text)
+}
+
+function Get-ConfigPlainText([byte[]]$Data, [string]$ConfigMagic) {
+    $magicBytes = [Text.Encoding]::ASCII.GetBytes($ConfigMagic)
+    $isEncrypted = $false
+    if ($Data.Length -gt $magicBytes.Length) {
+        $isEncrypted = $true
+        for ($i = 0; $i -lt $magicBytes.Length; $i++) {
+            if ($Data[$i] -ne $magicBytes[$i]) { $isEncrypted = $false; break }
+        }
+    }
+    if ($isEncrypted) {
+        Add-Type -AssemblyName System.Security | Out-Null
+        try {
+            $blob = New-Object byte[] ($Data.Length - $magicBytes.Length)
+            [Array]::Copy($Data, $magicBytes.Length, $blob, 0, $blob.Length)
+            $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        } catch {
+            return $null
+        }
+        return [Text.Encoding]::UTF8.GetString($plainBytes)
+    }
+    return [Text.Encoding]::UTF8.GetString($Data)
+}
+
+function Get-ConfigKeyMap([string]$Text) {
+    $map = @{}
+    if ($null -eq $Text) { return $map }
+    $section = ""
+    foreach ($line in [regex]::Split($Text, "\r?\n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith(";") -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed.StartsWith("[") -and $trimmed.EndsWith("]")) {
+            $section = $trimmed.Substring(1, $trimmed.Length - 2).Trim().ToLowerInvariant()
+            continue
+        }
+        $eq = $trimmed.IndexOf("=")
+        if ($eq -lt 1) { continue }
+        $key = $trimmed.Substring(0, $eq).Trim().ToLowerInvariant()
+        if ($key.Length -eq 0) { continue }
+        $value = $trimmed.Substring($eq + 1).Trim()
+        if ($value.Length -ge 2 -and $value.StartsWith('"') -and $value.EndsWith('"')) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        $map[$section + "::" + $key] = $value
+    }
+    return $map
 }
 
 if (-not (Test-Path -LiteralPath $Path)) {
@@ -130,6 +179,62 @@ if ($Check -eq "DeployedPin") {
         exit 1
     }
     Write-Ok ("Deployed Config Pin = " + (Get-Painted $script:C_Green $pin) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+    exit 0
+}
+
+if ($Check -eq "ConfigParity") {
+    if ([string]::IsNullOrEmpty($Magic)) {
+        Write-Fail "Expected A Config Magic"
+        exit 1
+    }
+    if ([string]::IsNullOrEmpty($MasterPath)) {
+        Write-Fail "Expected A Master Config Path"
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $MasterPath)) {
+        Write-Fail ("Master Config Not Found: " + $MasterPath)
+        exit 1
+    }
+
+    $deployedText = Get-ConfigPlainText $data $Magic
+    if ($null -eq $deployedText) {
+        Write-Fail ("DPAPI Decrypt Failed For The Deployed Config (" + (Get-Painted $script:C_Dim $Path) + ")")
+        exit 1
+    }
+    $masterText = Get-ConfigPlainText ([IO.File]::ReadAllBytes($MasterPath)) $Magic
+    if ($null -eq $masterText) {
+        Write-Fail ("Master Config Could Not Be Read: " + (Get-Painted $script:C_Dim $MasterPath))
+        exit 1
+    }
+
+    $master = Get-ConfigKeyMap $masterText
+    $deployed = Get-ConfigKeyMap $deployedText
+    if ($master.Count -eq 0) {
+        Write-Fail ("Master Config Carries No Keys (" + (Get-Painted $script:C_Dim $MasterPath) + ")")
+        exit 1
+    }
+
+    $rewritten = @("payloadsha256", "payloadname", "runtimename", "exportmap", "dlldir")
+    $lost = 0
+    $diverged = 0
+    foreach ($key in $master.Keys) {
+        if (-not $deployed.ContainsKey($key)) {
+            Write-Fail ("Master Key Was Lost On The Way To The Deployed Config: " + $key + " (" + (Get-Painted $script:C_Dim $Path) + ")")
+            $lost++
+            continue
+        }
+        $bare = $key.Substring($key.IndexOf("::") + 2)
+        if ($rewritten -contains $bare) { continue }
+        if ($deployed[$key] -ne $master[$key]) {
+            Write-Fail ("Deployed Config Diverged From The Master On: " + $key + " (Master '" + $master[$key] + "', Deployed '" + $deployed[$key] + "')")
+            $diverged++
+        }
+    }
+    if ($lost -gt 0 -or $diverged -gt 0) {
+        Write-Fail ("Master/Deployed Config Parity Failed: " + $lost + " Lost, " + $diverged + " Diverged")
+        exit 1
+    }
+    Write-Ok ("Deployed Config Carries Every Master Key: " + (Get-Painted $script:C_Green (([string]$master.Count) + "/" + ([string]$master.Count))) + " Keys, No Divergence (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 

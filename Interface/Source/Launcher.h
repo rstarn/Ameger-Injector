@@ -274,6 +274,7 @@ struct WizardConfig
     std::vector<ExportNameMap> export_map;
 
     std::wstring dll_dir = L"DLLs";
+    std::wstring delete_key_target;
 };
 
 

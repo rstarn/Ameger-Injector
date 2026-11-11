@@ -29,6 +29,7 @@ set "STRIP_SCRIPT=%SCRIPTS_DIR%\StripExportDirs.ps1"
 set "STATE_FILE=%RELEASE_CACHE%\Protect.payload.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
 set "CONFIG_SCRIPT=%SCRIPTS_DIR%\ProtectConfig.ps1"
+set "VERIFY_SCRIPT=%SCRIPTS_DIR%\VerifyEmbedMagic.ps1"
 set "DEPLOYED_CONFIG="
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "PAYLOAD_ORIGINAL_NAME=Jlov.dll"
@@ -174,6 +175,8 @@ if not exist "%DEPLOYED_CONFIG%" goto :pin_error
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%TARGET%"
 if errorlevel 1 goto :pin_error
 echo   %C_GREEN%[+]%C_RESET% Config re-encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
+call :verify_config_parity
+if errorlevel 1 goto :pin_error
 goto :pin_done
 
 :pin_done
@@ -461,11 +464,24 @@ exit /b 0
 :read_names_state
 set "PAYLOAD_NAME="
 set "RUNTIME_NAME="
+set "CONFIG_MAGIC="
 if not exist "%NAMES_STATE%" exit /b 1
 for /f "usebackq tokens=1,* delims==" %%A in ("%NAMES_STATE%") do set "%%A=%%B"
 if not defined PAYLOAD_NAME exit /b 1
 if not defined RUNTIME_NAME exit /b 1
 exit /b 0
+
+:verify_config_parity
+if not defined CONFIG_MAGIC (
+  echo   %C_RED%Error: Per-Build Config Magic Unavailable; Refusing To Ship A Config That Was Never Checked Against The Master.%C_RESET%
+  exit /b 1
+)
+if not exist "%VERIFY_SCRIPT%" (
+  echo   %C_RED%Error: VerifyEmbedMagic.ps1 Not Found; Refusing To Ship An Unchecked Config.%C_RESET%
+  exit /b 1
+)
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigParity -Path "%DEPLOYED_CONFIG%" -MasterPath "%CONFIG_MASTER%" -Magic "%CONFIG_MAGIC%"
+exit /b %ERRORLEVEL%
 
 :tail_log
 if exist "%WORK_DIR%\vmp.log" for /f "usebackq delims=" %%L in ("%WORK_DIR%\vmp.log") do echo     %%L

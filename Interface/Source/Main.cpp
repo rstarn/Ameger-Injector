@@ -2403,6 +2403,20 @@ wchar_t name[48]{};
                     config.test_target = trimmed;
                 }
             }
+            else if (general && EqualsNoCase(key, XOR_STR_W(L"DeleteKeyTarget").get()))
+            {
+                const std::wstring trimmed = TrimText(value);
+                if (!trimmed.empty())
+                {
+                    if (!IsValidDeployedFileName(trimmed))
+                    {
+                        config = WizardConfig{};
+                        invalid = true;
+                        return false;
+                    }
+                    config.delete_key_target = trimmed;
+                }
+            }
             else if (manual && EqualsNoCase(key, XOR_STR_W(L"ExecuteTLS").get()))
             {
                 config.execute_tls = ParseConfigBool(value, config.execute_tls);
@@ -3441,6 +3455,51 @@ wchar_t name[48]{};
         return true;
     }
 
+    // The key target is the one on-disk helper whose name is not per-build
+    // randomised. It is removed once a load has completed, so the release
+    // folder and the target's deployment folder are left without it. The name
+    // is validated as a bare file name at parse time, so it can never point
+    // outside those two folders.
+    void DeleteConfiguredKeyTarget(const WizardConfig & config)
+    {
+        if (config.delete_key_target.empty())
+        {
+            return;
+        }
+
+        const std::wstring directory = ExecutableDirectory();
+        if (directory.empty())
+        {
+            LOG(0, L"  %ls[*]%ls The Key Target Was Not Deleted (The Executable Directory Is Unknown).\n", kYellow, kReset);
+            return;
+        }
+
+        std::vector<std::wstring> candidates;
+        candidates.push_back(directory + config.delete_key_target);
+        if (!config.dll_dir.empty())
+        {
+            candidates.push_back(directory + config.dll_dir + L"\\" + config.delete_key_target);
+        }
+
+        for (const std::wstring & path : candidates)
+        {
+            if (!FileExists(path))
+            {
+                continue;
+            }
+            SetLastError(ERROR_SUCCESS);
+            if (DeleteFileW(path.c_str()))
+            {
+                LOG(0, L"  %ls[+]%ls The Key Target Was Deleted: %ls\n", kGreen, kReset, path.c_str());
+            }
+            else
+            {
+                LOG(0, L"  %ls[*]%ls The Key Target Could Not Be Deleted: %ls (Win32 %lu)\n",
+                    kYellow, kReset, path.c_str(), static_cast<unsigned long>(GetLastError()));
+            }
+        }
+    }
+
     void ReportPayloadCapabilities(const std::vector<BYTE> & payload, DWORD flags)
     {
         if (payload.size() < sizeof(IMAGE_DOS_HEADER))
@@ -4126,6 +4185,10 @@ DWORD BuildFlags(const WizardConfig & config)
             Trace::Note(L"Payload = %ls | Runtime = %ls | Dll Dir = %ls", config.payload_name.c_str(),
                 config.runtime_name.c_str(), config.dll_dir.c_str());
             Trace::Note(L"Payload Pin = %ls", config.expected_payload_sha256.c_str());
+            if (!config.delete_key_target.empty())
+            {
+                Trace::Note(L"Key Target = %ls", config.delete_key_target.c_str());
+            }
             Trace::Note(L"Export Map = %zu Entries", config.export_map.size());
             for (const ExportNameMap & e : config.export_map)
             {
@@ -5274,6 +5337,7 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"====================================================================================================\n");
         Trace::Summary(config.test_mode ? L"Success (Test Mode)" : L"Success");
         g_LoadCompleted = true;
+        DeleteConfiguredKeyTarget(config);
         PauseBeforeExit();
         return 0;
     }

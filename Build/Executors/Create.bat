@@ -219,6 +219,8 @@ call :verify_deployed_pin
 if errorlevel 1 goto :verify_content_error
 call :verify_config_keys
 if errorlevel 1 goto :verify_content_error
+call :verify_config_parity
+if errorlevel 1 goto :verify_content_error
 call :verify "%RUNTIME_DLL%" "x64 runtime"
 if errorlevel 1 goto :verify_error
 call :verify_syscall_stub
@@ -432,6 +434,12 @@ exit /b %ERRORLEVEL%
 :verify_config_keys
 if not defined CONFIG_MAGIC exit /b 1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigKeys -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
+exit /b %ERRORLEVEL%
+
+:verify_config_parity
+if not defined CONFIG_MAGIC exit /b 1
+if not exist "%CONFIG_MASTER%" exit /b 1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigParity -Path "%DEPLOYED_CONFIG%" -MasterPath "%CONFIG_MASTER%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
 :verify_syscall_stub
