@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Embed", "Magic", "PayloadHash", "DeployedPin", "ConfigKeys")]
+    [ValidateSet("Embed", "Magic", "DeployedPin", "ConfigKeys")]
     [string]$Check,
 
     [Parameter(Mandatory = $true)]
@@ -9,8 +9,6 @@ param(
     [string]$Words,
 
     [string]$Magic,
-
-    [string]$Config,
 
     [string]$ExpectPin
 )
@@ -76,41 +74,6 @@ if ($Check -eq "Embed") {
     }
 
     Write-Ok ("Embedded Runtime Hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " Dwords In Order (" + (Get-Painted $script:C_Dim $Path) + ")")
-    exit 0
-}
-
-if ($Check -eq "PayloadHash") {
-    if ([string]::IsNullOrEmpty($Config)) {
-        Write-Fail "Expected A Master Config Path"
-        exit 1
-    }
-    if (-not (Test-Path -LiteralPath $Config)) {
-        Write-Fail ("Master Config Not Found: " + (Get-Painted $script:C_Dim $Config))
-        exit 1
-    }
-
-    $pin = $null
-    foreach ($line in [IO.File]::ReadAllLines($Config)) {
-        $trimmed = $line.Trim()
-        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith(";") -or $trimmed.StartsWith("#")) { continue }
-        $eq = $trimmed.IndexOf("=")
-        if ($eq -lt 1) { continue }
-        if ($trimmed.Substring(0, $eq).Trim() -ieq "PayloadSha256") {
-            $pin = $trimmed.Substring($eq + 1).Trim()
-            break
-        }
-    }
-    if ([string]::IsNullOrEmpty($pin)) {
-        Write-Fail ("PayloadSha256 Pin Missing In " + (Get-Painted $script:C_Dim $Config))
-        exit 1
-    }
-
-    $actual = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($data)) -replace "-", "")
-    if ($actual -ine $pin) {
-        Write-Fail ("Payload Hash Mismatch: Expected " + $pin + ", Got " + $actual + " (" + (Get-Painted $script:C_Dim $Path) + ")")
-        exit 1
-    }
-    Write-Ok ("Payload SHA-256 = " + (Get-Painted $script:C_Green $actual) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 

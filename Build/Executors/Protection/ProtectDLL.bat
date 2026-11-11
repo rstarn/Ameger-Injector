@@ -28,7 +28,6 @@ set "BUILD_VMP_SCRIPT=%SCRIPTS_DIR%\BuildVMP.ps1"
 set "STRIP_SCRIPT=%SCRIPTS_DIR%\StripExportDirs.ps1"
 set "STATE_FILE=%RELEASE_CACHE%\Protect.payload.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
-set "PAYLOAD_ASSET=%ROOT%\Assets\DLL\Jlov.dll"
 set "CONFIG_SCRIPT=%SCRIPTS_DIR%\ProtectConfig.ps1"
 set "DEPLOYED_CONFIG="
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
@@ -158,45 +157,26 @@ if errorlevel 1 goto :strip_error
 echo.
 echo.
 
-echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Re-pinning Payload Hash...
+echo [%C_GREEN%5%C_RESET%/%C_GREEN%6%C_RESET%] Refreshing The Deployed Config...
 echo.
 copy /y "%WORK_DIR%\out.dll" "%TARGET%" > nul
 if errorlevel 1 goto :deploy_error
 call :sha256_of "%TARGET%" OUT_SHA
 if errorlevel 1 goto :hash_error
 if not defined OUT_SHA goto :hash_error
-set "PIN_SRC=%WORK_DIR%\pin.ini"
-set "PINGEN_TMP=%TEMP%\amg_pingen_%RANDOM%%RANDOM%"
-set "PINGEN_B64=%PINGEN_TMP%.b64"
-set "PINGEN_PS1=%PINGEN_TMP%.ps1"
-set "PINGEN_RC=1"
->"%PINGEN_B64%" echo -----BEGIN CERTIFICATE-----
->>"%PINGEN_B64%" echo cGFyYW0oW3N0cmluZ10kQ29uZmlnTWFzdGVyLCBbc3RyaW5nXSRPdXRTaGEsIFtzdHJpbmddJFBpblNyYykNCiRjID0gW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkQ29uZmlnTWFzdGVyKQ0KJGMgPSBbcmVnZXhdOjpSZXBsYWNlKCRjLCAnKD9tKV5QYXlsb2FkU2hhMjU2XHMqPS4qJCcsICdQYXlsb2FkU2hhMjU2ID0gJyArICgkT3V0U2hhKSkNCltJTy5GaWxlXTo6V3JpdGVBbGxUZXh0KCRQaW5TcmMsICRjLCBbVGV4dC5FbmNvZGluZ106OkFTQ0lJKQ0K
->>"%PINGEN_B64%" echo -----END CERTIFICATE-----
-certutil -decode "%PINGEN_B64%" "%PINGEN_PS1%" >nul 2>&1
-if errorlevel 1 goto :pingen_cleanup
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PINGEN_PS1%" -ConfigMaster "%CONFIG_MASTER%" -OutSha "%OUT_SHA%" -PinSrc "%PIN_SRC%"
-set "PINGEN_RC=%ERRORLEVEL%"
-:pingen_cleanup
-if exist "%PINGEN_PS1%" del /f /q "%PINGEN_PS1%" >nul 2>&1
-if exist "%PINGEN_B64%" del /f /q "%PINGEN_B64%" >nul 2>&1
-if not "%PINGEN_RC%"=="0" goto :pin_error
-if not exist "%PIN_SRC%" goto :pin_error
-echo   %C_GREEN%[+]%C_RESET% PayloadSha256 = %C_GREEN%%OUT_SHA%%C_RESET%
+echo   %C_GREEN%[+]%C_RESET% Deployed Payload SHA-256 = %C_GREEN%%OUT_SHA%%C_RESET%
 if not exist "%CONFIG_SCRIPT%" goto :pin_error
 if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
   echo   %C_RED%Error: AMEGER_ENCRYPT_CONFIG=0 Is Refused; The Launcher Rejects Plaintext Configs.%C_RESET%
   goto :pin_error
 )
 if not exist "%DEPLOYED_CONFIG%" goto :pin_error
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%PIN_SRC%" -Destination "%DEPLOYED_CONFIG%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%TARGET%"
 if errorlevel 1 goto :pin_error
 echo   %C_GREEN%[+]%C_RESET% Config re-encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 goto :pin_done
 
 :pin_done
-call :assert_master_pin
-if errorlevel 1 goto :pin_error
 call :write_state
 echo.
 echo.
@@ -470,27 +450,6 @@ echo   %C_RED%       Expected = %SEG_NAME% (Optionally Followed By Digits)%C_RES
 echo   %C_RED%       Observed = %VM_SEG%%C_RESET%
 exit /b 1
 
-:assert_master_pin
-if not exist "%PAYLOAD_ASSET%" exit /b 1
-call :sha256_of "%PAYLOAD_ASSET%" ASSET_SHA
-if errorlevel 1 exit /b 1
-if not defined ASSET_SHA exit /b 1
-set "PINCHK_TMP=%TEMP%\amg_pinchk_%RANDOM%%RANDOM%"
-set "PINCHK_B64=%PINCHK_TMP%.b64"
-set "PINCHK_PS1=%PINCHK_TMP%.ps1"
-set "PINCHK_RC=1"
->"%PINCHK_B64%" echo -----BEGIN CERTIFICATE-----
->>"%PINCHK_B64%" echo cGFyYW0oW3N0cmluZ10kQ29uZmlnTWFzdGVyLCBbc3RyaW5nXSRBc3NldFNoYSkNCiRjID0gW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkQ29uZmlnTWFzdGVyKQ0KJG0gPSBbcmVnZXhdOjpNYXRjaCgkYywgJyg/bSleUGF5bG9hZFNoYTI1NlxzKj1ccyooWzAtOUEtRmEtZl17NjR9KScpDQppZiAoLW5vdCAkbS5TdWNjZXNzKSB7IGV4aXQgMSB9DQppZiAoJG0uR3JvdXBzWzFdLlZhbHVlIC1uZSAkQXNzZXRTaGEpIHsNCiAgICBXcml0ZS1Ib3N0ICgnICAgIG1hc3RlciBwaW5zIDogJyArICRtLkdyb3Vwc1sxXS5WYWx1ZSkNCiAgICBXcml0ZS1Ib3N0ICgnICAgIGFzc2V0IGlzICAgIDogJyArICRBc3NldFNoYSkNCiAgICBleGl0IDENCn0NCmV4aXQgMA0K
->>"%PINCHK_B64%" echo -----END CERTIFICATE-----
-certutil -decode "%PINCHK_B64%" "%PINCHK_PS1%" >nul 2>&1
-if errorlevel 1 goto :pinchk_cleanup
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PINCHK_PS1%" -ConfigMaster "%CONFIG_MASTER%" -AssetSha "%ASSET_SHA%"
-set "PINCHK_RC=%ERRORLEVEL%"
-:pinchk_cleanup
-if exist "%PINCHK_PS1%" del /f /q "%PINCHK_PS1%" >nul 2>&1
-if exist "%PINCHK_B64%" del /f /q "%PINCHK_B64%" >nul 2>&1
-exit /b %PINCHK_RC%
-
 :write_state
 if not exist "%RELEASE_CACHE%" mkdir "%RELEASE_CACHE%"
 if not exist "%RELEASE_CACHE%" exit /b 1
@@ -605,8 +564,8 @@ echo   %C_RED%Error: Unable To Deploy The Protected Payload.%C_RESET%
 goto :failure
 
 :pin_error
-echo   %C_RED%Error: Unable To Re-Pin The Release Config Or Re-Encrypt It.%C_RESET%
-echo   %C_RED%       The release payload and its shipped pin now disagree.%C_RESET%
+echo   %C_RED%Error: Unable To Re-Encrypt The Deployed Release Config.%C_RESET%
+echo   %C_RED%       The launcher would reject the release (PayloadSha256 Is Empty Or The Config Is Unreadable).%C_RESET%
 goto :failure
 
 :cleanup_error

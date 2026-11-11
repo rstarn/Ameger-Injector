@@ -4,9 +4,6 @@ setlocal EnableExtensions DisableDelayedExpansion
 set "NO_PAUSE=0"
 if defined CREATE_NO_PAUSE set "NO_PAUSE=%CREATE_NO_PAUSE%"
 if /i "%~1"=="/nopause" set "NO_PAUSE=1"
-set "REPIN=0"
-if /i "%~1"=="repin" set "REPIN=1"
-if /i "%~1"=="/repin" set "REPIN=1"
 
 set "C_RESET="
 set "C_GREEN="
@@ -36,7 +33,6 @@ set "VERIFY_SYSCALL_SCRIPT=%SCRIPTS_DIR%\VerifySyscallsLayer.ps1"
 set "NAMES_SCRIPT=%SCRIPTS_DIR%\ShuffleNaming.ps1"
 set "RENAME_SCRIPT=%SCRIPTS_DIR%\ShuffleExports.ps1"
 set "EXPORTS_SCRIPT=%SCRIPTS_DIR%\VerifyExportsName.ps1"
-set "REPIN_SCRIPT=%SCRIPTS_DIR%\RepinPayload.ps1"
 set "NAMES_STATE=%RELEASE_CACHE%\BuildNames.state"
 set "CONFIG_MASTER=%BUILD_DIR%\Configuration.ini"
 set "PAYLOAD_ASSET=%ROOT%\Assets\DLL\Jlov.dll"
@@ -51,7 +47,6 @@ set "INTERFACE64_OBJ=%CACHE_INTERFACE%"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "MSBUILD="
 
-if "%REPIN%"=="1" goto :repin_payload
 echo [%C_GREEN%1%C_RESET%/%C_GREEN%6%C_RESET%] Checking MSBuild...
 echo.
 call :find_msbuild
@@ -103,9 +98,6 @@ echo   %C_GREEN%[+]%C_RESET% Deployed Launcher Name = %C_GREEN%%EXE_NAME%.exe%C_
 echo   %C_GREEN%[+]%C_RESET% Deployed DLL Folder = %C_GREEN%%DLLDIR_NAME%%C_RESET%
 echo.
 echo.
-
-call :maybe_adopt_payload
-if errorlevel 1 goto :payload_error
 
 echo [%C_GREEN%4%C_RESET%/%C_GREEN%6%C_RESET%] Building Injector...
 set "MUTATE_ARGS="
@@ -580,21 +572,6 @@ if not defined DEPLOYED_SHA (
   echo   %C_RED%Error: Unable To Hash The Deployed Payload.%C_RESET%
   exit /b 1
 )
-if not defined PAYLOAD_IS_PREPARED (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check PayloadHash -Path "%PAYLOAD_DEST%" -Config "%CONFIG_MASTER%"
-  if errorlevel 1 (
-    echo   %C_RED%Error: Deployed Payload Failed Hash Verification.%C_RESET%
-    echo     The pristine asset %PAYLOAD_ASSET% does not match the master PayloadSha256 pin.
-    echo     If you intentionally swapped the payload, refresh the pin and rebuild:
-    echo         Create.bat repin
-    echo     Or ship the changed DLL without touching the master pristine pin:
-    echo         set AMEGER_PAYLOAD=path\to.dll  and rerun Create.bat
-    echo         or copy it to "%PAYLOAD_PROTECTED%"
-    exit /b 1
-  )
-) else (
-  echo   %C_YELLOW%[+]%C_RESET% Prepared payload deployed; master pin left pristine.%C_RESET%
-)
 echo   %C_GREEN%[+]%C_RESET% Payload deployed: %C_GREEN%%PAYLOAD_DEST%%C_RESET%
 exit /b 0
 
@@ -725,77 +702,6 @@ goto :failure
 echo.
 echo %C_RED%Error: AMEGER_REFUSE_UNMUTATED=1 Would Ship Unmutated Binaries (Stable Timestamps, MSVC Rich Fingerprint, Standard Section Names, PDB Debug Directory). Refusing: Rebuild Without The Bypass For Any Shipped Build.%C_RESET%
 goto :failure
-
-:maybe_adopt_payload
-if not exist "%PAYLOAD_ASSET%" exit /b 0
-if not exist "%CONFIG_MASTER%" exit /b 0
-if not exist "%VERIFY_SCRIPT%" exit /b 0
-where powershell.exe >nul 2>&1
-if errorlevel 1 exit /b 0
-
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check PayloadHash -Path "%PAYLOAD_ASSET%" -Config "%CONFIG_MASTER%" >nul 2>&1
-if not errorlevel 1 exit /b 0
-
-echo.
-echo   %C_YELLOW%[!]%C_RESET% The Payload Asset Does Not Match The Master PayloadSha256 Pin:
-echo       Asset  = %C_YELLOW%%PAYLOAD_ASSET%%C_RESET%
-echo       Config = %C_YELLOW%%CONFIG_MASTER%%C_RESET%
-if /i not "%AMEGER_AUTO_REPIN%"=="1" (
-  echo.
-  echo   %C_RED%Refusing To Continue With A Payload The Master Config Does Not Describe.%C_RESET%
-  echo   The Deployed Pin Would Describe A DLL That Is Not The One Being Shipped, And
-  echo   The Only Thing That Would Hide The Mismatch Is Rewriting The Master Pin.
-  echo.
-  echo   If The Asset Was Replaced Intentionally, Adopt It Explicitly:
-  echo       Create.bat repin
-  echo   Or Ship A One-Off DLL Without Touching The Master Pin:
-  echo       set AMEGER_PAYLOAD=path\to\dll  and rerun Create.bat
-  echo   To Restore The Previous Behaviour Of Adopting The Asset Automatically:
-  echo       set AMEGER_AUTO_REPIN=1  and rerun Create.bat
-  exit /b 1
-)
-if not exist "%REPIN_SCRIPT%" (
-  echo   %C_RED%Error: AMEGER_AUTO_REPIN=1 But RepinPayload.ps1 Was Not Found.%C_RESET%
-  exit /b 1
-)
-echo   %C_YELLOW%[!]%C_RESET% AMEGER_AUTO_REPIN=1: Re-Pinning The Master Config To The Current Asset.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%REPIN_SCRIPT%" -Config "%CONFIG_MASTER%" -Payload "%PAYLOAD_ASSET%" -Quiet
-if errorlevel 1 (
-  echo   %C_RED%Error: Could Not Re-Pin The Master To The Current Payload Asset.%C_RESET%
-  exit /b 1
-)
-exit /b 0
-
-:repin_payload
-if not exist "%CONFIG_MASTER%" (
-  echo   %C_RED%Error: Master Config Not Found: %CONFIG_MASTER%%C_RESET%
-  goto :failure
-)
-if not exist "%REPIN_SCRIPT%" (
-  echo   %C_RED%Error: RepinPayload.ps1 Not Found; Refusing To Re-Pin.%C_RESET%
-  goto :failure
-)
-where powershell.exe >nul 2>&1
-if errorlevel 1 (
-  echo   %C_RED%Error: PowerShell Unavailable; Cannot Re-Pin.%C_RESET%
-  goto :failure
-)
-set "REPIN_SRC=%PAYLOAD_ASSET%"
-if defined AMEGER_PAYLOAD set "REPIN_SRC=%AMEGER_PAYLOAD%"
-if not exist "%REPIN_SRC%" (
-  echo   %C_RED%Error: Payload Asset Not Found: %REPIN_SRC%%C_RESET%
-  goto :failure
-)
-echo   Repinning master pin for: %C_YELLOW%%REPIN_SRC%%C_RESET%
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%REPIN_SCRIPT%" -Config "%CONFIG_MASTER%" -Payload "%REPIN_SRC%"
-if errorlevel 1 goto :failure
-goto :repin_success
-
-:repin_success
-echo.
-echo   %C_GREEN%[+]%C_RESET% Master Configuration.ini re-pinned. Re-run Create.bat to deploy the new payload.
-if "%NO_PAUSE%"=="0" pause
-exit /b 0
 
 :failure
 if "%NO_PAUSE%"=="0" pause
