@@ -1,17 +1,18 @@
 {
+  // Registers .asm/.inc/.s/.S files as assembly-ish text.
+  // NOTE: the "Assembly Language Server" Zed extension is required for the
+  // "Assembly" language to exist. It is requested via user-settings
+  // "auto_install_extensions": { "assembly": true } — if you still see
+  // "No language with this name is installed", install it manually:
+  //   Ctrl+Shift+X  ->  search "Assembly"  ->  Install
+  // Then re-add this to enable asm-lsp (asm-lsp must also be on PATH;
+  // there is no Windows binary upstream — `cargo install asm-lsp`):
+  //   "languages": {
+  //     "Assembly": {
+  //       "language_servers": ["asm-lsp"]
+  //     }
+  //   }
   "file_types": {
     "Assembly": ["inc", "asm", "s", "S"]
-  },
-  "languages": {
-    "Assembly": {
-      "language_servers": ["asm-lsp"]
-    }
-  },
-  "lsp": {
-    "asm-lsp": {
-      "binary": {
-        "path": "C:\\Users\\Master\\.cargo\\bin\\asm-lsp.exe"
-      }
-    }
   }
 }
