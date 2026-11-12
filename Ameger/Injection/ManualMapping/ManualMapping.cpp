@@ -701,7 +701,77 @@ namespace
 
 
 		void * remote_base = nullptr;
+		// ===== PHASE 1: everything that can fail, done before the target is touched =====
+		//
+		// The target's memory is a view of a section this process created, and a section view
+		// cannot be released from outside the target: both NtFreeVirtualMemory(MEM_RELEASE) and
+		// VirtualFreeEx(MEM_RELEASE) are refused for it (ERROR_INVALID_PARAMETER, measured on
+		// this build), so whatever fails after the view exists stays mapped in the target for
+		// good. Every step that can fail therefore runs first, while the target has no
+		// footprint at all.
+		std::vector<BYTE> image;
+		try
+		{
+			image.assign(size_of_image, 0);
+		}
+		catch (const std::bad_alloc &)
+		{
+			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
+			return INJ_ERR_OUT_OF_MEMORY_NEW;
+		}
+
+		auto wipe_guard = MakeScopeExit([&]() noexcept {
+			if (!image.empty())
+			{
+				SecureZeroMemory(image.data(), image.size());
+			}
+		});
+
+		memcpy(image.data(), source.RawData, size_of_headers);
+
+		auto * mapped_dos = ReCa<IMAGE_DOS_HEADER *>(image.data());
+
+		// e_lfanew is a signed LONG, so a negative value has to be rejected before any unsigned
+		// arithmetic runs. The bounds test is a subtraction (never an addition) so a huge positive
+		// value cannot wrap around and slip past the check.
+		const LONG lfanew = mapped_dos->e_lfanew;
+		if (mapped_dos->e_magic != IMAGE_DOS_SIGNATURE ||
+			lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
+			size_of_headers < sizeof(IMAGE_NT_HEADERS) ||
+			static_cast<size_t>(lfanew) > size_of_headers - sizeof(IMAGE_NT_HEADERS))
+		{
+			return INJ_MM_ERR_INVALID_PE_IMAGE;
+		}
+
+		auto * mapped_nt = ReCa<IMAGE_NT_HEADERS *>(image.data() + mapped_dos->e_lfanew);
+		const WORD section_count = mapped_nt->FileHeader.NumberOfSections;
+		auto * mapped_sections = IMAGE_FIRST_SECTION(mapped_nt);
+
+		for (WORD i = 0; i < section_count; ++i)
+		{
+			IMAGE_SECTION_HEADER & section = mapped_sections[i];
+
+			if (section.SizeOfRawData)
+			{
+				if (section.PointerToRawData > source.RawSize ||
+					section.SizeOfRawData > source.RawSize - section.PointerToRawData ||
+					section.VirtualAddress > size_of_image ||
+					section.SizeOfRawData > size_of_image - section.VirtualAddress)
+				{
+					return INJ_MM_ERR_INVALID_PE_IMAGE;
+				}
+
+				memcpy(image.data() + section.VirtualAddress,
+					source.RawData + section.PointerToRawData, section.SizeOfRawData);
+			}
+
+
+
+		}
+
+
+		// ===== PHASE 2: the target is touched =====
 		// Vector 1: SEC_COMMIT pagefile-backed section with PAGE_EXECUTE_READWRITE max protection.
 		// SEC_IMAGE was tried and failed: the kernel maps file-backed image sections with their
 		// on-disk protections (.text = RX, .rdata = RO), which blocks the manual mapper from
@@ -781,68 +851,23 @@ namespace
 
 		LOG(1, XOR_STR_A("Host Map: Image Mapped As SEC_COMMIT Section View At %p\n").get(), remote_base);
 
-		RemoteAllocation image_guard(hTargetProc, remote_base);
 
-		std::vector<BYTE> image;
-		try
-		{
-			image.assign(size_of_image, 0);
-		}
-		catch (const std::bad_alloc &)
-		{
-			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
-
-			return INJ_ERR_OUT_OF_MEMORY_NEW;
-		}
-
-		auto wipe_guard = MakeScopeExit([&]() noexcept {
-			if (!image.empty())
+		// The target's memory is a view of a section this process created, and a section view
+		// cannot be released from outside the target: both NtFreeVirtualMemory(MEM_RELEASE)
+		// and VirtualFreeEx(MEM_RELEASE) are refused for it (ERROR_INVALID_PARAMETER, measured
+		// on this build), so whatever fails from here on stays mapped in the target for good.
+		// Anything that fails therefore has to leave nothing behind in the target: the region
+		// is scrubbed and the leftover reservation is reported instead of silently ignored.
+		bool image_committed = false;
+		auto residue_guard = MakeScopeExit([&]() noexcept {
+			if (image_committed || !remote_base)
 			{
-				SecureZeroMemory(image.data(), image.size());
+				return;
 			}
+			ScrubRemoteRegion(hTargetProc, remote_base, size_of_image, kScrubChunk);
+			LOG(1, XOR_STR_A("[Host Map] [!] The Load Failed After The Target Was Mapped: The Target Region Was Zeroed, But A Section View Cannot Be Released From Outside The Target, So An Empty Reservation Remains.\n").get());
 		});
 
-		memcpy(image.data(), source.RawData, size_of_headers);
-
-		auto * mapped_dos = ReCa<IMAGE_DOS_HEADER *>(image.data());
-
-		// e_lfanew is a signed LONG, so a negative value has to be rejected before any unsigned
-		// arithmetic runs. The bounds test is a subtraction (never an addition) so a huge positive
-		// value cannot wrap around and slip past the check.
-		const LONG lfanew = mapped_dos->e_lfanew;
-		if (mapped_dos->e_magic != IMAGE_DOS_SIGNATURE ||
-			lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
-			size_of_headers < sizeof(IMAGE_NT_HEADERS) ||
-			static_cast<size_t>(lfanew) > size_of_headers - sizeof(IMAGE_NT_HEADERS))
-		{
-			return INJ_MM_ERR_INVALID_PE_IMAGE;
-		}
-
-		auto * mapped_nt = ReCa<IMAGE_NT_HEADERS *>(image.data() + mapped_dos->e_lfanew);
-		const WORD section_count = mapped_nt->FileHeader.NumberOfSections;
-		auto * mapped_sections = IMAGE_FIRST_SECTION(mapped_nt);
-
-		for (WORD i = 0; i < section_count; ++i)
-		{
-			IMAGE_SECTION_HEADER & section = mapped_sections[i];
-
-			if (section.SizeOfRawData)
-			{
-				if (section.PointerToRawData > source.RawSize ||
-					section.SizeOfRawData > source.RawSize - section.PointerToRawData ||
-					section.VirtualAddress > size_of_image ||
-					section.SizeOfRawData > size_of_image - section.VirtualAddress)
-				{
-					return INJ_MM_ERR_INVALID_PE_IMAGE;
-				}
-
-				memcpy(image.data() + section.VirtualAddress,
-					source.RawData + section.PointerToRawData, section.SizeOfRawData);
-			}
-
-
-
-		}
 
 		const ULONG_PTR remote_address = ReCa<ULONG_PTR>(remote_base);
 		const ULONG_PTR delta = remote_address - preferred_base;
@@ -971,6 +996,9 @@ namespace
 			return INJ_ERR_WPM_FAIL;
 		}
 
+		// The image is in the target now, so the residue guard has nothing left to scrub.
+		image_committed = true;
+
 		data.pAllocationBase = ReCa<BYTE *>(remote_base);
 		data.pImageBase = ReCa<BYTE *>(remote_base);
 		data.pSectionRwView = section_mapped ? ReCa<BYTE *>(remote_base) : nullptr;
@@ -984,7 +1012,6 @@ namespace
 		data.ExecTelemetry.HostMapCycles = map_t1 >= map_t0 ? (map_t1 - map_t0) : 0;
 
 		base_out = remote_base;
-		image_guard.release();
 
 		LOG(1, XOR_STR_A("Host Map: Image Mapped At %p | Size = %08X | Relocation Delta = 0x%llX\n").get(),
 			remote_base, size_of_image, static_cast<unsigned long long>(delta));
@@ -4122,6 +4149,76 @@ DWORD __declspec(code_seg(".code$0D")) __stdcall MMI_CloakHeader(MANUAL_MAPPING_
 	return INJ_ERR_SUCCESS;
 }
 
+// Releases the mapped image out of the TARGET.
+//
+// The image is a view of a section the host created, not a VirtualAlloc reservation.
+// NtFreeVirtualMemory(MEM_RELEASE) is refused for a section view (ERROR_INVALID_PARAMETER,
+// measured on this build), so without this the whole image would stay mapped in the target -
+// by far the largest artifact a failed load can leave behind. A section view is released
+// the way a file mapping is: UnmapViewOfFile on the view's base address.
+//
+// UnmapViewOfFile lives in kernel32, whose base differs between the host and the target, so
+// the shell resolves it in the TARGET through LdrGetProcedureAddress - the same route the
+// import resolver already uses. The two names are spelled out character by character on
+// purpose: the shell runs in the target, where the runtime's .rdata is not mapped, so a string
+// literal living in .rdata would be a dangling read out there.
+bool __declspec(code_seg(".code$04")) __stdcall MMI_ReleaseImageView(MANUAL_MAPPING_DATA * pData)
+{
+	if (!pData || !pData->FunctionTable || !pData->pAllocationBase)
+	{
+		return false;
+	}
+
+	auto f = pData->FunctionTable;
+
+	if (!f->LdrGetProcedureAddress)
+	{
+		return false;
+	}
+
+	// The names are built on the stack, character by character, because the shell runs in the
+	// target where the runtime's .rdata is not mapped: a name kept in .rdata would be a
+	// dangling read out there, and a plain string literal would end up in .rdata. The volatile
+	// qualifier keeps the compiler from folding either name back into a constant.
+	volatile wchar_t module_name[13] =
+	{
+		'k', 'e', 'r', 'n', 'e', 'l', '3', '2', '.', 'd', 'l', 'l', 0
+	};
+
+	volatile char api_name[16] =
+	{
+		'U', 'n', 'm', 'a', 'p', 'V', 'i', 'e', 'w', 'O', 'f', 'F', 'i', 'l', 'e', 0
+	};
+
+	UNICODE_STRING module_name_w{ };
+	module_name_w.szBuffer = ReCa<PWSTR>(const_cast<wchar_t *>(module_name));
+	module_name_w.Length = 12 * sizeof(wchar_t);
+	module_name_w.MaxLength = 12 * sizeof(wchar_t);
+
+	HMODULE kernel32 = nullptr;
+
+	if (!MMI_FindLoadedModule(pData, &module_name_w, &kernel32) || !kernel32)
+	{
+		return false;
+	}
+
+	ANSI_STRING api_name_a{ };
+	api_name_a.szBuffer = ReCa<PSTR>(const_cast<char *>(api_name));
+	api_name_a.Length = 15;
+	api_name_a.MaxLength = 15;
+
+	PVOID procedure = nullptr;
+
+	if (!NT_SUCCESS(f->LdrGetProcedureAddress(ReCa<void *>(kernel32), &api_name_a, 0, &procedure)) || !procedure)
+	{
+		return false;
+	}
+
+	auto unmap = ReCa<BOOL(__stdcall *)(PVOID)>(procedure);
+
+	return unmap(pData->pAllocationBase) != FALSE;
+}
+
 DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA * pData)
 {
 	if (!pData || !pData->FunctionTable)
@@ -4183,8 +4280,29 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 
 	if (pData->pAllocationBase && !leak_image_for_inverted && !retain_staging)
 	{
-		SIZE_T Size = 0;
-		f->NtFreeVirtualMemory(NtCurrentProcess(), ReCa<void **>(&pData->pAllocationBase), &Size, MEM_RELEASE);
+		// The image is a section view, and a section view is not a reservation: the
+		// NtFreeVirtualMemory(MEM_RELEASE) below is REFUSED for it (ERROR_INVALID_PARAMETER,
+		// measured on this build), so it silently left the whole image mapped in the target.
+		// The view is released the way a file mapping is instead.
+		//
+		// That is only safe while nothing in the target still points into the image. The TLS
+		// index, the TEB slot and the loader's TLS entry all live inside the image, so an image
+		// that still carries them has to stay mapped or those pointers dangle. When the TLS
+		// residue was unwound (or never created) there is nothing left pointing in and the view
+		// can go.
+		const bool tls_points_into_image =
+			(pData->ExecTelemetry.TlsIndex != 0) && (pData->ExecTelemetry.TlsIndexRestored == 0);
+
+		if (tls_points_into_image)
+		{
+			pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pAllocationBase);
+			pData->MapStats.RetainedAllocSize = 0;
+		}
+		else if (!MMI_ReleaseImageView(pData))
+		{
+			SIZE_T Size = 0;
+			f->NtFreeVirtualMemory(NtCurrentProcess(), ReCa<void **>(&pData->pAllocationBase), &Size, MEM_RELEASE);
+		}
 	}
 	else if (retain_staging && pData->pAllocationBase)
 	{

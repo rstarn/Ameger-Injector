@@ -4858,6 +4858,28 @@ DWORD BuildFlags(const WizardConfig & config)
         if (result != INJ_ERR_SUCCESS)
         {
             LOG(0, L"%ls[x]%ls Operation Failed With Code %08X%ls\n", kRed, kReset, result);
+
+            // Say plainly whether the payload image is still sitting in the target. The image is
+            // a view of a section, and a section view can only be released from inside the target,
+            // so whether it went away has to be visible rather than assumed.
+            {
+                MAP_STATS failure_map_stats{};
+                if (runtime.get_last_map_stats)
+                {
+                    runtime.get_last_map_stats(&failure_map_stats);
+                    if (failure_map_stats.RetainedAllocBase)
+                    {
+                        LOG(0, L"%ls[!]%ls The Payload Image Is Still Mapped In The Target At %p: The Target's TLS Or Loader "
+                                 L"Bookkeeping Points Into It, So It Cannot Be Released.%ls\n",
+                            kYellow, kReset, reinterpret_cast<void *>(failure_map_stats.RetainedAllocBase), kReset);
+                    }
+                    else
+                    {
+                        LOG(0, L"%ls[+]%ls The Payload Image Was Released From The Target; Nothing Was Left Behind.%ls\n",
+                            kGreen, kReset, kReset);
+                    }
+                }
+            }
             if (config.test_mode)
             {
                 LOG(0, L"%ls[x]%ls TEST MODE - This Was A Test Run Against A Scratch Target, Not The Configured Process.%ls\n",
