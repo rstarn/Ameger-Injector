@@ -17,7 +17,16 @@ namespace
 
 
     constexpr int kResultMappedUnverified = 4;
-    constexpr wchar_t kChildMarker[] = L"--ameger-child";
+    // The marker that identifies this tool's relaunched copy. It is encrypted so the marker
+// itself is not a plaintext signature in the launcher.
+std::wstring ChildMarker()
+{
+    return std::wstring(XOR_STR_W(L"--ameger-child").get());
+}
+
+// The exit code of the polymorphic child copy, when this process is the one that spawned it.
+// The child does the actual run, so this process waits for it and reports its status as its own.
+static DWORD g_SpawnedChildExit = 0;
     constexpr wchar_t kRetryMarker[] = L"--ameger-retry=";
     constexpr wchar_t kParentPathMarker[] = L"--ameger-parent-path=";
 
@@ -384,10 +393,10 @@ namespace
             }
             if (!keepChild)
             {
-                const size_t childPos = rest.find(kChildMarker);
+                const size_t childPos = rest.find(ChildMarker());
                 if (childPos != std::wstring::npos)
                 {
-                    rest.erase(childPos, wcslen(kChildMarker));
+                    rest.erase(childPos, ChildMarker().size());
                 }
             }
 
@@ -400,7 +409,7 @@ namespace
         if (keepChild)
         {
             out += L" ";
-            out += kChildMarker;
+            out += ChildMarker();
         }
         out += L" --ameger-retry=" + std::to_wstring(nextRetry);
         if (!parentPath.empty())
@@ -497,7 +506,7 @@ namespace
         return svchostAny;
     }
 
-    bool SpawnWithSpoofedParent(const std::wstring & exePath, const std::wstring & args, DWORD brokerPid)
+    bool SpawnWithSpoofedParent(const std::wstring & exePath, const std::wstring & args, DWORD brokerPid, DWORD * child_exit_code = nullptr)
     {
         if (exePath.empty() || !brokerPid)
         {
@@ -568,6 +577,24 @@ namespace
             return false;
         }
         CloseHandle(pi.hThread);
+
+        // The child is the process that actually performs the run, so the caller has to be able
+        // to report its result. Waiting here and handing the exit code back keeps the launcher's
+        // own exit status honest: without it the parent always exits 0, even when the load
+        // failed or was only partially verified.
+        if (child_exit_code)
+        {
+            *child_exit_code = 0;
+            if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0)
+            {
+                DWORD code = 0;
+                if (GetExitCodeProcess(pi.hProcess, &code))
+                {
+                    *child_exit_code = code;
+                }
+            }
+        }
+
         CloseHandle(pi.hProcess);
         return true;
     }
@@ -629,7 +656,7 @@ namespace
 
     void DeleteOwnSelfCopyIfChild()
     {
-        if (!HasMarker(GetCommandLineW(), kChildMarker))
+        if (!HasMarker(GetCommandLineW(), ChildMarker().c_str()))
         {
             return;
         }
@@ -652,10 +679,22 @@ namespace
         }
     }
 
+    // Defined below, next to the rest of the confirmation machinery.
+bool ConfirmOnParentConsole();
+// How long the parent waits for an answer at the confirmation prompt before it gives up and
+// cancels the run. The wait is bounded so an unattended run can never block for ever.
+constexpr ULONGLONG kConfirmationTimeoutMs = 180000ull;
+// Defined below with the rest of the configuration machinery. It is quiet: it only reads and
+// decrypts the deployed config, it never prints.
+bool LoadWizardConfig(WizardConfig & config, std::wstring & path, bool & invalid);
+bool ChildWillAskForConfirmation();
+// Defined below with the rest of the console helpers.
+bool InterfaceConsolePresent();
+
     bool PolymorphicSelfRename(const std::wstring & parentHint)
     {
         const std::wstring cmd = GetCommandLineW();
-        if (HasMarker(cmd, kChildMarker))
+        if (HasMarker(cmd, ChildMarker().c_str()))
         {
             if (!parentHint.empty() && FileExists(parentHint))
             {
@@ -695,9 +734,37 @@ namespace
             {
                 continue;
             }
+            // The child copy of the launcher is spawned windowless, so it has no console to
+            // prompt on and no console to read from: the question would only ever reach the
+            // transcript and the run would look hung. The parent keeps the operator's console,
+            // so it asks here and hands the answer to the child through the environment block
+            // the child inherits at creation.
+            if (GetRetryIndex() == 0 && ChildWillAskForConfirmation())
+            {
+                wchar_t inherited[8] = {};
+                const bool already_confirmed =
+                    GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_AUTO_CONFIRM").get(), inherited, 8) == 1 &&
+                    inherited[0] == L'1';
+
+                // Only the parent that owns a console can ask. When there is no console the
+                // child keeps its own key-state wait, exactly as it did before: a human at the
+                // keyboard can still answer it.
+                if (!already_confirmed && InterfaceConsolePresent())
+                {
+                    if (!ConfirmOnParentConsole())
+                    {
+                        LOG(0, L"%ls[!]%ls Cancelled At The Prompt; Nothing Was Injected.\n", kYellow, kReset);
+                        (void)DeleteFileW(next.c_str());
+                        return true;
+                    }
+
+                    SetEnvironmentVariableW(XOR_STR_W(L"AMEGER_AUTO_CONFIRM").get(), L"1");
+                }
+            }
+
             const DWORD broker = FindTrustedBroker(0);
             const std::wstring args = BuildForwardedArgs(GetRetryIndex(), own, true);
-            if (broker && SpawnWithSpoofedParent(next, args, broker))
+            if (broker && SpawnWithSpoofedParent(next, args, broker, &g_SpawnedChildExit))
             {
                 return false;
             }
@@ -902,7 +969,7 @@ namespace
 
         if (strstr(text, "Type Not Found") || strstr(text, "Not Found In ") ||
             strstr(text, "Resolved Via") || strstr(text, "size ") == text ||
-            strstr(text, "SymbolParser: Size ") ||
+            strstr(text, XOR_STR_A("SymbolParser: Size ").get()) ||
             strstr(text, "-> ID "))
         {
             return;
@@ -979,10 +1046,12 @@ namespace
         }
 
         struct Category
-        {
-            const char * probe;
-            const wchar_t * title;
-        };
+{
+    // Both the probe (a runtime transcript prefix) and the title are encrypted: in the
+    // clear they would name the tool's internals to anyone grepping the launcher.
+    std::string probe;
+    std::wstring title;
+};
 
         struct CensusBlock
         {
@@ -1091,62 +1160,62 @@ namespace
         }
         static const Category kCategories[] =
         {
-            { "[Syscall]",          L"Syscall Layer" },
-            { "Service Name",       L"Syscall Layer" },
-            { "]   [",              L"Syscall Layer" },
-            { "Resolving Syscall Service Numbers", L"Syscall Layer" },
-            { "ntdll Base:",        L"Syscall Layer" },
-            { "Pass 1: Scanned",    L"Syscall Layer" },
-            { "Pass 2: Reconstructed", L"Syscall Layer" },
-            { "Building Syscall Stub Pool", L"Syscall Layer" },
-            { "Stub Pool Built:",   L"Syscall Layer" },
-            { "[ThreadHijack]",     L"Thread Hijack" },
-            { "TID      State",      L"Thread Hijack" },
-            { "  0x",               L"Thread Hijack" },
-            { "Donor Round",        L"Thread Hijack" },
-            { "SR_AcquireThread",   L"Thread Hijack" },
-            { "Target Thread ",     L"Thread Hijack" },
-            { "Remote Thread Shell",L"Thread Hijack" },
-            { "Acquiring Thread",   L"Thread Hijack" },
-            { "Acquired Target Thread", L"Thread Hijack" },
-            { "pRoutine",           L"Thread Hijack" },
-            { "RIP Replaced",       L"Thread Hijack" },
-            { "Thread Resumed",     L"Thread Hijack" },
-            { "Entering Wait State",L"Thread Hijack" },
-            { "ShellData Retrieved",L"Thread Hijack" },
-            { "Thread Context Restored", L"Thread Hijack" },
-            { "ProcessInformation", L"Thread Hijack" },
-            { "[Handle]",            L"Handle Acquisition" },
-            { "HandleAcq:",         L"Handle Acquisition" },
-            { "[ManualMap]",        L"Manual Map" },
-            { "Begin In-Memory Load", L"Manual Map" },
-            { "Shell Data Initialized", L"Manual Map" },
-            { "ShellSize",          L"Manual Map" },
-            { "Total Size",         L"Manual Map" },
-            { "Written To Memory",  L"Manual Map" },
-            { "Staging Code Promoted", L"Manual Map" },
-            { "Shell Returned",     L"Manual Map" },
-            { "ImageBase",          L"Manual Map" },
-            { "Fetching Routine Data", L"Manual Map" },
-            { "[HeaderCloak]",      L"Header Cloak" },
-            { "SymbolLoader",      L"Symbol Loader" },
-            { "SymbolParser",      L"Symbol Resolver" },
-            { "DynamicOffsets",     L"Dynamic Offsets" },
-            { "KcStrings",          L"String Self-Test" },
-            { "Attached To Target Process", L"Target Acquisition" },
-            { "Target Process Name",  L"Target Acquisition" },
-            { "Validating Specified File", L"Target Acquisition" },
-            { "File Validated",     L"Target Acquisition" },
-            { "Acquired Target Process Handle", L"Target Acquisition" },
-            { nullptr,              nullptr },
+            { std::string(XOR_STR_A("[Syscall]").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Service Name").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("]   [").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Resolving Syscall Service Numbers").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("ntdll Base:").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Pass 1: Scanned").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Pass 2: Reconstructed").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Building Syscall Stub Pool").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("Stub Pool Built:").get()), std::wstring(XOR_STR_W(L"Syscall Layer").get()) },
+            { std::string(XOR_STR_A("[ThreadHijack]").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("TID      State").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("  0x").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Donor Round").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("SR_AcquireThread").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Target Thread ").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Remote Thread Shell").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Acquiring Thread").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Acquired Target Thread").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("pRoutine").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("RIP Replaced").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Thread Resumed").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Entering Wait State").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("ShellData Retrieved").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("Thread Context Restored").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("ProcessInformation").get()), std::wstring(XOR_STR_W(L"Thread Hijack").get()) },
+            { std::string(XOR_STR_A("[Handle]").get()), std::wstring(XOR_STR_W(L"Handle Acquisition").get()) },
+            { std::string(XOR_STR_A("HandleAcq:").get()), std::wstring(XOR_STR_W(L"Handle Acquisition").get()) },
+            { std::string(XOR_STR_A("[ManualMap]").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Begin In-Memory Load").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Shell Data Initialized").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("ShellSize").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Total Size").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Written To Memory").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Staging Code Promoted").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Shell Returned").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("ImageBase").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("Fetching Routine Data").get()), std::wstring(XOR_STR_W(L"Manual Map").get()) },
+            { std::string(XOR_STR_A("[HeaderCloak]").get()), std::wstring(XOR_STR_W(L"Header Cloak").get()) },
+            { std::string(XOR_STR_A("SymbolLoader").get()), std::wstring(XOR_STR_W(L"Symbol Loader").get()) },
+            { std::string(XOR_STR_A("SymbolParser").get()), std::wstring(XOR_STR_W(L"Symbol Resolver").get()) },
+            { std::string(XOR_STR_A("DynamicOffsets").get()), std::wstring(XOR_STR_W(L"Dynamic Offsets").get()) },
+            { std::string(XOR_STR_A("KcStrings").get()), std::wstring(XOR_STR_W(L"String Self-Test").get()) },
+            { std::string(XOR_STR_A("Attached To Target Process").get()), std::wstring(XOR_STR_W(L"Target Acquisition").get()) },
+            { std::string(XOR_STR_A("Target Process Name").get()), std::wstring(XOR_STR_W(L"Target Acquisition").get()) },
+            { std::string(XOR_STR_A("Validating Specified File").get()), std::wstring(XOR_STR_W(L"Target Acquisition").get()) },
+            { std::string(XOR_STR_A("File Validated").get()), std::wstring(XOR_STR_W(L"Target Acquisition").get()) },
+            { std::string(XOR_STR_A("Acquired Target Process Handle").get()), std::wstring(XOR_STR_W(L"Target Acquisition").get()) },
+            { std::string(),                std::wstring() },
         };
 
         const wchar_t * title = nullptr;
-        for (const Category * c = kCategories; c->probe; ++c)
+        for (const Category * c = kCategories; !c->probe.empty(); ++c)
         {
             if (plain.find(c->probe) != std::string::npos)
             {
-                title = c->title;
+                title = c->title.c_str();
                 break;
             }
         }
@@ -1312,6 +1381,102 @@ namespace
         }
     }
 
+    // Whether the windowless child copy will stop and ask the operator to confirm the load.
+    //
+    // The child answers on its own when the run is a test run, when the configuration asks for
+    // an automatic confirmation, or when it is a retry. In those cases the parent must not ask
+    // as well, or the operator would be prompted for a run that never waits for an answer.
+    bool ChildWillAskForConfirmation()
+    {
+        wchar_t inherited[8] = {};
+        if (GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_AUTO_CONFIRM").get(), inherited, 8) == 1 &&
+            inherited[0] == L'1')
+        {
+            return false;
+        }
+
+        WizardConfig config{};
+        std::wstring path{};
+        bool invalid = false;
+        if (!LoadWizardConfig(config, path, invalid) || invalid)
+        {
+            // The configuration could not be read here. The child will read it for itself and
+            // ask if it needs to, so the parent stays quiet rather than asking twice.
+            return false;
+        }
+
+        return !config.test_mode && !config.auto_confirm;
+    }
+
+    // Takes the "press HOME to inject" confirmation on the console the operator is actually
+    // looking at.
+    //
+    // The child copy of the launcher is spawned windowless (CREATE_NO_WINDOW), so it has no
+    // console to prompt on and no console to read from: the prompt would only ever reach the
+    // transcript and the run would look hung. The parent keeps the operator's console, so the
+    // question is asked here instead and the answer is handed to the child through the
+    // environment block the child inherits.
+    //
+    // Returns true to proceed, false when the operator cancelled.
+    bool ConfirmOnParentConsole()
+    {
+        if (!InterfaceConsolePresent())
+        {
+            // The caller only asks when a console is attached; this is a safety net so the
+            // function can never block on a key that can never arrive.
+            return true;
+        }
+
+        LOG(0, L"%ls[+]%ls Press HOME To Inject, END To Cancel.\n", kGreen, kReset);
+        fflush(stdout);
+
+        // The console input buffer is read the same way the child's console branch reads it, so
+        // the operator's keypress is picked up exactly as it would have been. The wait is bounded
+        // so a run can never sit here for ever: if nobody answers, the run is cancelled rather
+        // than continuing unattended.
+        const ULONGLONG deadline = GetTickCount64() + kConfirmationTimeoutMs;
+
+        for (;;)
+        {
+            while (_kbhit())
+            {
+                const int key = _getch();
+                if (key == 0 || key == 224)
+                {
+                    if (!_kbhit())
+                    {
+                        continue;
+                    }
+                    const int scan = _getch();
+                    if (scan == 0x47)
+                    {
+                        StealthBeep(1600, 70);
+                        return true;
+                    }
+                    if (scan == 0x4F)
+                    {
+                        StealthBeep(320, 120);
+                        return false;
+                    }
+                }
+                else if (key == 'q' || key == 'Q' || key == 27)
+                {
+                    StealthBeep(320, 120);
+                    return false;
+                }
+            }
+
+            if (GetTickCount64() >= deadline)
+            {
+                LOG(0, L"%ls[!]%ls No Answer At The Prompt Within %llu Seconds; Cancelling.\\n",
+                    kYellow, kReset, static_cast<unsigned long long>(kConfirmationTimeoutMs / 1000));
+                return false;
+            }
+
+            Sleep(25);
+        }
+    }
+
     enum class ConfirmationResult
     {
         Proceed,
@@ -1326,8 +1491,10 @@ namespace
 
 
 
+        // The parent copy takes the confirmation on the operator's console and sets this for the
+        // child it spawns, so the child must not ask a second time.
         wchar_t auto_confirm[8] = {};
-        if (GetEnvironmentVariableW(L"AMEGER_AUTO_CONFIRM", auto_confirm, 8) == 1 && auto_confirm[0] == L'1')
+        if (GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_AUTO_CONFIRM").get(), auto_confirm, 8) == 1 && auto_confirm[0] == L'1')
         {
             return ConfirmationResult::Proceed;
         }
@@ -1404,6 +1571,9 @@ namespace
 
         bool home_was_down = false;
         bool end_was_down = false;
+        // The wait is bounded: an unattended run must not sit here for ever waiting for a key
+        // that is never going to arrive.
+        const ULONGLONG deadline = GetTickCount64() + kConfirmationTimeoutMs;
         for (;;)
         {
             const bool home_down = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
@@ -1434,6 +1604,12 @@ namespace
                 {
                     Sleep(10);
                 }
+                return ConfirmationResult::Cancelled;
+            }
+            if (GetTickCount64() >= deadline)
+            {
+                LOG(0, L"  %ls[!]%ls No Answer At The Prompt Within %llu Seconds; Cancelling.\n",
+                    kYellow, kReset, static_cast<unsigned long long>(kConfirmationTimeoutMs / 1000));
                 return ConfirmationResult::Cancelled;
             }
             Sleep(25);
@@ -2630,7 +2806,7 @@ wchar_t name[48]{};
         }
         if (!has_embedded_hash)
         {
-            PrintError(L"The Runtime Has No Embedded SHA-256. Build It With Build\\Executors\\Create.bat.");
+            PrintError(XOR_STR_W(L"The Runtime Has No Embedded SHA-256. Build It With Build\\Executors\\Create.bat.").get());
             return false;
         }
 
@@ -3089,10 +3265,10 @@ wchar_t name[48]{};
 
         using NtQuerySystemInformationFn = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
         NtQuerySystemInformationFn query = nullptr;
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
         if (ntdll)
         {
-            query = ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
+            query = ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, XOR_STR_A("NtQuerySystemInformation").get()));
         }
         if (!query)
         {
@@ -3569,23 +3745,23 @@ wchar_t name[48]{};
 
     void DescribeFlags(DWORD flags)
     {
-        struct FlagBit { DWORD bit; const wchar_t * name; };
+        struct FlagBit { DWORD bit; std::wstring name; };
         static const FlagBit kBits[] =
         {
-            { INJ_ERASE_HEADER,                L"INJ_ERASE_HEADER" },
-            { INJ_HANDLE_HIJACKING,            L"INJ_HANDLE_HIJACKING" },
-            { INJ_NO_DONOR_SCAN,               L"INJ_NO_DONOR_SCAN" },
-            { INJ_SKIP_SPONSOR_ROUNDTRIP,      L"INJ_SKIP_SPONSOR_ROUNDTRIP" },
-            { INJ_MM_CLEAN_DATA_DIR,           L"INJ_MM_CLEAN_DATA_DIR" },
-            { INJ_MM_RESOLVE_IMPORTS,          L"INJ_MM_RESOLVE_IMPORTS" },
-            { INJ_MM_RESOLVE_DELAY_IMPORTS,    L"INJ_MM_RESOLVE_DELAY_IMPORTS" },
-            { INJ_MM_EXECUTE_TLS,              L"INJ_MM_EXECUTE_TLS" },
-            { INJ_MM_ENABLE_EXCEPTIONS,        L"INJ_MM_ENABLE_EXCEPTIONS" },
-            { INJ_MM_SET_PAGE_PROTECTIONS,     L"INJ_MM_SET_PAGE_PROTECTIONS" },
-            { INJ_MM_INIT_SECURITY_COOKIE,     L"INJ_MM_INIT_SECURITY_COOKIE" },
-            { INJ_MM_RUN_DLL_MAIN,             L"INJ_MM_RUN_DLL_MAIN" },
-            { INJ_MM_RUN_UNDER_LDR_LOCK,       L"INJ_MM_RUN_UNDER_LDR_LOCK" },
-            { INJ_MM_MAP_FROM_MEMORY,          L"INJ_MM_MAP_FROM_MEMORY" },
+            { INJ_ERASE_HEADER, std::wstring(XOR_STR_W(L"INJ_ERASE_HEADER").get()) },
+            { INJ_HANDLE_HIJACKING, std::wstring(XOR_STR_W(L"INJ_HANDLE_HIJACKING").get()) },
+            { INJ_NO_DONOR_SCAN, std::wstring(XOR_STR_W(L"INJ_NO_DONOR_SCAN").get()) },
+            { INJ_SKIP_SPONSOR_ROUNDTRIP, std::wstring(XOR_STR_W(L"INJ_SKIP_SPONSOR_ROUNDTRIP").get()) },
+            { INJ_MM_CLEAN_DATA_DIR, std::wstring(XOR_STR_W(L"INJ_MM_CLEAN_DATA_DIR").get()) },
+            { INJ_MM_RESOLVE_IMPORTS, std::wstring(XOR_STR_W(L"INJ_MM_RESOLVE_IMPORTS").get()) },
+            { INJ_MM_RESOLVE_DELAY_IMPORTS, std::wstring(XOR_STR_W(L"INJ_MM_RESOLVE_DELAY_IMPORTS").get()) },
+            { INJ_MM_EXECUTE_TLS, std::wstring(XOR_STR_W(L"INJ_MM_EXECUTE_TLS").get()) },
+            { INJ_MM_ENABLE_EXCEPTIONS, std::wstring(XOR_STR_W(L"INJ_MM_ENABLE_EXCEPTIONS").get()) },
+            { INJ_MM_SET_PAGE_PROTECTIONS, std::wstring(XOR_STR_W(L"INJ_MM_SET_PAGE_PROTECTIONS").get()) },
+            { INJ_MM_INIT_SECURITY_COOKIE, std::wstring(XOR_STR_W(L"INJ_MM_INIT_SECURITY_COOKIE").get()) },
+            { INJ_MM_RUN_DLL_MAIN, std::wstring(XOR_STR_W(L"INJ_MM_RUN_DLL_MAIN").get()) },
+            { INJ_MM_RUN_UNDER_LDR_LOCK, std::wstring(XOR_STR_W(L"INJ_MM_RUN_UNDER_LDR_LOCK").get()) },
+            { INJ_MM_MAP_FROM_MEMORY, std::wstring(XOR_STR_W(L"INJ_MM_MAP_FROM_MEMORY").get()) },
         };
 
         LOG(0, L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
@@ -3594,7 +3770,7 @@ wchar_t name[48]{};
             const bool set = (flags & fb.bit) != 0;
             LOG(0, L"      %ls%s%ls 0x%08X  %ls\n",
                 set ? kGreen : kDim, set ? L"[x]" : L"[ ]", kReset,
-                fb.bit, fb.name);
+                fb.bit, fb.name.c_str());
         }
         DWORD accounted = 0;
         for (const FlagBit & fb : kBits)
@@ -3766,7 +3942,7 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"Reason: VirtualAllocEx Failed In Target (Adv 5 = ACCESS_DENIED, 998/3E6 = NOACCESS).\n");
             LOG(0, L"Target Is Likely Protected Or Blocks Remote RW/RX Allocations.\n");
             LOG(0, L"Staging Uses RW->RX (No RWX At Birth); Image Uses RW->RX.\n");
-            LOG(0, L"Try Testing On notepad.exe.\n");
+            LOG(0, XOR_STR_W(L"Try Testing On notepad.exe.\n").get());
         }
         else if (code == INJ_ERR_CANT_OPEN_PROCESS)
         {
@@ -3790,13 +3966,13 @@ DWORD BuildFlags(const WizardConfig & config)
         }
         else if (code == INJ_ERR_HANDLE_HIJACK_FAILED)
         {
-            LOG(0, L"Reason: Handle Acquisition Found No Donor; The Path Is Donor-Only And Fails Closed.\n");
+            LOG(0, XOR_STR_W(L"Reason: Handle Acquisition Found No Donor; The Path Is Donor-Only And Fails Closed.\n").get());
             LOG(0, XOR_STR_W(L"Check The Handle-Acquisition Settings In The Deployed Configuration, Or Run Elevated So The\n").get());
             LOG(0, L"Sponsor Pre-Open Succeeds.\n");
         }
         else if (code == SR_HT_ERR_OPEN_REFUSED)
         {
-            LOG(0, L"Reason: Thread Handle Acquisition Found No Donor; The Path Is Donor-Only And\n");
+            LOG(0, XOR_STR_W(L"Reason: Thread Handle Acquisition Found No Donor; The Path Is Donor-Only And\n").get());
             LOG(0, L"Fails Closed (There Is No Direct OpenThread Fallback). Run Elevated So The Sponsor\n");
             LOG(0, L"Thread Pre-Open Succeeds, Or Retry While The Target Is Active.\n");
         }
@@ -4096,12 +4272,35 @@ DWORD BuildFlags(const WizardConfig & config)
 
 
             wchar_t resolved[MAX_PATH * 2]{};
-            const DWORD found = SearchPathW(nullptr, file.c_str(), nullptr,
-                static_cast<DWORD>(std::size(resolved)), resolved, nullptr);
-            if (!found)
+            // The scratch target has to come from the trusted system directory. SearchPathW with
+            // a NULL path searches the launcher's own directory and the CURRENT DIRECTORY before
+            // the system directory, so a file dropped next to the launcher (or in the working
+            // directory) would be started instead of the real system binary.
+            wchar_t system_dir[MAX_PATH]{};
+            const UINT system_len = GetSystemDirectoryW(system_dir, static_cast<UINT>(std::size(system_dir)));
+            if (!system_len || system_len >= std::size(system_dir))
             {
                 return false;
             }
+
+            std::wstring system_path(system_dir);
+            if (!system_path.empty() && system_path.back() != L'\\')
+            {
+                system_path.push_back(L'\\');
+            }
+            system_path += file;
+
+            if (!FileExists(system_path))
+            {
+                return false;
+            }
+
+            if (system_path.size() >= std::size(resolved))
+            {
+                return false;
+            }
+
+            memcpy(resolved, system_path.c_str(), (system_path.size() + 1) * sizeof(wchar_t));
 
             STARTUPINFOW startup{};
             startup.cb = sizeof(startup);
@@ -4285,12 +4484,12 @@ DWORD BuildFlags(const WizardConfig & config)
 
 
 
-            config.target_name = config.test_target.empty() ? L"notepad.exe" : config.test_target;
+            config.target_name = config.test_target.empty() ? std::wstring(XOR_STR_W(L"notepad.exe").get()) : config.test_target;
 
 
 
 
-            SetEnvironmentVariableW(L"INJ_ALLOW_DIRECT_FALLBACK", L"1");
+            SetEnvironmentVariableW(XOR_STR_W(L"INJ_ALLOW_DIRECT_FALLBACK").get(), L"1");
 
             Trace::Begin(L"Test Mode");
             Trace::Note(L"The Target Is Forced To %ls", config.target_name.c_str());
@@ -4575,7 +4774,7 @@ DWORD BuildFlags(const WizardConfig & config)
             ULONG granted = 0;
             {
                 using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-                HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
                 auto query = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
                 if (query)
                 {
@@ -4631,7 +4830,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 kGreen, static_cast<unsigned long>(data.Timeout), kReset);
         }
 
-        Trace::Begin(L"Memory Injection (Manual Map + Thread Hijack)");
+        Trace::Begin(XOR_STR_W(L"Memory Injection (Manual Map + Thread Hijack)").get());
         Trace::Note(L"Target PID = %lu", static_cast<unsigned long>(data.ProcessID));
         Trace::Note(L"Payload Bytes = %lu", static_cast<unsigned long>(data.RawSize));
         Trace::Note(L"Flags = 0x%08lX", static_cast<unsigned long>(data.Flags));
@@ -4781,6 +4980,10 @@ DWORD BuildFlags(const WizardConfig & config)
 
         bool stealth_gate_ok = false;
         bool wx_violated = false;
+        // Checks that could not run during verification. They do not fail the gate (a check
+        // that never ran is not a posture defect), but they keep the verdict from being
+        // reported as an unqualified Pass.
+        int inconclusive_checks = 0;
         Trace::Begin(L"Stealth Verification Suite");
         if (targetHandle)
         {
@@ -4795,7 +4998,7 @@ DWORD BuildFlags(const WizardConfig & config)
             buffers.survey_max_sample_regions = config.survey_max_sample_regions;
 
             stealth_gate_ok = stealth::SafeDebugAndVerifyStealth(targetHandle, data.hDllOut, flags, raw_data.data(), raw_data.size(),
-                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers);
+                &ProcessHijackStats, &ThreadHijackStats, &Context, &MapStats, &ExecTelemetry, runtime.get_last_string_stats, true, target.pid, &wx_violated, config, buffers, inconclusive_checks);
         }
         else
         {
@@ -4803,7 +5006,8 @@ DWORD BuildFlags(const WizardConfig & config)
                 kRed, kReset);
         }
         Trace::Note(L"Verification Gate = %s | W^X Violated = %s",
-            stealth_gate_ok ? L"Pass" : L"Fail", wx_violated ? L"Yes" : L"No");
+            stealth_gate_ok ? (inconclusive_checks > 0 ? L"Pass (With Caveats)" : L"Pass") : L"Fail",
+            wx_violated ? L"Yes" : L"No");
         Trace::End(stealth_gate_ok && !wx_violated);
 
         if (!runtime.get_last_thread_exec_stats || !ThreadExec.Attempted)
@@ -5033,7 +5237,7 @@ DWORD BuildFlags(const WizardConfig & config)
                 { L"Page Protections / W^X",         !wx_violated, L"VirtualQueryEx Walk Of The Mapped Image" },
                 { L"Forensic Posture (Runtime DLL)", stealth_gate_ok, L"Exports, Section Names, Debug Directory" },
                 { L"String-Encryption Markers",      stealth_gate_ok, marker_coverage_note },
-                { L"Payload Exception Unwinding",    exceptions_on, L"INJ_MM_ENABLE_EXCEPTIONS; SEH-Table Path" },
+                { L"Payload Exception Unwinding",    exceptions_on, XOR_STR_W(L"INJ_MM_ENABLE_EXCEPTIONS; SEH-Table Path").get() },
                 { L"Target VEH First-Chance (PEB)",  veh_checked, L"RPM-Only CrossFlags PEB+80; Installs Nothing" },
             };
 
@@ -5073,7 +5277,7 @@ DWORD BuildFlags(const WizardConfig & config)
 
         row(L"Return Code............... ", result == INJ_ERR_SUCCESS);
         LOG(0, L"0x%08X (%s)\n", static_cast<unsigned>(result),
-            result == INJ_ERR_SUCCESS ? L"INJ_ERR_SUCCESS" : L"Non-Zero");
+            result == INJ_ERR_SUCCESS ? XOR_STR_W(L"INJ_ERR_SUCCESS").get() : L"Non-Zero");
 
         row(L"Mapped Image Base......... ", data.hDllOut != nullptr);
         LOG(0, L"%p\n", data.hDllOut);
@@ -5258,7 +5462,7 @@ DWORD BuildFlags(const WizardConfig & config)
             LOG(0, L"Not Attempted (No TLS Data Or Lock Not Required)\n");
         }
 
-        row(L"Thread Hijack............. ", ThreadExec.Success != 0);
+        row(XOR_STR_W(L"Thread Hijack............. ").get(), ThreadExec.Success != 0);
         LOG(0, L"TID 0x%04X | Success = %u | Routine Return Value = 0x%08X | %u Poll(s) Over %u ms\n",
             (unsigned)ThreadExec.HijackedTid, (unsigned)ThreadExec.Success,
             (unsigned)ThreadExec.RoutineRet, (unsigned)ThreadExec.PollIterations,
@@ -5315,7 +5519,16 @@ DWORD BuildFlags(const WizardConfig & config)
             wx_violated ? L"Violated" : L"Enforced");
 
         row(L"Verification Gate......... ", stealth_gate_ok);
-        LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
+        if (stealth_gate_ok && inconclusive_checks > 0)
+        {
+            LOG(0, L"Pass (With %d Caveat(s))\n", inconclusive_checks);
+            LOG(0, L"  The Gate Found No Posture Defect, But %d Check(s) Could Not Run, So Their\n", inconclusive_checks);
+            LOG(0, L"  Verdict Is Unknown. The Steps That Reported \"[!]\" Are The Ones That Did Not Run.\n");
+        }
+        else
+        {
+            LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
+        }
 
 
 
@@ -5407,7 +5620,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prevInstance, PWSTR cmdShow, i
 
     if (!PolymorphicSelfRename(parentHint))
     {
-        return 0;
+        // This process spawned the polymorphic copy that performs the run. Report the child's
+        // exit status so the launcher's exit code reflects what actually happened.
+        return static_cast<int>(g_SpawnedChildExit);
     }
 
     const int retryIndex = GetRetryIndex();

@@ -233,6 +233,12 @@ namespace MMAP_NATIVE
  		ALIGN VERIFIABLE_EXEC_TELEMETRY ExecTelemetry{};
 
  		ALIGN DWORD SectionProtCount = 0;
+
+		// The image's preferred base as recorded in the PE header. The mapped header's ImageBase
+		// is rewritten to the actual load address, so the original is kept here: a delay-load
+		// descriptor whose Attributes bit is clear carries absolute (link-time) addresses, and
+		// those have to be rebased onto the relocated image.
+		ALIGN ULONG_PTR	PreferredImageBase = 0;
   	};
 }
 
@@ -292,6 +298,33 @@ __forceinline void WritePtrField(void * Base, DWORD Off, void * Value)
 __forceinline void * ReadPtrField(const void * Base, DWORD Off)
 {
 	return *ReCa<void * const *>(ReCa<const BYTE *>(Base) + Off);
+}
+
+// Resolves a delay-load descriptor field to an address inside the mapped image.
+//
+// IMAGE_DELAYLOAD_DESCRIPTOR.Attributes carries a flag that says how the descriptor's
+// fields are encoded: bit 0 (RVA-based) means they are image-relative offsets, and when
+// the bit is clear they are absolute link-time addresses. The absolute form still has to
+// be rebased, because the image is usually mapped somewhere other than its preferred base.
+__forceinline void * MMI_DelayField(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData, DWORD Field, bool RvaBased)
+{
+	if (!Field)
+	{
+		return nullptr;
+	}
+
+	if (RvaBased)
+	{
+		return ReCa<void *>(pData->pImageBase + Field);
+	}
+
+	const ULONG_PTR preferred = pData->PreferredImageBase;
+	if (!preferred || Field < preferred)
+	{
+		return nullptr;
+	}
+
+	return ReCa<void *>(pData->pImageBase + (Field - preferred));
 }
 
 __forceinline IMAGE_SECTION_HEADER * MMI_Sections(const MMAP_NATIVE::MANUAL_MAPPING_DATA * pData)

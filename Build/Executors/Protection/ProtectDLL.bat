@@ -155,6 +155,8 @@ if errorlevel 1 goto :segment_error
 echo   %C_GREEN%[+]%C_RESET% VM Segment = %C_GREEN%%VM_SEG%%C_RESET% (Verified)
 call :strip_exports "%WORK_DIR%\out.dll"
 if errorlevel 1 goto :strip_error
+call :validate_after_strip "%WORK_DIR%\out.dll"
+if errorlevel 1 goto :strip_error
 echo.
 echo.
 
@@ -482,6 +484,30 @@ if not exist "%VERIFY_SCRIPT%" (
 )
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check ConfigParity -Path "%DEPLOYED_CONFIG%" -MasterPath "%CONFIG_MASTER%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
+
+:validate_after_strip
+rem Re-validates the PE structure after the export directories were stripped. The strip
+rem only zeroes bytes, but the deployed payload must still be a structurally sound image:
+rem a truncated write or a bad section table would otherwise ship unnoticed.
+set "VALSTRIP_TMP=%TEMP%\amg_valstrip_%RANDOM%%RANDOM%"
+set "VALSTRIP_B64=%VALSTRIP_TMP%.b64"
+set "VALSTRIP_PS1=%VALSTRIP_TMP%.ps1"
+set "VALSTRIP_OUT=%VALSTRIP_TMP%.out"
+set "VALSTRIP_RC=1"
+>"%VALSTRIP_B64%" echo -----BEGIN CERTIFICATE-----
+>>"%VALSTRIP_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkKaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJFBhdGgpKSB7IFdyaXRlLU91dHB1dCAnRkFJTDogRmlsZSBOb3QgRm91bmQnOyBleGl0IDEgfQokYiA9IFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKQppZiAoJGIuTGVuZ3RoIC1sdCAweDIwMCkgeyBXcml0ZS1PdXRwdXQgJ0ZBSUw6IEZpbGUgVG9vIFNtYWxsJzsgZXhpdCAxIH0KaWYgKCRiWzBdIC1uZSAweDREIC1vciAkYlsxXSAtbmUgMHg1QSkgeyBXcml0ZS1PdXRwdXQgJ0ZBSUw6IE5vIE1aIEhlYWRlcic7IGV4aXQgMSB9CiRlID0gW0JpdENvbnZlcnRlcl06OlRvSW50MzIoJGIsIDB4M0MpCmlmICgkZSAtbHQgMCAtb3IgKCRlICsgMjQpIC1nZSAkYi5MZW5ndGgpIHsgV3JpdGUtT3V0cHV0ICdGQUlMOiBCYWQgZV9sZmFuZXcnOyBleGl0IDEgfQppZiAoW1RleHQuRW5jb2RpbmddOjpBU0NJSS5HZXRTdHJpbmcoJGIsICRlLCA0KSAtbmUgIlBFYDBgMCIpIHsgV3JpdGUtT3V0cHV0ICdGQUlMOiBObyBQRSBTaWduYXR1cmUnOyBleGl0IDEgfQokbnNlYyA9IFtCaXRDb252ZXJ0ZXJdOjpUb1VJbnQxNigkYiwgJGUgKyA2KQokb3B0c3ogPSBbQml0Q29udmVydGVyXTo6VG9VSW50MTYoJGIsICRlICsgMjApCmlmICgkbnNlYyAtbHQgMSAtb3IgJG5zZWMgLWd0IDk2KSB7IFdyaXRlLU91dHB1dCAoJ0ZBSUw6IEltcGxhdXNpYmxlIFNlY3Rpb24gQ291bnQgJyArICRuc2VjKTsgZXhpdCAxIH0KJHNlY0Jhc2UgPSAkZSArIDI0ICsgJG9wdHN6CmlmICgoJHNlY0Jhc2UgKyAoNDAgKiAkbnNlYykpIC1ndCAkYi5MZW5ndGgpIHsgV3JpdGUtT3V0cHV0ICdGQUlMOiBTZWN0aW9uIFRhYmxlIE91dCBPZiBCb3VuZHMnOyBleGl0IDEgfQpmb3IgKCRpID0gMDsgJGkgLWx0ICRuc2VjOyAkaSsrKSB7CiAgICAkbyA9ICRzZWNCYXNlICsgKDQwICogJGkpCiAgICAkcmF3UHRyID0gW0JpdENvbnZlcnRlcl06OlRvVUludDMyKCRiLCAkbyArIDIwKQogICAgJHJhd1N6ID0gW0JpdENvbnZlcnRlcl06OlRvVUludDMyKCRiLCAkbyArIDE2KQogICAgaWYgKCRyYXdTeiAtZ3QgMCAtYW5kICgkcmF3UHRyICsgJHJhd1N6KSAtZ3QgJGIuTGVuZ3RoKSB7IFdyaXRlLU91dHB1dCAoJ0ZBSUw6IFNlY3Rpb24gJyArICRpICsgJyBSYXcgRGF0YSBPdXQgT2YgQm91bmRzJyk7IGV4aXQgMSB9Cn0KV3JpdGUtT3V0cHV0ICgnT0s6ICcgKyAkbnNlYyArICcgU2VjdGlvbnMsIFBFIFN0cnVjdHVyZSBJbnRhY3QnKQpleGl0IDA=
+>>"%VALSTRIP_B64%" echo -----END CERTIFICATE-----
+certutil -decode "%VALSTRIP_B64%" "%VALSTRIP_PS1%" >nul 2>&1
+if errorlevel 1 goto :valstrip_cleanup
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VALSTRIP_PS1%" -Path "%~1" >"%VALSTRIP_OUT%" 2>&1
+set "VALSTRIP_RC=%ERRORLEVEL%"
+for /f "usebackq tokens=1,* delims=:" %%A in ("%VALSTRIP_OUT%") do echo     %%A
+:valstrip_cleanup
+if exist "%VALSTRIP_PS1%" del /f /q "%VALSTRIP_PS1%" >nul 2>&1
+if exist "%VALSTRIP_B64%" del /f /q "%VALSTRIP_B64%" >nul 2>&1
+if exist "%VALSTRIP_OUT%" del /f /q "%VALSTRIP_OUT%" >nul 2>&1
+if not "%VALSTRIP_RC%"=="0" exit /b 1
+exit /b 0
 
 :tail_log
 if exist "%WORK_DIR%\vmp.log" for /f "usebackq delims=" %%L in ("%WORK_DIR%\vmp.log") do echo     %%L

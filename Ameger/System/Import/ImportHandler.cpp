@@ -70,7 +70,7 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, STRING_
 
 	if (sym_ret != SYMBOL_ERR_SUCCESS)
 	{
-		LOG(1, "Failed To Load Native Function = %s\n", name.c_str());
+		LOG(1, XOR_STR_A("Failed To Load Native Function = %s\n").get(), name.c_str());
 
 		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	}
@@ -88,7 +88,7 @@ DWORD LoadSymbolNative(T & Function, const encrypted_symbol_name & name, STRING_
 
 DWORD ResolveImports(ERROR_DATA & error_data)
 {
-	LOG(1, "ResolveImports Called\n");
+	LOG(1, XOR_STR_A("ResolveImports Called\n").get());
 
 
 	STRING_STATS stats{ };
@@ -99,7 +99,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, err);
 
-		LOG(1, "Failed To Determine Windows Version\n");
+		LOG(1, XOR_STR_A("Failed To Determine Windows Version\n").get());
 
 		return INJ_ERR_WINDOWS_VERSION;
 	}
@@ -109,7 +109,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, static_cast<DWORD>(GetOSBuildVersion()));
 
-		LOG(1, "Unsupported Windows Build = %u\n", GetOSBuildVersion());
+		LOG(1, XOR_STR_A("Unsupported Windows Build = %u\n").get(), GetOSBuildVersion());
 
 		return INJ_ERR_WINDOWS_BUILD_UNSUPPORTED;
 	}
@@ -120,17 +120,17 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, GetLastError());
 
-		LOG(1, "GetModuleHandle Failed = %08X\n", error_data.AdvErrorCode);
+		LOG(1, XOR_STR_A("GetModuleHandle Failed = %08X\n").get(), error_data.AdvErrorCode);
 
 		return INJ_ERR_GET_MODULE_HANDLE_FAIL;
 	}
 
-	LOG(1, "Native OS Module Loaded At %p\n", g_hNTDLL);
+	LOG(1, XOR_STR_A("Native OS Module Loaded At %p\n").get(), g_hNTDLL);
 
 
 
-	LOG(1, "OSVersion = %lu\n", GetOSVersion());
-	LOG(1, "OSBuildVersion = %lu\n", GetOSBuildVersion());
+	LOG(1, XOR_STR_A("OSVersion = %lu\n").get(), GetOSVersion());
+	LOG(1, XOR_STR_A("OSBuildVersion = %lu\n").get(), GetOSBuildVersion());
 
 	auto k32_name = XOR_STR_W(L"kernel32.dll");
 	HINSTANCE hK32 = GetModuleHandle(k32_name.get());
@@ -138,7 +138,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, GetLastError());
 
-		LOG(1, "GetModuleHandle Failed = %08X\n", error_data.AdvErrorCode);
+		LOG(1, XOR_STR_A("GetModuleHandle Failed = %08X\n").get(), error_data.AdvErrorCode);
 
 		return INJ_ERR_KERNEL32_MISSING;
 	}
@@ -147,7 +147,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	(void)hK32;
 
-	LOG(1, "Waiting For Native Symbol Parser To Finish Initialization\n");
+	LOG(1, XOR_STR_A("Waiting For Native Symbol Parser To Finish Initialization\n").get());
 
 	while (!PollAsyncWorker(sym_ntdll_native_ret))
 	{
@@ -162,7 +162,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, sym_ret);
 
-		LOG(1, "Native Symbol Loading Failed = %08X\n", sym_ret);
+		LOG(1, XOR_STR_A("Native Symbol Loading Failed = %08X\n").get(), sym_ret);
 
 		return INJ_ERR_SYMBOL_LOAD_FAIL;
 	}
@@ -172,7 +172,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 	{
 		INIT_ERROR_DATA(error_data, sym_ret);
 
-		LOG(1, "Native Symbol Parsing Failed = %08X\n", sym_ret);
+		LOG(1, XOR_STR_A("Native Symbol Parsing Failed = %08X\n").get(), sym_ret);
 
 		return INJ_ERR_SYMBOL_PARSE_FAIL;
 	}
@@ -188,7 +188,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		}
 	});
 
-	LOG(1, "Start Loading Native OS Symbols\n");
+	LOG(1, XOR_STR_A("Start Loading Native OS Symbols\n").get());
 
 	if (LoadSymbolNative(S_FUNC(LdrUnloadDll)))							return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 
@@ -228,7 +228,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 			table_ret = LoadSymbolNative(S_FUNC_AS(LdrpInvertedFunctionTable, "LdrpInvertedFunctionTables"));
 			if (table_ret != INJ_ERR_SUCCESS)
 			{
-				LOG(1, "Plural Entry Missing, Trying Singular\n");
+				LOG(1, XOR_STR_A("Plural Entry Missing, Trying Singular\n").get());
 
 				table_ret = LoadSymbolNative(S_FUNC(LdrpInvertedFunctionTable), false);
 			}
@@ -238,7 +238,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 			table_ret = LoadSymbolNative(S_FUNC(LdrpInvertedFunctionTable));
 			if (table_ret != INJ_ERR_SUCCESS)
 			{
-				LOG(1, "Singular Entry Missing, Trying Plural\n");
+				LOG(1, XOR_STR_A("Singular Entry Missing, Trying Plural\n").get());
 				table_ret = LoadSymbolNative(S_FUNC_AS(LdrpInvertedFunctionTable, "LdrpInvertedFunctionTables"), false);
 			}
 		}
@@ -267,7 +267,7 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 		{
 			INIT_ERROR_DATA(error_data, dyno_ret);
 
-			LOG(1, "Dynamic OS Offsets Failed = %08X\n", dyno_ret);
+			LOG(1, XOR_STR_A("Dynamic OS Offsets Failed = %08X\n").get(), dyno_ret);
 
 			return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 		}
@@ -277,21 +277,21 @@ DWORD ResolveImports(ERROR_DATA & error_data)
 
 	sym_ntdll_native.Cleanup();
 
-	LOG(1, "Native OS Symbols Loaded\n");
+	LOG(1, XOR_STR_A("Native OS Symbols Loaded\n").get());
 
 	sym_parser.Cleanup();
 
 	sym_ntdll_native.PurgePdb();
 
 	const unsigned kc_test = kc_strings::KcStringsSelfTest();
-	LOG(1, "KcStrings Self-Test = %08X\n", kc_test);
+	LOG(1, XOR_STR_A("KcStrings Self-Test = %08X\n").get(), kc_test);
 	stats.TiersTotal = kc_strings::KcTierCount;
 	stats.TiersPassed = kc_strings::KcTiersPassed(kc_test);
 	if (kc_test != 0)
 	{
 		INIT_ERROR_DATA(error_data, kc_test);
 
-		LOG(1, "KcStrings Self-Test Failed = %08X\n", kc_test);
+		LOG(1, XOR_STR_A("KcStrings Self-Test Failed = %08X\n").get(), kc_test);
 
 		return INJ_ERR_GET_SYMBOL_ADDRESS_FAILED;
 	}

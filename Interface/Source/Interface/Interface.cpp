@@ -200,9 +200,17 @@ std::wstring ResultLogPath()
         return path;
     }
 
+// Drops the buffered transcript text. Declared here because ResetResultLog/DiscardResultLog
+// need it before the definition further down in this namespace.
+void Clear();
+
 void ResetResultLog()
 {
     CloseFile();
+    // The in-memory buffer has to be dropped as well. BeginResultLog appends the new header to
+    // whatever is still in the buffer and then writes the whole buffer out, so a stale buffer
+    // would splice the previous run's transcript into the new file.
+    Clear();
     const std::wstring path = ResultLogPath();
     if (!path.empty())
     {
@@ -249,6 +257,8 @@ bool BeginResultLog(const wchar_t * header)
 void DiscardResultLog()
 {
     CloseFile();
+    // Same reason as ResetResultLog: a stale buffer would be spliced into the next transcript.
+    Clear();
     const std::wstring path = ResultLogPath();
     if (!path.empty())
     {

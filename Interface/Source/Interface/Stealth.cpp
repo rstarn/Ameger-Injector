@@ -42,7 +42,7 @@ namespace
     static size_t ScanSyscallGadgetPool(void **pool, size_t max)
     {
         size_t count = 0;
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
         if (!ntdll)
         {
             return 0;
@@ -568,7 +568,7 @@ namespace stealth
 
 
 
-                LOG(0, L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | This Load's Image = %ls%lu%s Of %ls%lu%s RX Region(s) (Inherent To Manual Map)\n",
+                LOG(0, XOR_STR_W(L"      %ls[+]%ls In-Image RWX = %ls%d%s (Required 0) | This Load's Image = %ls%lu%s Of %ls%lu%s RX Region(s) (Inherent To Manual Map)\n").get(),
                     kGreen, kReset, wx_rwx ? kYellow : kGreen, wx_rwx, kReset,
                     kGreen, rx_this_load, kReset,
                     rx_private ? kYellow : kGreen, rx_private, kReset);
@@ -1293,8 +1293,8 @@ namespace stealth
         }
         else
         {
-            LOG(0, L"  %ls[*]%ls Inverted Function Table: %lsNot Requested%ls "
-                    L"(INJ_MM_ENABLE_EXCEPTIONS Clear - %ls Was Never Called)\n",
+            LOG(0, XOR_STR_W(L"  %ls[*]%ls Inverted Function Table: %lsNot Requested%ls "
+                                 L"(INJ_MM_ENABLE_EXCEPTIONS Clear - %ls Was Never Called)\n").get(),
                 kDim, kReset, kYellow, kReset, XOR_STR_W(L"RtlAddFunctionTable").get());
         }
     }
@@ -1411,7 +1411,7 @@ namespace stealth
             exceptions_on ? kGreen : kYellow,
             exceptions_on
                 ? L"Dynamic Function Table (RtlAddFunctionTable), VEH-Free + Reversible; In-Shell Call Returned Success (Table Internals Not Externally Observable)"
-                : L"Disabled (INJ_MM_ENABLE_EXCEPTIONS Clear) - Payload Exceptions Are Not Covered",
+                : XOR_STR_W(L"Disabled (INJ_MM_ENABLE_EXCEPTIONS Clear) - Payload Exceptions Are Not Covered").get(),
             kReset);
 
         STRING_STATS stealth_fix_stats{};
@@ -1592,7 +1592,7 @@ namespace stealth
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Execute DllMain...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_DLL_MAIN) == 0)
         {
-            LOG(0, L"  %ls[*]%ls DllMain Skipped: INJ_MM_RUN_DLL_MAIN Not Set (No Payload Entry Invoked).\n", kDim, kReset);
+            LOG(0, XOR_STR_W(L"  %ls[*]%ls DllMain Skipped: INJ_MM_RUN_DLL_MAIN Not Set (No Payload Entry Invoked).\n").get(), kDim, kReset);
             return;
         }
         if (!exec)
@@ -1624,7 +1624,7 @@ namespace stealth
         }
         if (!exec->DllMainResult)
         {
-            LOG(0, L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n", kRed, kReset);
+            LOG(0, XOR_STR_W(L"  %ls[x]%ls DllMain Returned False (Verified Failure; Shell Aborts With INJ_MM_ERR_DLLMAIN_FAILED).\n").get(), kRed, kReset);
         }
     }
 
@@ -1634,7 +1634,7 @@ namespace stealth
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Run Under Loader Lock...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         if ((flags & INJ_MM_RUN_UNDER_LDR_LOCK) == 0)
         {
-            LOG(0, L"  %ls[*]%ls Loader Lock Not Requested (INJ_MM_RUN_UNDER_LDR_LOCK Clear).\n", kDim, kReset);
+            LOG(0, XOR_STR_W(L"  %ls[*]%ls Loader Lock Not Requested (INJ_MM_RUN_UNDER_LDR_LOCK Clear).\n").get(), kDim, kReset);
             return;
         }
         if (!exec)
@@ -1731,9 +1731,9 @@ namespace stealth
                 all_cleaned ? L"" : L" - unreported: ", missed);
             if (MapStats->Verified && MapStats->VerifiedCachedCopy)
             {
-                LOG(0, L"  %ls[*]%ls Residual Mask 0x%08X Across All %zu Directories Was Checked "
-                        L"Against The Mapper's Cached Copy: The In-Image Header Was Already Wiped "
-                        L"(INJ_ERASE_HEADER), So This Is Cache Consistency, Not An Independent Re-Read.\n",
+                LOG(0, XOR_STR_W(L"  %ls[*]%ls Residual Mask 0x%08X Across All %zu Directories Was Checked "
+                                 L"Against The Mapper's Cached Copy: The In-Image Header Was Already Wiped "
+                                 L"(INJ_ERASE_HEADER), So This Is Cache Consistency, Not An Independent Re-Read.\n").get(),
                     kDim, kReset, (unsigned)MapStats->ResidualMask, kDirCount);
             }
             else if (MapStats->Verified)
@@ -2771,8 +2771,8 @@ namespace stealth
         {
             using NtQuerySystemInformationFn = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
             using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-            HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-            auto query_system = ntdll ? ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation")) : nullptr;
+            HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
+            auto query_system = ntdll ? ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, XOR_STR_A("NtQuerySystemInformation").get())) : nullptr;
             auto query_object = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
 
             size_t events = 0, sections = 0, mutants = 0;
@@ -3109,14 +3109,14 @@ namespace stealth
     // Forward declarations for the Vector 1 / Vector 7 verifier steps (defined further down).
     void StealthVerifyMappingType(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total,
-        bool & mapping_type_ok);
+        bool & mapping_type_ok, int & inconclusive);
     void StealthVerifyNoLoaderArtifact(HANDLE process, HINSTANCE hRemoteBase, DWORD survey_pid,
-        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok);
-    void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total);
+        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok, int & inconclusive);
+    void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total, int & inconclusive);
     void StealthReportKernelResiduals(int & step, int total);
     void StealthVerifyStackSpoofGeometry(HANDLE process, HINSTANCE hRemoteBase,
         StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
-        bool & geometry_ok);
+        bool & geometry_ok, int & inconclusive);
     void StealthVerifyGadgetValidity(StealthVerifierBuffers & buffers, int & step, int total);
     void StealthVerifySpoofRandomization(HANDLE process, HINSTANCE hRemoteBase, int & step, int total);
 
@@ -3125,7 +3125,7 @@ namespace stealth
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
         f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
-        StealthVerifierBuffers & buffers)
+        StealthVerifierBuffers & buffers, int & inconclusive_checks)
     {
 
 
@@ -3141,6 +3141,9 @@ namespace stealth
 
         auto isActive = [flags](DWORD flag) -> bool { return (flags & flag) != 0; };
 
+        // Checks that could not run are counted in inconclusive_checks: they are coverage gaps,
+        // not posture defects, so they do not flip the gate, but they do stop the report from
+        // claiming an unqualified Pass.
         bool string_gate_ok = true;
         bool posture_ok = true;
         bool geometry_ok = true; // Vector 7: set false only on a [x] geometry verdict
@@ -3327,15 +3330,15 @@ namespace stealth
         if (step_enabled[kStealthVerifyMappingType])
         {
             StealthVerifyMappingType(process, hRemoteBase, have_local_nt, local_pe, local_pe_size, buffers, step, total,
-                mapping_type_ok);
+                mapping_type_ok, inconclusive_checks);
         }
         if (step_enabled[kStealthVerifyNoLoaderArtifact])
         {
-            StealthVerifyNoLoaderArtifact(process, hRemoteBase, survey_pid, buffers, step, total, ldr_walk_ok);
+            StealthVerifyNoLoaderArtifact(process, hRemoteBase, survey_pid, buffers, step, total, ldr_walk_ok, inconclusive_checks);
         }
         if (step_enabled[kStealthVerifySectionHandleClosed])
         {
-            StealthVerifySectionHandleClosed(process, hRemoteBase, step, total);
+            StealthVerifySectionHandleClosed(process, hRemoteBase, step, total, inconclusive_checks);
         }
         if (step_enabled[kStealthReportKernelResiduals])
         {
@@ -3346,7 +3349,7 @@ namespace stealth
         // own emitted-stub syscall rings instead of snapshotting an idle target thread)
         if (step_enabled[kStealthVerifyStackSpoofGeometry])
         {
-            StealthVerifyStackSpoofGeometry(process, hRemoteBase, buffers, step, total, ExecTelemetry, geometry_ok);
+            StealthVerifyStackSpoofGeometry(process, hRemoteBase, buffers, step, total, ExecTelemetry, geometry_ok, inconclusive_checks);
         }
         if (step_enabled[kStealthVerifyGadgetValidity])
         {
@@ -3361,6 +3364,16 @@ namespace stealth
         // sees the MEM_PRIVATE private-map fallback (Vector 1) or the payload base is missing
         // from the target's PEB Ldr lists (Vector 11). A failed gate exits Mapped-But-Unverified
         // (code 4) instead of reporting a clean load.
+        //
+        // A check that could not RUN is a coverage gap, not a posture defect: a payload that
+        // simply never issued a syscall through a sampled stub leaves the stack-spoof geometry
+        // unmeasurable. Those are counted, not failed, but they do keep the report from claiming
+        // an unqualified Pass.
+        if (inconclusive_checks > 0)
+        {
+            LOG(0, L"  %ls[!]%ls %d Verification Check(s) Could Not Run; Their Verdict Is Unknown.\n",
+                kYellow, kReset, inconclusive_checks);
+        }
         return string_gate_ok && posture_ok && geometry_ok && mapping_type_ok && ldr_walk_ok;
     }
 
@@ -3369,11 +3382,11 @@ namespace stealth
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
         f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
-        StealthVerifierBuffers & buffers)
+        StealthVerifierBuffers & buffers, int & inconclusive_checks)
     {
         __try
         {
-            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, ExecTelemetry, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers);
+            return DebugAndVerifyStealth(process, hRemoteBase, flags, local_pe, local_pe_size, ProcessHijack, ThreadHijack, Context, MapStats, ExecTelemetry, get_string_stats, survey_game_traps, survey_pid, wx_violated, config, buffers, inconclusive_checks);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -3589,7 +3602,7 @@ namespace stealth
 
     void StealthVerifyMappingType(HANDLE process, HINSTANCE hRemoteBase, bool have_local_nt,
         const BYTE * local_pe, size_t local_pe_size, StealthVerifierBuffers & buffers, int & step, int total,
-        bool & mapping_type_ok)
+        bool & mapping_type_ok, int & inconclusive)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify Mapping Type (VAD)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3598,6 +3611,7 @@ namespace stealth
         if (!process || process == INVALID_HANDLE_VALUE || !hRemoteBase)
         {
             LOG(0, L"  %ls[!]%ls Mapping Type Unverifiable: Process Handle Or Remote Base Unavailable\n", kYellow, kReset);
+            ++inconclusive;
             return;
         }
 
@@ -3618,6 +3632,7 @@ namespace stealth
         if (!q_base)
         {
             LOG(0, L"  %ls[!]%ls VAD Query Failed At Base 0x%llX\n", kYellow, kReset, static_cast<unsigned long long>(base));
+            ++inconclusive;
             return;
         }
 
@@ -3701,7 +3716,7 @@ namespace stealth
     }
 
     void StealthVerifyNoLoaderArtifact(HANDLE process, HINSTANCE hRemoteBase, DWORD survey_pid,
-        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok)
+        StealthVerifierBuffers & buffers, int & step, int total, bool & ldr_walk_ok, int & inconclusive)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify No Loader Artifact (Ldr Walk)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3711,6 +3726,7 @@ namespace stealth
         if (!QueryRemoteVehFirstChance(process, veh) || !veh.pebAddress)
         {
             LOG(0, L"  %ls[!]%ls PEB Address Unreadable; Cannot Walk Ldr\n", kYellow, kReset);
+            ++inconclusive;
             return;
         }
 
@@ -3720,6 +3736,7 @@ namespace stealth
         if (!ReadProcessMemory(process, ReCa<LPCVOID>(peb + 24), &ldr, sizeof(ldr), &got) || got != sizeof(ldr) || !ldr)
         {
             LOG(0, L"  %ls[!]%ls Ldr Pointer Unreadable At PEB+24 (PEB = %p)\n", kYellow, kReset, veh.pebAddress);
+            ++inconclusive;
             return;
         }
 
@@ -3855,7 +3872,7 @@ namespace stealth
         ldr_walk_ok = (lists_found == 3);
     }
 
-    void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total)
+    void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total, int & inconclusive)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify Section Handle Closed...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3864,20 +3881,48 @@ namespace stealth
         if (!process || process == INVALID_HANDLE_VALUE)
         {
             LOG(0, L"  %ls[!]%ls Section Handle Check Skipped: Process Handle Unavailable\n", kYellow, kReset);
+            ++inconclusive;
             return;
         }
 
         const DWORD target_pid = GetProcessId(process);
 
+        // Duplicating a handle OUT of the target needs PROCESS_DUP_HANDLE on the target. The
+        // handle the verification suite is given is deliberately query-limited, so a dedicated
+        // full-rights handle is opened for this census and closed at scope exit. Without it the
+        // census cannot inspect a single target handle and the check stays inconclusive.
+        HANDLE census_handle = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, target_pid);
+        const bool census_own_handle = census_handle != nullptr && census_handle != INVALID_HANDLE_VALUE;
+        if (census_own_handle)
+        {
+            process = census_handle;
+        }
+        struct CensusHandleGuard
+        {
+            HANDLE Handle = nullptr;
+            ~CensusHandleGuard()
+            {
+                if (Handle && Handle != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(Handle);
+                }
+            }
+        } census_guard;
+        census_guard.Handle = census_own_handle ? census_handle : nullptr;
+        if (!census_own_handle)
+        {
+            LOG(0, L"  %ls[!]%ls Section Handle Check: No PROCESS_DUP_HANDLE Handle Available For The Target\n", kYellow, kReset);
+        }
+
         using NtQuerySystemInformationFn = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
         using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        auto query_system = ntdll ? ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation")) : nullptr;
+        HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
+        auto query_system = ntdll ? ReCa<NtQuerySystemInformationFn>(GetProcAddress(ntdll, XOR_STR_A("NtQuerySystemInformation").get())) : nullptr;
         auto query_object = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
 
         if (!query_system || !query_object)
         {
-            LOG(0, L"  %ls[!]%ls NtQuerySystemInformation Or NtQueryObject Unavailable\n", kYellow, kReset);
+            LOG(0, XOR_STR_W(L"  %ls[!]%ls NtQuerySystemInformation Or NtQueryObject Unavailable\n").get(), kYellow, kReset);
             return;
         }
 
@@ -3916,6 +3961,7 @@ namespace stealth
 
         size_t target_sections = 0;
         size_t checked = 0;
+        size_t inspected = 0;
         for (size_t i = 0; i < total_entries; ++i)
         {
             const HandleEntryEx & entry = entries[i];
@@ -3926,7 +3972,11 @@ namespace stealth
             ++checked;
 
             HANDLE duplicate = nullptr;
-            if (!DuplicateHandle(GetCurrentProcess(), entry.Handle, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            // The handle value comes from the system handle table, so it is a handle in the
+            // TARGET process, not in this one. It has to be duplicated out of the target;
+            // duplicating it from the current process would inspect an unrelated handle that
+            // happens to have the same numeric value.
+            if (!DuplicateHandle(process, entry.Handle, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
             {
                 continue;
             }
@@ -3935,6 +3985,7 @@ namespace stealth
             ULONG returned = 0;
             if (query_object(duplicate, 2, type_buf, sizeof(type_buf), &returned) == 0)
             {
+                ++inspected;
                 const auto * type_name = ReCa<const UNICODE_STRING *>(type_buf);
                 const wchar_t * name = (type_name && type_name->szBuffer) ? type_name->szBuffer : L"";
                 const size_t name_len = type_name ? type_name->Length / sizeof(wchar_t) : 0;
@@ -3946,15 +3997,26 @@ namespace stealth
             CloseHandle(duplicate);
         }
 
-        if (target_sections == 0)
+        if (inspected == 0)
         {
-            LOG(0, L"  %ls[+]%ls Section Handle Closed: 0 Section Handles Held By Target PID %u (%llu Handles Checked)\n",
-                kGreen, kReset, target_pid, static_cast<unsigned long long>(checked));
+            // Nothing could actually be inspected, so "no section handle seen" proves nothing.
+            // Reporting a clean result here would be a vacuous pass.
+            LOG(0, L"  %ls[!]%ls Section Handle Check Inconclusive: No Target Handle Could Be Inspected (%llu Handles Checked)\n",
+                kYellow, kReset, static_cast<unsigned long long>(checked));
+            ++inconclusive;
+        }
+        else if (target_sections == 0)
+        {
+            LOG(0, L"  %ls[+]%ls Section Handle Closed: 0 Section Handles Held By Target PID %u (%llu Handles Inspected)\n",
+                kGreen, kReset, target_pid, static_cast<unsigned long long>(inspected));
         }
         else
         {
-            LOG(0, L"  %ls[!]%ls Section Handle Still Open: %llu Section Handles Held By Target PID %u\n",
-                kYellow, kReset, static_cast<unsigned long long>(target_sections), target_pid);
+            // This is a TARGET-WIDE census, so the handles it finds are the target's own (a GUI
+            // process holds section handles for its fonts and graphics resources). They cannot be
+            // attributed to this load, so this is an observation and not a finding.
+            LOG(0, L"  %ls[*]%ls Target Holds %llu Section Handle(s) (Target-Wide Census; Not Attributable To This Load)\n",
+                kYellow, kReset, static_cast<unsigned long long>(target_sections));
         }
     }
 
@@ -3968,7 +4030,7 @@ namespace stealth
 
     void StealthVerifyStackSpoofGeometry(HANDLE process, HINSTANCE hRemoteBase,
         StealthVerifierBuffers & buffers, int & step, int total, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
-        bool & geometry_ok)
+        bool & geometry_ok, int & inconclusive)
     {
         ++step;
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 7: Verify Stack Spoof Geometry...\n\n", kGreen, step, kReset, kGreen, total, kReset);
@@ -3977,6 +4039,7 @@ namespace stealth
         if (!process || process == INVALID_HANDLE_VALUE)
         {
             LOG(0, L"  %ls[!]%ls VerifyStackSpoofGeometry: Skipped — Process Handle Unavailable\n", kYellow, kReset);
+            ++inconclusive;
             return;
         }
 
@@ -3990,7 +4053,7 @@ namespace stealth
         // is NOT used: on this build its name-returning classes fail uniformly (class 3 is
         // MemoryRegionInformation, not a name class; class 2 returned STATUS_IO_PENDING), and
         // VirtualQueryEx is the proven-working path for the resolve handle.
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
 
         // (1a) Enumerate the target process's threads via a Toolhelp32 Thread32 walk.
         // BUG 2: the snapshot must be created for the TARGET pid (0 snapshots only the
@@ -4052,6 +4115,7 @@ namespace stealth
         if (thread_count == 0)
         {
             LOG(0, L"  %ls[!]%ls VerifyStackSpoofGeometry: No Target Threads In Census (PID %u)\n", kYellow, kReset, target_pid);
+            ++inconclusive;
             return;
         }
 
@@ -4071,7 +4135,8 @@ namespace stealth
         if (sample_index == 0)
         {
             LOG(0, L"  %ls[!]%ls No syscall samples recorded\n", kYellow, kReset);
-            return; // INCONCLUSIVE: the emitted stubs never fired a syscall before verification.
+            ++inconclusive; // COVERAGE GAP: the emitted stubs never fired a syscall before verification.
+            return;
         }
 
         const int samples_available = static_cast<int>(sample_index < SYSCALL_SAMPLE_COUNT
@@ -4105,7 +4170,7 @@ namespace stealth
                         return;
                     }
                     LUID Luid{};
-                    if (LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &Luid))
+                    if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
                     {
                         TOKEN_PRIVILEGES Privileges{};
                         Privileges.PrivilegeCount = 1;
@@ -4119,7 +4184,7 @@ namespace stealth
                     if (Token)
                     {
                         LUID Luid{};
-                        if (LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &Luid))
+                        if (LookupPrivilegeValueW(nullptr, XOR_STR_W(L"SeDebugPrivilege").get(), &Luid))
                         {
                             TOKEN_PRIVILEGES Privileges{};
                             Privileges.PrivilegeCount = 1;
@@ -4140,6 +4205,7 @@ namespace stealth
         {
             LOG(0, L"  %ls[x]%ls Resolve Handle Could Not Be Opened (0x%08X) — Frame Resolution Skipped\n",
                 kRed, kReset, static_cast<unsigned>(GetLastError()));
+            ++inconclusive;
             return;
         }
         struct ResolveHandleGuard
@@ -4184,6 +4250,7 @@ namespace stealth
         {
             LOG(0, L"  %ls[x]%ls Resolve Handle Opened But PROCESS_VM_READ Not Granted — Target May Be Protected\n",
                 kRed, kReset);
+            ++inconclusive;
             return;
         }
 

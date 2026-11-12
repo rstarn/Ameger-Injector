@@ -87,30 +87,30 @@ namespace
 
 	constexpr int kMaxDonorRounds = 16;
 
-	const char * DiagMemState(DWORD State)
+	std::string DiagMemState(DWORD State)
 	{
 		switch (State)
 		{
-		case MEM_COMMIT:	return "MEM_COMMIT";
-		case MEM_RESERVE:	return "MEM_RESERVE";
-		case MEM_FREE:		return "MEM_FREE";
-		default:			return "MEM_OTHER";
+		case MEM_COMMIT:	return XOR_STR_A("MEM_COMMIT").get();
+		case MEM_RESERVE:	return XOR_STR_A("MEM_RESERVE").get();
+		case MEM_FREE:		return XOR_STR_A("MEM_FREE").get();
+		default:			return XOR_STR_A("MEM_OTHER").get();
 		}
 	}
 
-	const char * DiagProtect(DWORD Protect)
+	std::string DiagProtect(DWORD Protect)
 	{
 		switch (Protect & 0xFF)
 		{
-		case PAGE_NOACCESS:				return "PAGE_NOACCESS";
-		case PAGE_READONLY:				return "PAGE_READONLY";
-		case PAGE_READWRITE:			return "PAGE_READWRITE";
-		case PAGE_WRITECOPY:			return "PAGE_WRITECOPY";
-		case PAGE_EXECUTE:				return "PAGE_EXECUTE";
-		case PAGE_EXECUTE_READ:			return "PAGE_EXECUTE_READ";
-		case PAGE_EXECUTE_READWRITE:	return "PAGE_EXECUTE_READWRITE";
-		case PAGE_EXECUTE_WRITECOPY:	return "PAGE_EXECUTE_WRITECOPY";
-		default:						return "PAGE_OTHER";
+		case PAGE_NOACCESS:				return XOR_STR_A("PAGE_NOACCESS").get();
+		case PAGE_READONLY:				return XOR_STR_A("PAGE_READONLY").get();
+		case PAGE_READWRITE:			return XOR_STR_A("PAGE_READWRITE").get();
+		case PAGE_WRITECOPY:			return XOR_STR_A("PAGE_WRITECOPY").get();
+		case PAGE_EXECUTE:				return XOR_STR_A("PAGE_EXECUTE").get();
+		case PAGE_EXECUTE_READ:			return XOR_STR_A("PAGE_EXECUTE_READ").get();
+		case PAGE_EXECUTE_READWRITE:	return XOR_STR_A("PAGE_EXECUTE_READWRITE").get();
+		case PAGE_EXECUTE_WRITECOPY:	return XOR_STR_A("PAGE_EXECUTE_WRITECOPY").get();
+		default:						return XOR_STR_A("PAGE_OTHER").get();
 		}
 	}
 
@@ -119,7 +119,7 @@ namespace
 		MEMORY_BASIC_INFORMATION mbi{ };
 		if (!VirtualQueryEx(hProcess, Address, &mbi, sizeof(mbi)))
 		{
-			LOG(1, "[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX query=fail err=%u\n",
+			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX query=fail err=%u\n").get(),
 				Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)), GetLastError());
 
 			return;
@@ -133,11 +133,11 @@ namespace
 		const bool executable = prot == PAGE_EXECUTE || prot == PAGE_EXECUTE_READ ||
 			prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
 
-		LOG(1, "[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX base=0x%llX size=0x%llX state=%s protect=%s(0x%X) commit=%d read=%d write=%d exec=%d\n",
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX base=0x%llX size=0x%llX state=%s protect=%s(0x%X) commit=%d read=%d write=%d exec=%d\n").get(),
 			Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(mbi.BaseAddress)),
 			static_cast<unsigned long long>(mbi.RegionSize),
-			DiagMemState(mbi.State), DiagProtect(prot), prot,
+			DiagMemState(mbi.State).c_str(), DiagProtect(prot).c_str(), prot,
 			mbi.State == MEM_COMMIT ? 1 : 0, readable ? 1 : 0, writable ? 1 : 0, executable ? 1 : 0);
 	}
 
@@ -151,7 +151,7 @@ namespace
 		const BOOL sig_ok = GetProcessMitigationPolicy(hProcess, ProcessSignaturePolicy, &sig, sizeof(sig));
 		const BOOL dyn_ok = GetProcessMitigationPolicy(hProcess, ProcessDynamicCodePolicy, &dyn, sizeof(dyn));
 
-		LOG(1, "[ThreadHijack] [*] Hijack Diag: mitigations cfg_query=%d cfg_guard=%d cfg_strict=%d acg_query=%d acg_microsoft_signed_only=%d acg_store_signed_only=%d dyn_query=%d dynamic_code_prohibited=%d\n",
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: mitigations cfg_query=%d cfg_guard=%d cfg_strict=%d acg_query=%d acg_microsoft_signed_only=%d acg_store_signed_only=%d dyn_query=%d dynamic_code_prohibited=%d\n").get(),
 			cfg_ok ? 1 : 0, (cfg.Flags & 0x1) ? 1 : 0, (cfg.Flags & 0x4) ? 1 : 0,
 			sig_ok ? 1 : 0, (sig.Flags & 0x1) ? 1 : 0, (sig.Flags & 0x2) ? 1 : 0,
 			dyn_ok ? 1 : 0, (dyn.Flags & 0x1) ? 1 : 0);
@@ -246,11 +246,11 @@ namespace
 
 	void LogThreadCensus(HANDLE hTargetProc, ProcessInformation & pi, const std::vector<DWORD> & excluded, DWORD selected_tid)
 	{
-		LOG(1, "[ThreadHijack] [*] Candidate Thread Census:\n");
-		LOG(1, "  TID      State    Wait Reason   TEB Address         Loader Worker?  Decision\n");
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Candidate Thread Census:\n").get());
+		LOG(1, XOR_STR_A("  TID      State    Wait Reason   TEB Address         Loader Worker?  Decision\n").get());
 		if (!pi.SetProcess(hTargetProc))
 		{
-			LOG(1, "[ThreadHijack] [!] Census Unavailable: SetProcess Failed\n");
+			LOG(1, XOR_STR_A("[ThreadHijack] [!] Census Unavailable: SetProcess Failed\n").get());
 			return;
 		}
 		do
@@ -281,37 +281,37 @@ namespace
 					is_worker = (flags & g_DynamicOffsets.SameTebFlagsLoaderWorkerMask) != 0;
 				}
 			}
-			const char * state_name = "Unknown";
+			std::string state_name = XOR_STR_A("Unknown").get();
 			if (have_state)
 			{
 				switch (static_cast<int>(st))
 				{
-				case 0: state_name = "Init"; break;
-				case 1: state_name = "Ready"; break;
-				case 2: state_name = "Running"; break;
-				case 3: state_name = "Standby"; break;
-				case 4: state_name = "Term"; break;
-				case 5: state_name = "Waiting"; break;
-				case 6: state_name = "Transition"; break;
-				default: state_name = "Other"; break;
+				case 0: state_name = XOR_STR_A("Init").get(); break;
+				case 1: state_name = XOR_STR_A("Ready").get(); break;
+				case 2: state_name = XOR_STR_A("Running").get(); break;
+				case 3: state_name = XOR_STR_A("Standby").get(); break;
+				case 4: state_name = XOR_STR_A("Term").get(); break;
+				case 5: state_name = XOR_STR_A("Waiting").get(); break;
+				case 6: state_name = XOR_STR_A("Transition").get(); break;
+				default: state_name = XOR_STR_A("Other").get(); break;
 				}
 			}
-			const char * verdict = "Skipped";
+			std::string verdict = XOR_STR_A("Skipped").get();
 			if (tid == selected_tid)
 			{
-				verdict = "Selected";
+				verdict = XOR_STR_A("Selected").get();
 			}
 			else if (tid == GetCurrentThreadId() || IsExcluded(excluded, tid))
 			{
-				verdict = "Excluded";
+				verdict = XOR_STR_A("Excluded").get();
 			}
 			else if (is_worker)
 			{
-				verdict = "Excluded (Worker)";
+				verdict = XOR_STR_A("Excluded (Worker)").get();
 			}
-			LOG(1, "  0x%04X   %-8s %-11d %p   %s (0x%04X)  %s\n",
-				tid, state_name, have_state ? static_cast<int>(wr) : -1, teb,
-				is_worker ? "Yes" : "No", flags, verdict);
+			LOG(1, XOR_STR_A("  0x%04X   %-8s %-11d %p   %s (0x%04X)  %s\n").get(),
+				tid, state_name.c_str(), have_state ? static_cast<int>(wr) : -1, teb,
+				is_worker ? XOR_STR_A("Yes").get() : XOR_STR_A("No").get(), flags, verdict.c_str());
 		} while (pi.NextThread());
 	}
 
@@ -439,7 +439,7 @@ namespace
 
 		if (!g_DynamicOffsetsReady.load(std::memory_order_acquire))
 		{
-			LOG(2, "FindAcquireThread: Dynamic Offsets Not Ready, Refusing\n");
+			LOG(2, XOR_STR_A("FindAcquireThread: Dynamic Offsets Not Ready, Refusing\n").get());
 			return 0;
 		}
 	// Rank by wakeability, not by TID: a GUI thread parked in GetMessage (WrUserRequest) is the
@@ -611,7 +611,7 @@ namespace
 				CloseHandle(DupProcess);
 			}
 
-			LOG(2, "Deferred Trampoline Handles Not Duplicated (Error = %u); Remote Allocation Retained\n", DupError);
+			LOG(2, XOR_STR_A("Deferred Trampoline Handles Not Duplicated (Error = %u); Remote Allocation Retained\n").get(), DupError);
 			return false;
 		}
 
@@ -639,11 +639,11 @@ namespace
 			CloseHandle(DupThread);
 			CloseHandle(DupProcess);
 
-			LOG(2, "Deferred Trampoline Enqueue Failed; Remote Allocation Retained\n");
+			LOG(2, XOR_STR_A("Deferred Trampoline Enqueue Failed; Remote Allocation Retained\n").get());
 			return false;
 		}
 
-		LOG(2, "Remote Allocation Deferred For Reclaim (Base = %p)\n", Base);
+		LOG(2, XOR_STR_A("Remote Allocation Deferred For Reclaim (Base = %p)\n").get(), Base);
 		return true;
 	}
 
@@ -684,7 +684,7 @@ namespace
 		{
 			if (DeferredProcessGone(Entry.Process))
 			{
-				LOG(2, "Deferred Trampoline Dropped: Target Process Gone (Base = %p)\n", Entry.Base);
+				LOG(2, XOR_STR_A("Deferred Trampoline Dropped: Target Process Gone (Base = %p)\n").get(), Entry.Base);
 
 				CloseDeferredTrampoline(Entry);
 				continue;
@@ -697,13 +697,13 @@ namespace
 				{
 					const DWORD free_error = GetLastError();
 
-					LOG(2, "Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n", free_error, Entry.Base);
+					LOG(2, XOR_STR_A("Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n").get(), free_error, Entry.Base);
 
 					retained.push_back(Entry);
 					continue;
 				}
 
-				LOG(2, "Deferred Trampoline Reclaimed: Donor Thread Exited (Base = %p)\n", Entry.Base);
+				LOG(2, XOR_STR_A("Deferred Trampoline Reclaimed: Donor Thread Exited (Base = %p)\n").get(), Entry.Base);
 
 				CloseDeferredTrampoline(Entry);
 				continue;
@@ -763,7 +763,7 @@ namespace
 
 				if (rewind_reclaimed && rewind_resumed)
 				{
-					LOG(2, "Deferred Trampoline Reclaimed: Stub Never Started; Donor Rewound (Base = %p)\n", Entry.Base);
+					LOG(2, XOR_STR_A("Deferred Trampoline Reclaimed: Stub Never Started; Donor Rewound (Base = %p)\n").get(), Entry.Base);
 
 					ScrubRemoteRegion(Entry.Process, Entry.Base, kDeferredTrampolineSize, kScrubChunk);
 					if (VirtualFreeEx(Entry.Process, Entry.Base, 0, MEM_RELEASE))
@@ -772,7 +772,7 @@ namespace
 						continue;
 					}
 
-					LOG(2, "Deferred Trampoline Free Failed; Retained (Base = %p)\n", Entry.Base);
+					LOG(2, XOR_STR_A("Deferred Trampoline Free Failed; Retained (Base = %p)\n").get(), Entry.Base);
 					retained.push_back(Entry);
 					continue;
 				}
@@ -818,13 +818,13 @@ namespace
 			{
 				const DWORD free_error = GetLastError();
 
-				LOG(2, "Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n", free_error, Entry.Base);
+				LOG(2, XOR_STR_A("Deferred Trampoline Free Failed (Error = %u); Retained (Base = %p)\n").get(), free_error, Entry.Base);
 
 				retained.push_back(Entry);
 				continue;
 			}
 
-			LOG(2, "Deferred Trampoline Reclaimed: Thread Outside Stub (Base = %p)\n", Entry.Base);
+			LOG(2, XOR_STR_A("Deferred Trampoline Reclaimed: Thread Outside Stub (Base = %p)\n").get(), Entry.Base);
 
 			CloseDeferredTrampoline(Entry);
 		}
@@ -854,7 +854,7 @@ namespace
 			{
 				for (DeferredTrampoline & Entry : retained)
 				{
-					LOG(2, "Deferred Trampoline Requeue Failed; Dropping Handles (Base = %p)\n", Entry.Base);
+					LOG(2, XOR_STR_A("Deferred Trampoline Requeue Failed; Dropping Handles (Base = %p)\n").get(), Entry.Base);
 
 					CloseDeferredTrampoline(Entry);
 				}
@@ -921,7 +921,7 @@ static void ProbeFpCaps(DWORD & OutFlags, DWORD & OutMask, const BYTE * pStatePa
 
 static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD & Out, DWORD Timeout, DWORD Flags, ULONG_PTR SponsorThread, DWORD SponsorTid, HANDLE CompletionEvent, const std::vector<DWORD> & excluded, ERROR_DATA & error_data)
 {
-	LOG(2, "Begin SR_AcquireThread\n");
+	LOG(2, XOR_STR_A("Begin SR_AcquireThread\n").get());
 
 	{
 		static DWORD diag_mitigation_pid = 0;
@@ -939,12 +939,17 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "Can't Initialize ProcessInformation Class\n");
+		LOG(2, XOR_STR_A("Can't Initialize ProcessInformation Class\n").get());
 
 		return SR_HT_ERR_PROC_INFO_FAIL;
 	}
 
-	const DWORD threadAccess = THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME | SYNCHRONIZE;
+	// THREAD_QUERY_INFORMATION is required, not optional: the ownership check below runs
+	// NtQueryInformationThread(ThreadBasicInformation) through ScGetProcessIdOfThread, and that
+	// query is denied with STATUS_ACCESS_DENIED on a handle that lacks query rights. Without the
+	// right the donor handle is discarded right after it is opened and the hijack can never run.
+	const DWORD threadAccess = THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
+		THREAD_QUERY_INFORMATION | SYNCHRONIZE;
 
 	const DWORD hijackAccess = INJ_THREAD_HIJACK_ACCESS;
 
@@ -1003,7 +1008,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 							if (processInformation.IsThreadWorkerThread())
 							{
 								sponsor_worker = true;
-								LOG(2, "Sponsor TID %06X Is A Loader Worker; Ignoring Sponsor\n", SponsorTidActual);
+								LOG(2, XOR_STR_A("Sponsor TID %06X Is A Loader Worker; Ignoring Sponsor\n").get(), SponsorTidActual);
 								break;
 							}
 							KTHREAD_STATE st{};
@@ -1025,18 +1030,18 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 
 								sponsor_usable = true;
-								LOG(2, "Sponsor TID %06X Waiting On Safe Reason %d (%s Wait); Accepting Sponsor\n",
+								LOG(2, XOR_STR_A("Sponsor TID %06X Waiting On Safe Reason %d (%s Wait); Accepting Sponsor\n").get(),
 									SponsorTidActual, static_cast<int>(wr),
-									WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(wr)) ? "Delay, Wake Time Unknown" : "Event");
+									WAIT_REASON_SAFE::IsDelay(static_cast<unsigned char>(wr)) ? XOR_STR_A("Delay, Wake Time Unknown").get() : XOR_STR_A("Event").get());
 							}
 							else if (sponsor_pass + 1 < kSponsorValidationPasses)
 							{
-								LOG(2, "Sponsor TID %06X Not Running (State = %d); Re-Checking\n",
+								LOG(2, XOR_STR_A("Sponsor TID %06X Not Running (State = %d); Re-Checking\n").get(),
 									SponsorTidActual, have_state ? static_cast<int>(st) : -1);
 							}
 							else
 							{
-								LOG(2, "Sponsor TID %06X Not Running (State = %d); Ignoring Sponsor\n",
+								LOG(2, XOR_STR_A("Sponsor TID %06X Not Running (State = %d); Ignoring Sponsor\n").get(),
 									SponsorTidActual, have_state ? static_cast<int>(st) : -1);
 							}
 							break;
@@ -1049,7 +1054,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			else
 			{
 
-				LOG(2, "Sponsor Validation Snapshot Failed; Ignoring Sponsor\n");
+				LOG(2, XOR_STR_A("Sponsor Validation Snapshot Failed; Ignoring Sponsor\n").get());
 			}
 
 			processInformation.SetCurrentThreadHandle(nullptr, 0);
@@ -1090,7 +1095,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				}
 				if (!sponsor_still_usable)
 				{
-					LOG(2, "Sponsor TID %06X Not Usable On Re-Check; Falling Back To Search\n", SponsorTidActual);
+					LOG(2, XOR_STR_A("Sponsor TID %06X Not Usable On Re-Check; Falling Back To Search\n").get(), SponsorTidActual);
 					sponsor_usable = false;
 				}
 			}
@@ -1116,7 +1121,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				Stats.NewHandle = PtrToUlong(hThread.get());
 				Stats.FailCode = INJ_ERR_SUCCESS;
 				RecordHijackOutcome(Stats, true);
-				LOG(2, "Acquired Target Thread Handle From Sponsor\n");
+				LOG(2, XOR_STR_A("Acquired Target Thread Handle From Sponsor\n").get());
 			}
 			else if (Duplicated)
 			{
@@ -1131,7 +1136,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				CloseHandle(Duplicated);
 			}
 
-			LOG(2, "Sponsor Thread Failed Validation\n");
+			LOG(2, XOR_STR_A("Sponsor Thread Failed Validation\n").get());
 		}
 	}
 
@@ -1190,7 +1195,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			donor_wake = WAIT_REASON_SAFE::WAKE_CLASS::Reject;
 			if (ThreadID)
 			{
-				LOG(2, "Second-Pass Snapshot Fallback = %06X\n", ThreadID);
+				LOG(2, XOR_STR_A("Second-Pass Snapshot Fallback = %06X\n").get(), ThreadID);
 			}
 		}
 	}
@@ -1202,7 +1207,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			donor_wake = WAIT_REASON_SAFE::WAKE_CLASS::Reject;
 			if (ThreadID)
 			{
-				LOG(2, "Acquired Target Thread Via Snapshot Fallback = %06X\n", ThreadID);
+				LOG(2, XOR_STR_A("Acquired Target Thread Via Snapshot Fallback = %06X\n").get(), ThreadID);
 			}
 		}
 
@@ -1210,13 +1215,13 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "No Compatible Thread Found\n");
+			LOG(2, XOR_STR_A("No Compatible Thread Found\n").get());
 
 			return SR_HT_ERR_NO_THREADS;
 		}
 	}
 
-	LOG(2, "Target Thread = %06X\n", ThreadID);
+	LOG(2, XOR_STR_A("Target Thread = %06X\n").get(), ThreadID);
 	if (ThreadCensusEnabled())
 	{
 		ProcessInformation census_pi;
@@ -1225,7 +1230,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	}
 	else
 	{
-		LOG(2, "[ThreadHijack] [*] Census Skipped (Not Requested; No Thread Opens)\n");
+		LOG(2, XOR_STR_A("[ThreadHijack] [*] Census Skipped (Not Requested; No Thread Opens)\n").get());
 	}
 
 	{
@@ -1237,7 +1242,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			ProcessInformation diag_pi;
 			if (diag_pi.SetProcess(hTargetProc))
 			{
-				LOG(1, "[ThreadHijack] [*] Hijack Diag: donor_census_begin\n");
+				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_begin\n").get());
 
 				do
 				{
@@ -1251,7 +1256,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					KWAIT_REASON diag_reason{ };
 					const bool diag_have = diag_pi.GetThreadState(diag_state, diag_reason);
 
-					LOG(1, "[ThreadHijack] [*] Hijack Diag: donor tid=0x%04X state=%d reason=%d safe=%d delay=%d\n",
+					LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor tid=0x%04X state=%d reason=%d safe=%d delay=%d\n").get(),
 						diag_tid,
 						diag_have ? static_cast<int>(diag_state) : -1,
 						diag_have ? static_cast<int>(diag_reason) : -1,
@@ -1260,7 +1265,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				}
 				while (diag_pi.NextThread());
 
-				LOG(1, "[ThreadHijack] [*] Hijack Diag: donor_census_end\n");
+				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_end\n").get());
 			}
 		}
 	}
@@ -1295,7 +1300,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					ScanStats.Source = static_cast<DWORD>(HijackSource::Scan);
 					RecordHijackOutcome(ScanStats, true);
 					hThread.reset(Hijacked);
-					LOG(2, "Acquired Target Thread Handle Via Acquisition\n");
+					LOG(2, XOR_STR_A("Acquired Target Thread Handle Via Acquisition\n").get());
 				}
 				else
 				{
@@ -1306,7 +1311,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					ScanStats.Source = static_cast<DWORD>(HijackSource::Scan);
 
 					Stats = ScanStats;
-					LOG(2, "Thread Handle Acquisition Found No Donor\n");
+					LOG(2, XOR_STR_A("Thread Handle Acquisition Found No Donor\n").get());
 				}
 			}
 
@@ -1320,12 +1325,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				{
 					INIT_ERROR_DATA(error_data, INJ_ERR_HANDLE_HIJACK_FAILED);
 
-					LOG(2, "Thread Handle Acquisition Found No Donor; Refusing (No Direct Fallback)\n");
+					LOG(2, XOR_STR_A("Thread Handle Acquisition Found No Donor; Refusing (No Direct Fallback)\n").get());
 
 					return SR_HT_ERR_OPEN_REFUSED;
 				}
 
-				LOG(2, "Thread Handle Acquisition Found No Donor; Direct Fallback Enabled By INJ_ALLOW_DIRECT_FALLBACK\n");
+				LOG(2, XOR_STR_A("Thread Handle Acquisition Found No Donor; Direct Fallback Enabled By INJ_ALLOW_DIRECT_FALLBACK\n").get());
 			}
 		}
 		else
@@ -1345,7 +1350,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		if (hThread && ScGetProcessIdOfThread(hThread.get()) != GetProcessId(hTargetProc))
 		{
-			LOG(2, "Opened Thread %06X No Longer Belongs To The Target Process; Discarding\n", ThreadID);
+			LOG(2, XOR_STR_A("Opened Thread %06X No Longer Belongs To The Target Process; Discarding\n").get(), ThreadID);
 
 			hThread.reset();
 		}
@@ -1354,7 +1359,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "OpenThread Failed\n");
+		LOG(2, XOR_STR_A("OpenThread Failed\n").get());
 
 		return SR_HT_ERR_OPEN_THREAD_FAIL;
 	}
@@ -1366,7 +1371,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			return true;
 		}
 
-		LOG(1, "[ThreadHijack] [!] ResumeThread Failed Permanently (%s); Donor Thread Left Suspended\n", site);
+		LOG(1, XOR_STR_A("[ThreadHijack] [!] ResumeThread Failed Permanently (%s); Donor Thread Left Suspended\n").get(), site);
 
 		return false;
 	};
@@ -1400,7 +1405,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "Shellcode State Layout Rejected (Code = %llx | State = %llx | Return = %llx | Area = %llx)\n",
+		LOG(2, XOR_STR_A("Shellcode State Layout Rejected (Code = %llx | State = %llx | Return = %llx | Area = %llx)\n").get(),
 			static_cast<unsigned long long>(shellcode_size),
 			static_cast<unsigned long long>(state_offset),
 			static_cast<unsigned long long>(return_target_offset),
@@ -1460,12 +1465,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			const size_t site_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(label) - shellcode_begin);
 			if (site_offset + prefix_len + sizeof(int) > code_size)
 			{
-				LOG(2, "Patch Site %s Out Of Range\n", site);
+				LOG(2, XOR_STR_A("Patch Site %s Out Of Range\n").get(), site);
 				return false;
 			}
 			if (memcmp(staged.data() + site_offset, prefix, prefix_len) != 0)
 			{
-				LOG(2, "Patch Site %s Opcode Mismatch\n", site);
+				LOG(2, XOR_STR_A("Patch Site %s Opcode Mismatch\n").get(), site);
 				return false;
 			}
 			int disp = 0;
@@ -1475,9 +1480,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			return true;
 		};
 
-		if (!patch_rel32(RemoteThreadLeaStateIn, lea_prefix, sizeof(lea_prefix), "lea-state-in") ||
-			!patch_rel32(RemoteThreadLeaStateOut, lea_prefix, sizeof(lea_prefix), "lea-state-out") ||
-			!patch_rel32(RemoteThreadJmpReturn, jmp_prefix, sizeof(jmp_prefix), "jmp-return"))
+		if (!patch_rel32(RemoteThreadLeaStateIn, lea_prefix, sizeof(lea_prefix), XOR_STR_A("lea-state-in").get()) ||
+			!patch_rel32(RemoteThreadLeaStateOut, lea_prefix, sizeof(lea_prefix), XOR_STR_A("lea-state-out").get()) ||
+			!patch_rel32(RemoteThreadJmpReturn, jmp_prefix, sizeof(jmp_prefix), XOR_STR_A("jmp-return").get()))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
@@ -1500,12 +1505,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				const size_t site_offset = static_cast<size_t>(reinterpret_cast<ULONG_PTR>(label) - shellcode_begin);
 				if (site_offset + sizeof(teb_read_prefix) + sizeof(DWORD) > code_size)
 				{
-					LOG(2, "Patch Site %s Out Of Range\n", site);
+					LOG(2, XOR_STR_A("Patch Site %s Out Of Range\n").get(), site);
 					return false;
 				}
 				if (memcmp(staged.data() + site_offset, prefix, sizeof(teb_read_prefix)) != 0)
 				{
-					LOG(2, "Patch Site %s Opcode Mismatch\n", site);
+					LOG(2, XOR_STR_A("Patch Site %s Opcode Mismatch\n").get(), site);
 					return false;
 				}
 				memcpy(staged.data() + site_offset + sizeof(teb_read_prefix), &teb_last_error, sizeof(teb_last_error));
@@ -1513,9 +1518,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			};
 
 			teb_patched =
-				patch_teb(RemoteThreadTebReadIn, teb_read_prefix, "teb-read-in") &&
-				patch_teb(RemoteThreadTebReadOut, teb_read_prefix, "teb-read-out") &&
-				patch_teb(RemoteThreadTebWrite, teb_write_prefix, "teb-write");
+				patch_teb(RemoteThreadTebReadIn, teb_read_prefix, XOR_STR_A("teb-read-in").get()) &&
+				patch_teb(RemoteThreadTebReadOut, teb_read_prefix, XOR_STR_A("teb-read-out").get()) &&
+				patch_teb(RemoteThreadTebWrite, teb_write_prefix, XOR_STR_A("teb-write").get());
 		}
 		if (!teb_patched)
 		{
@@ -1533,23 +1538,23 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "SuspendThread Failed\n");
+		LOG(2, XOR_STR_A("SuspendThread Failed\n").get());
 
 		return SR_HT_ERR_SUSPEND_FAIL;
 	}
 
 	if (sr_suspend > 0)
 	{
-		LOG(2, "Thread Was Already Suspended (Previous Count %u); Skipping It\n", sr_suspend);
+		LOG(2, XOR_STR_A("Thread Was Already Suspended (Previous Count %u); Skipping It\n").get(), sr_suspend);
 
-		ResumeDonorThread("already-suspended");
+		ResumeDonorThread(XOR_STR_A("already-suspended").get());
 
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
 		return SR_HT_ERR_SUSPEND_FAIL;
 	}
 
-	LOG(2, "Target Thread Suspended\n");
+	LOG(2, XOR_STR_A("Target Thread Suspended\n").get());
 
 	CONTEXT OldContext{ 0 };
 	OldContext.ContextFlags = CONTEXT_ALL;
@@ -1558,9 +1563,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "GetThreadContext Failed\n");
+		LOG(2, XOR_STR_A("GetThreadContext Failed\n").get());
 
-		ResumeDonorThread("get-context");
+		ResumeDonorThread(XOR_STR_A("get-context").get());
 
 		return SR_HT_ERR_GET_CONTEXT_FAIL;
 	}
@@ -1598,16 +1603,16 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	InterlockedExchange64(ReCa<volatile LONG64 *>(&g_ThreadExecStats.OldRsp), static_cast<LONG64>(OldContext.Rsp));
 	StoreThreadExecStat(g_ThreadExecStats.FpMode, remote_data->FpFlags);
 	StoreThreadExecStat(g_ThreadExecStats.FpMask, remote_data->FpMask);
-	LOG(1, "[ThreadHijack] [*] Context Captured: Target RIP = 0x%llX | RSP = 0x%llX\n", (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
-	LOG(1, "[ThreadHijack] [*] Floating-Point State: Mode = %s | Ceiling Mask = 0x%X | Area = %u Bytes\n", remote_data->FpFlags ? "XSAVE" : "FXSAVE", remote_data->FpMask, SR_FP_AREA_SIZE);
-	LOG(1, "[ThreadHijack] [*] Staging: VA = %p | Code RX = 0x1000 | State RW = 0x1000 | Shell Stack RW = %llu Bytes\n",
+	LOG(1, XOR_STR_A("[ThreadHijack] [*] Context Captured: Target RIP = 0x%llX | RSP = 0x%llX\n").get(), (unsigned long long)OldRIP, (unsigned long long)OldContext.Rsp);
+	LOG(1, XOR_STR_A("[ThreadHijack] [*] Floating-Point State: Mode = %s | Ceiling Mask = 0x%X | Area = %u Bytes\n").get(), remote_data->FpFlags ? XOR_STR_A("XSAVE").get() : XOR_STR_A("FXSAVE").get(), remote_data->FpMask, SR_FP_AREA_SIZE);
+	LOG(1, XOR_STR_A("[ThreadHijack] [*] Staging: VA = %p | Code RX = 0x1000 | State RW = 0x1000 | Shell Stack RW = %llu Bytes\n").get(),
 		pMem, static_cast<unsigned long long>(kHijackShellStack));
-	LOG(1, "[ThreadHijack] [*] RIP Redirection: 0x%llX -> %p\n", (unsigned long long)OldRIP, pRemoteFunc);
-	LOG(2, "Remote Thread Shell Prepared (W^X Split: Code RX 0x1000, State RW)\n");
+	LOG(1, XOR_STR_A("[ThreadHijack] [*] RIP Redirection: 0x%llX -> %p\n").get(), (unsigned long long)OldRIP, pRemoteFunc);
+	LOG(2, XOR_STR_A("Remote Thread Shell Prepared (W^X Split: Code RX 0x1000, State RW)\n").get());
 
-	LOG(2, "Acquiring Thread With:\n");
-	LOG(3, "pRoutine = %p\n", pRemoteFunc);
-	LOG(3, "pArg     = %p\n", pArg);
+	LOG(2, XOR_STR_A("Acquiring Thread With:\n").get());
+	LOG(3, XOR_STR_A("pRoutine = %p\n").get(), pRemoteFunc);
+	LOG(3, XOR_STR_A("pArg     = %p\n").get(), pArg);
 
 	{
 
@@ -1619,10 +1624,10 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "WriteProcessMemory Failed (Wrote %llu Of %llu Bytes)\n",
+			LOG(2, XOR_STR_A("WriteProcessMemory Failed (Wrote %llu Of %llu Bytes)\n").get(),
 				(unsigned long long)staged_written, (unsigned long long)staged.size());
 
-			ResumeDonorThread("write-memory");
+			ResumeDonorThread(XOR_STR_A("write-memory").get());
 
 			return SR_HT_ERR_WPM_FAIL;
 		}
@@ -1633,43 +1638,43 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		const BOOL guard_page_ok = ScProtectMemory(hTargetProc, ReCa<BYTE *>(pMem) + kHijackCodePage + kHijackStatePage, kHijackGuardPage, PAGE_NOACCESS);
 		if (!guard_page_ok)
 		{
-			LOG(2, "Guard Page Protect(NOACCESS) Failed\n");
+			LOG(2, XOR_STR_A("Guard Page Protect(NOACCESS) Failed\n").get());
 		}
 		else
 		{
-			LOG(2, "Guard Page Established (NOACCESS) Between State Page And Shell Stack\n");
+			LOG(2, XOR_STR_A("Guard Page Established (NOACCESS) Between State Page And Shell Stack\n").get());
 		}
 
 		if (!ScProtectMemory(hTargetProc, pCode, kHijackCodePage, PAGE_EXECUTE_READ))
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "Protect(RX) Failed\n");
+			LOG(2, XOR_STR_A("Protect(RX) Failed\n").get());
 
-			ResumeDonorThread("protect-rx");
+			ResumeDonorThread(XOR_STR_A("protect-rx").get());
 
 			return SR_HT_ERR_WPM_FAIL;
 		}
 
 		if (!FlushInstructionCache(hTargetProc, pCode, code_size))
 		{
-			LOG(2, "FlushInstructionCache Failed\n");
+			LOG(2, XOR_STR_A("FlushInstructionCache Failed\n").get());
 		}
-		LOG(2, "Acquired Code Promoted RW->RX, State Stays RW\n");
+		LOG(2, XOR_STR_A("Acquired Code Promoted RW->RX, State Stays RW\n").get());
 	}
 
 	if (AmegerDiagEnabled())
 	{
-		LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_base=0x%llX state_page=0x%llX code_size=0x%llX staged=0x%llX return_target=0x%llX\n",
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_base=0x%llX state_page=0x%llX code_size=0x%llX staged=0x%llX return_target=0x%llX\n").get(),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pCode)),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pState)),
 			static_cast<unsigned long long>(code_size),
 			static_cast<unsigned long long>(staged.size()),
 			static_cast<unsigned long long>(OldRIP));
 
-		DiagRegion(hTargetProc, pCode, "stub_code");
-		DiagRegion(hTargetProc, pState, "state_page");
-		DiagRegion(hTargetProc, ReCa<BYTE *>(pMem) + kHijackCodePage + kHijackStatePage, "guard_page");
+		DiagRegion(hTargetProc, pCode, XOR_STR_A("stub_code").get());
+		DiagRegion(hTargetProc, pState, XOR_STR_A("state_page").get());
+		DiagRegion(hTargetProc, ReCa<BYTE *>(pMem) + kHijackCodePage + kHijackStatePage, XOR_STR_A("guard_page").get());
 
 		std::vector<BYTE> readback(staged.size(), 0x00);
 		SIZE_T readback_size = 0;
@@ -1689,7 +1694,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			}
 		}
 
-		LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_readback ok=%d read=0x%llX expect=0x%llX match=%d first_diff=%lld\n",
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_readback ok=%d read=0x%llX expect=0x%llX match=%d first_diff=%lld\n").get(),
 			readback_ok ? 1 : 0,
 			static_cast<unsigned long long>(readback_size),
 			static_cast<unsigned long long>(staged.size()),
@@ -1701,7 +1706,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			DWORD head[12] = { };
 			memcpy(head, readback.data(), sizeof(head));
 
-			LOG(1, "[ThreadHijack] [*] Hijack Diag: stub_bytes=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n",
+			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_bytes=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n").get(),
 				head[0], head[1], head[2], head[3], head[4], head[5],
 				head[6], head[7], head[8], head[9], head[10], head[11]);
 		}
@@ -1712,9 +1717,9 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(2, "SetThreadContext Failed\n");
+		LOG(2, XOR_STR_A("SetThreadContext Failed\n").get());
 
-		ResumeDonorThread("set-context");
+		ResumeDonorThread(XOR_STR_A("set-context").get());
 
 		return SR_HT_ERR_SET_CONTEXT_FAIL;
 	}
@@ -1725,7 +1730,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		verify.ContextFlags = CONTEXT_CONTROL;
 		const NTSTATUS verify_status = ScNtGetContextThread(hThread, &verify);
 
-		LOG(1, "[ThreadHijack] [*] Hijack Diag: set_context status=0x%08X want_rip=0x%llX get_status=0x%08X rip_after=0x%llX stuck=%d\n",
+		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: set_context status=0x%08X want_rip=0x%llX get_status=0x%08X rip_after=0x%llX stuck=%d\n").get(),
 			static_cast<unsigned>(set_context_status),
 			static_cast<unsigned long long>(OldContext.Rip),
 			static_cast<unsigned>(verify_status),
@@ -1733,7 +1738,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			(NT_SUCCESS(verify_status) && verify.Rip == OldContext.Rip) ? 1 : 0);
 	}
 
-	LOG(2, "RIP Replaced\n");
+	LOG(2, XOR_STR_A("RIP Replaced\n").get());
 
 	{
 		ULONG sr_resume = 0;
@@ -1741,7 +1746,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		if (AmegerDiagEnabled())
 		{
-			LOG(1, "[ThreadHijack] [*] Hijack Diag: resume status=0x%08X previous_suspend=%u\n",
+			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: resume status=0x%08X previous_suspend=%u\n").get(),
 				static_cast<unsigned>(resume_status), sr_resume);
 		}
 
@@ -1749,36 +1754,36 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "ResumeThread Failed\n");
+			LOG(2, XOR_STR_A("ResumeThread Failed\n").get());
 
 			OldContext.Rip = OldRIP;
 			if (NT_FAIL(ScNtSetContextThread(hThread, &OldContext)))
 			{
-				LOG(2, "Thread Context Recovery Failed; Remote Allocation Retained\n");
+				LOG(2, XOR_STR_A("Thread Context Recovery Failed; Remote Allocation Retained\n").get());
 
 				if (!EnqueueDeferredTrampoline(hTargetProc, hThread, pMem))
 				{
-					LOG(1, "[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n", pMem);
+					LOG(1, XOR_STR_A("[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n").get(), pMem);
 				}
 
 				allocation_guard.release();
 				return SR_HT_ERR_RECOVERY_REQUIRED;
 			}
 
-			ResumeDonorThread("rollback-resume");
+			ResumeDonorThread(XOR_STR_A("rollback-resume").get());
 
 			return SR_HT_ERR_RESUME_FAIL;
 		}
 	}
 
-	LOG(2, "Thread Resumed\n");
+	LOG(2, XOR_STR_A("Thread Resumed\n").get());
 
 	SR_REMOTE_DATA data{ };
 	data.State			= SR_REMOTE_STATE::SR_RS_ExecutionPending;
 	data.Ret			= ERROR_SUCCESS;
 	data.LastWin32Error = ERROR_SUCCESS;
 
-	LOG(2, "Entering Wait State\n");
+	LOG(2, XOR_STR_A("Entering Wait State\n").get());
 
 
 
@@ -1842,7 +1847,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			}
 
-			resumed = ResumeDonorThread("force-restore");
+			resumed = ResumeDonorThread(XOR_STR_A("force-restore").get());
 			if (!resumed)
 			{
 				restored = false;
@@ -1889,17 +1894,17 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		if (RemoteRoutineSettled(State) && StubRegionFreeToRelease())
 		{
-			LOG(2, "Thread Is No Longer Inside The Stub; Remote Allocation Reclaimed\n");
+			LOG(2, XOR_STR_A("Thread Is No Longer Inside The Stub; Remote Allocation Reclaimed\n").get());
 			return;
 		}
 
 		if (!RemoteRoutineSettled(State))
 		{
-			LOG(2, "Stub State Not Settled (State = %d); Remote Allocation Deferred For Reclaim\n", static_cast<int>(State));
+			LOG(2, XOR_STR_A("Stub State Not Settled (State = %d); Remote Allocation Deferred For Reclaim\n").get(), static_cast<int>(State));
 		}
 		else
 		{
-			LOG(2, "Thread Context Recovery Failed; Remote Allocation Deferred For Reclaim\n");
+			LOG(2, XOR_STR_A("Thread Context Recovery Failed; Remote Allocation Deferred For Reclaim\n").get());
 		}
 
 		if (EnqueueDeferredTrampoline(hTargetProc, hThread, pMem))
@@ -1908,11 +1913,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		}
 		else if (StubRegionFreeToRelease())
 		{
-			LOG(2, "Deferred Tracking Unavailable; Thread Outside Stub, Reclaiming Now\n");
+			LOG(2, XOR_STR_A("Deferred Tracking Unavailable; Thread Outside Stub, Reclaiming Now\n").get());
 		}
 		else
 		{
-			LOG(1, "[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n", pMem);
+			LOG(1, XOR_STR_A("[ThreadHijack] [!] Deferred Tracking Unavailable; Remote Allocation Retained Untracked (Base = %p)\n").get(), pMem);
 
 			allocation_guard.release();
 		}
@@ -1975,11 +1980,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				completion_seen = true;
 				completion_seen_at = GetTickCount64();
 
-				LOG(2, "Completion Event Signaled; Polling The State Page At Full Speed\n");
+				LOG(2, XOR_STR_A("Completion Event Signaled; Polling The State Page At Full Speed\n").get());
 			}
 			else if (GetTickCount64() - completion_seen_at > 1000)
 			{
-				LOG(2, "Completion Event Signaled But The Stub State Has Not Settled Yet; Continuing To Poll\n");
+				LOG(2, XOR_STR_A("Completion Event Signaled But The Stub State Has Not Settled Yet; Continuing To Poll\n").get());
 			}
 
 			poll_wait_ms = 1;
@@ -2010,7 +2015,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			if (RemoteRoutineSettled(data.State))
 			{
-				LOG(2, "ShellData Retrieved\n");
+				LOG(2, XOR_STR_A("ShellData Retrieved\n").get());
 				const DWORD exec_ms = static_cast<DWORD>(GetTickCount64() - Timer);
 				StoreThreadExecStat(g_ThreadExecStats.PollIterations, poll_iterations);
 				StoreThreadExecStat(g_ThreadExecStats.ExecMs, exec_ms);
@@ -2024,20 +2029,20 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					StoreThreadExecStat(g_ThreadExecStats.FpMask, data.FpMask);
 				}
 				const bool shell_pivot_ok = data.ShellStackTop >= shell_base && data.ShellStackTop < shell_end;
-				LOG(1, "[ThreadHijack] [*] Polling Execution: State = Finished | Iterations = %u | Elapsed = %u ms | Return Value = 0x%08X\n", poll_iterations, exec_ms, data.Ret);
+				LOG(1, XOR_STR_A("[ThreadHijack] [*] Polling Execution: State = Finished | Iterations = %u | Elapsed = %u ms | Return Value = 0x%08X\n").get(), poll_iterations, exec_ms, data.Ret);
 
 				if (CompletionEvent)
 				{
-					LOG(1, "[ThreadHijack] [%s] Completion Event: %s | Iterations = %u\n",
+					LOG(1, XOR_STR_A("[ThreadHijack] [%s] Completion Event: %s | Iterations = %u\n").get(),
 						completion_seen ? "+" : "*",
-						completion_seen ? "Signaled Before The State Page Settled" : "Not Observed Before Settlement",
+						completion_seen ? XOR_STR_A("Signaled Before The State Page Settled").get() : XOR_STR_A("Not Observed Before Settlement").get(),
 						poll_iterations);
 				}
 
 				if (shell_pivot_ok)
 				{
 					StoreThreadExecStat(g_ThreadExecStats.Success, 1);
-					LOG(1, "[ThreadHijack] [+] Shell Stack Pivot: RSP = 0x%llX Inside 0x%llX..0x%llX | Victim Stack Spill = %u Bytes (Register Values Only) | Cycles = %llu\n",
+					LOG(1, XOR_STR_A("[ThreadHijack] [+] Shell Stack Pivot: RSP = 0x%llX Inside 0x%llX..0x%llX | Victim Stack Spill = %u Bytes (Register Values Only) | Cycles = %llu\n").get(),
 						(unsigned long long)data.ShellStackTop,
 						(unsigned long long)shell_base, (unsigned long long)shell_end,
 						static_cast<unsigned>(kHijackVictimStackBytes),
@@ -2047,7 +2052,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				{
 					StoreThreadExecStat(g_ThreadExecStats.Success, 0);
 					StoreThreadExecStat(g_ThreadExecStats.FailCode, SR_HT_ERR_SHELL_PIVOT_INVALID);
-					LOG(1, "[ThreadHijack] [x] Shell Stack Pivot Not Verified: RSP = 0x%llX Outside 0x%llX..0x%llX; The Victim Stack May Have Been Used\n",
+					LOG(1, XOR_STR_A("[ThreadHijack] [x] Shell Stack Pivot Not Verified: RSP = 0x%llX Outside 0x%llX..0x%llX; The Victim Stack May Have Been Used\n").get(),
 						(unsigned long long)data.ShellStackTop,
 						(unsigned long long)shell_base, (unsigned long long)shell_end);
 				}
@@ -2090,7 +2095,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					}
 				}
 
-				LOG(1, "[ThreadHijack] [*] Hijack Diag: pending t=%llu rip=0x%llX rip_at_stub=%d ctx_status=0x%08X thread_state=%d wait_reason=%d target_alive=%d exit=0x%08X\n",
+				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: pending t=%llu rip=0x%llX rip_at_stub=%d ctx_status=0x%08X thread_state=%d wait_reason=%d target_alive=%d exit=0x%08X\n").get(),
 					static_cast<unsigned long long>(waited),
 					static_cast<unsigned long long>(live.Rip),
 					(NT_SUCCESS(live_context) && live.Rip == ReCa<ULONG_PTR>(pCode)) ? 1 : 0,
@@ -2102,12 +2107,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending && waited >= startup_probe_ms)
 			{
-				LOG(2, "Stub Not Scheduled Within %u ms (Sampled State Was %s, %s Donor); Failing Fast\n",
-					startup_probe_ms, selected_was_running ? "Running" : "Waiting",
-					donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable ? "UserRequest"
-						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? "Delay"
-						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Nudgeable ? "WrUserRequest"
-						: "Unclassified");
+				LOG(2, XOR_STR_A("Stub Not Scheduled Within %u ms (Sampled State Was %s, %s Donor); Failing Fast\n").get(),
+					startup_probe_ms, selected_was_running ? XOR_STR_A("Running").get() : XOR_STR_A("Waiting").get(),
+					donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable ? XOR_STR_A("UserRequest").get()
+						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? XOR_STR_A("Delay").get()
+						: donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Nudgeable ? XOR_STR_A("WrUserRequest").get()
+						: XOR_STR_A("Unclassified").get());
 
 				break;
 			}
@@ -2124,17 +2129,17 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					// waiter still wakes on its own timer, so the poll keeps its bound.
 					if (donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::Unwakeable)
 					{
-						LOG(2, "Wake Nudge Failed For TID %06X (UserRequest Waiter, Not Self-Expiring); Abandoning Donor\n", ThreadID);
+						LOG(2, XOR_STR_A("Wake Nudge Failed For TID %06X (UserRequest Waiter, Not Self-Expiring); Abandoning Donor\n").get(), ThreadID);
 
 						break;
 					}
 
-					LOG(2, "Wake Nudge Failed For TID %06X (%s Waiter); Relying On The Poll Alone\n", ThreadID,
-						donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? "Delay" : "Unclassified");
+					LOG(2, XOR_STR_A("Wake Nudge Failed For TID %06X (%s Waiter); Relying On The Poll Alone\n").get(), ThreadID,
+						donor_wake == WAIT_REASON_SAFE::WAKE_CLASS::SelfExpiring ? XOR_STR_A("Delay").get() : XOR_STR_A("Unclassified").get());
 				}
 				else
 				{
-					LOG(2, "Stub Unscheduled For %u ms; Wake Nudge Sent\n", nudge_after_ms);
+					LOG(2, XOR_STR_A("Stub Unscheduled For %u ms; Wake Nudge Sent\n").get(), nudge_after_ms);
 				}
 			}
 		}
@@ -2143,7 +2148,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_INTERRUPT);
 
-			LOG(2, "Interrupt!\n");
+			LOG(2, XOR_STR_A("Interrupt!\n").get());
 
 			bool context_restored = false;
 			bool resumed = false;
@@ -2169,7 +2174,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			{
 				INIT_ERROR_DATA(error_data, target_exit);
 
-				LOG(2, "Target Process Exited During Load\n");
+				LOG(2, XOR_STR_A("Target Process Exited During Load\n").get());
 
 				allocation_guard.release();
 
@@ -2183,7 +2188,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(2, "ReadProcessMemory Failed\n");
+			LOG(2, XOR_STR_A("ReadProcessMemory Failed\n").get());
 
 			bool context_restored = false;
 			bool resumed = false;
@@ -2209,7 +2214,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		bool resumed = false;
 		if (data.State == SR_REMOTE_STATE::SR_RS_ExecutionPending)
 		{
-			LOG(2, "Shell Timed Out\n");
+			LOG(2, XOR_STR_A("Shell Timed Out\n").get());
 
 			ForceRestoreContext(context_restored, resumed);
 		}
@@ -2248,7 +2253,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	}
 
-	LOG(2, "pRoutine Returned = %08X\n", data.Ret);
+	LOG(2, XOR_STR_A("pRoutine Returned = %08X\n").get(), data.Ret);
 
 	Out	= data.Ret;
 
@@ -2295,11 +2300,11 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				context_restored = NT_SUCCESS(ScNtSetContextThread(hThread, &check_context)) != FALSE;
 			}
 
-			resumed_check = ResumeDonorThread("exec-verify");
+			resumed_check = ResumeDonorThread(XOR_STR_A("exec-verify").get());
 		}
 		else
 		{
-			resumed_check = ResumeDonorThread("exec-verify-no-context");
+			resumed_check = ResumeDonorThread(XOR_STR_A("exec-verify-no-context").get());
 		}
 
 		if (!resumed_check)
@@ -2310,12 +2315,12 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	if (context_restored)
 	{
-		LOG(2, "Thread Context Restored Automatically\n");
-		LOG(1, "[ThreadHijack] [+] Context Verification: Restored RIP = 0x%llX | Thread Resumed\n", (unsigned long long)OldRIP);
+		LOG(2, XOR_STR_A("Thread Context Restored Automatically\n").get());
+		LOG(1, XOR_STR_A("[ThreadHijack] [+] Context Verification: Restored RIP = 0x%llX | Thread Resumed\n").get(), (unsigned long long)OldRIP);
 	}
 	else
 	{
-		LOG(1, "[ThreadHijack] [x] Context Verification Failed: RIP = 0x%llX | Not Restored\n", (unsigned long long)OldRIP);
+		LOG(1, XOR_STR_A("[ThreadHijack] [x] Context Verification Failed: RIP = 0x%llX | Not Restored\n").get(), (unsigned long long)OldRIP);
 	}
 
 	ReclaimOrRetainTrampoline(context_restored, data.State);
@@ -2372,7 +2377,7 @@ DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD
 		const ULONG_PTR sponsor_handle = sponsor_round ? SponsorThread : 0;
 		const DWORD sponsor_tid = sponsor_round ? SponsorTid : 0;
 
-		LOG(2, "Donor Round %d/%d, %u ms Remaining, %u Candidate(s) Excluded\n",
+		LOG(2, XOR_STR_A("Donor Round %d/%d, %u ms Remaining, %u Candidate(s) Excluded\n").get(),
 			round + 1, kMaxDonorRounds, remaining, static_cast<DWORD>(excluded.size()));
 
 		StoreThreadExecStat(g_ThreadExecStats.DonorRounds, round + 1);
@@ -2406,12 +2411,12 @@ DWORD SR_HijackThread(HANDLE hTargetProc, f_Routine pRoutine, void * pArg, DWORD
 			if (failed_tid && !IsExcluded(excluded, failed_tid))
 			{
 				excluded.push_back(failed_tid);
-				LOG(2, "Excluding Donor TID %06X After Code %08X\n", failed_tid, last_code);
+				LOG(2, XOR_STR_A("Excluding Donor TID %06X After Code %08X\n").get(), failed_tid, last_code);
 			}
 		}
 	}
 
-	LOG(2, "Donor Search Exhausted After %u Round(s)\n", static_cast<DWORD>(excluded.size()));
+	LOG(2, XOR_STR_A("Donor Search Exhausted After %u Round(s)\n").get(), static_cast<DWORD>(excluded.size()));
 
 	ReapDeferredTrampolines();
 

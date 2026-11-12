@@ -264,7 +264,7 @@ struct WizardConfig
     std::wstring donor_owner_blocklist;
 
 
-    std::wstring test_target = L"notepad.exe";
+    std::wstring test_target = std::wstring(XOR_STR_W(L"notepad.exe").get());
 
     std::wstring target_name;
     std::wstring expected_payload_sha256;
@@ -457,7 +457,7 @@ namespace stealth
         const HijackContext * Context, const MAP_STATS * MapStats, const VERIFIABLE_EXEC_TELEMETRY * ExecTelemetry,
         f_GetLastStringStats get_string_stats,
         bool survey_game_traps, DWORD survey_pid, bool * wx_violated, const WizardConfig & config,
-        StealthVerifierBuffers & buffers);
+        StealthVerifierBuffers & buffers, int & inconclusive_checks);
 
 
     const wchar_t * StealthPageDesc(DWORD p);

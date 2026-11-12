@@ -57,15 +57,16 @@ namespace dyn
 	inline bool LoadDbgHelp(DbgHelpTable & table, HMODULE & module)
 	{
 
-		static const char * const kExports[] = {
-			"SymInitialize",
-			"SymCleanup",
-			"SymSetOptions",
-			"SymLoadModuleEx",
-			"SymUnloadModule64",
-			"SymFromName",
-			"SymGetTypeFromName",
-			"SymGetTypeInfo",
+		static const std::string kExports[] =
+		{
+			std::string(XOR_STR_A("SymInitialize").get()),
+			std::string(XOR_STR_A("SymCleanup").get()),
+			std::string(XOR_STR_A("SymSetOptions").get()),
+			std::string(XOR_STR_A("SymLoadModuleEx").get()),
+			std::string(XOR_STR_A("SymUnloadModule64").get()),
+			std::string(XOR_STR_A("SymFromName").get()),
+			std::string(XOR_STR_A("SymGetTypeFromName").get()),
+			std::string(XOR_STR_A("SymGetTypeInfo").get()),
 		};
 
 		FARPROC resolved[_countof(kExports)]{};
@@ -79,7 +80,7 @@ namespace dyn
 
 		for (size_t i = 0; i < _countof(kExports); ++i)
 		{
-			FARPROC proc = GetProcAddress(loaded, kExports[i]);
+			FARPROC proc = GetProcAddress(loaded, kExports[i].c_str());
 			if (!proc)
 			{
 				FreeLibrary(loaded);
@@ -123,13 +124,14 @@ namespace dyn
 
 	inline bool LoadWinInet(WinInetTable & table, HMODULE & module)
 	{
-		static const char * const kExports[] = {
-			"InternetOpenW",
-			"InternetSetOptionW",
-			"InternetQueryOptionW",
-			"InternetOpenUrlW",
-			"InternetReadFile",
-			"InternetCloseHandle",
+		static const std::string kExports[] =
+		{
+			std::string(XOR_STR_A("InternetOpenW").get()),
+			std::string(XOR_STR_A("InternetSetOptionW").get()),
+			std::string(XOR_STR_A("InternetQueryOptionW").get()),
+			std::string(XOR_STR_A("InternetOpenUrlW").get()),
+			std::string(XOR_STR_A("InternetReadFile").get()),
+			std::string(XOR_STR_A("InternetCloseHandle").get()),
 		};
 
 		FARPROC resolved[_countof(kExports)]{};
@@ -143,7 +145,7 @@ namespace dyn
 
 		for (size_t i = 0; i < _countof(kExports); ++i)
 		{
-			FARPROC proc = GetProcAddress(loaded, kExports[i]);
+			FARPROC proc = GetProcAddress(loaded, kExports[i].c_str());
 			if (!proc)
 			{
 				FreeLibrary(loaded);

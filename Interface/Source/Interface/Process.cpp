@@ -28,13 +28,13 @@ namespace
     LoaderListState ReadLoaderListState(HANDLE process)
     {
         using NtQueryInformationProcessFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-        auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        auto ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
         if (!ntdll)
         {
             return LoaderListState::Unknown;
         }
         auto query = reinterpret_cast<NtQueryInformationProcessFn>(
-            GetProcAddress(ntdll, "NtQueryInformationProcess"));
+            GetProcAddress(ntdll, XOR_STR_A("NtQueryInformationProcess").get()));
         if (!query)
         {
             return LoaderListState::Unknown;

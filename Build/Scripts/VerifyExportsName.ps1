@@ -8,7 +8,11 @@ $e = [BitConverter]::ToInt32($bytes, 0x3C)
 $magic = [BitConverter]::ToUInt16($bytes, $e + 24)
 $optOff = $e + 24
 $numSections = [BitConverter]::ToUInt16($bytes, $e + 6)
-$secOff = $e + 24 + (0xF0, 0xE0)[$magic -ne 0x20B]
+# The section table starts right after the optional header, whose size is recorded in the
+# COFF header. It must be read rather than assumed: a hardcoded 0xF0/0xE0 breaks on any image
+# whose optional header is a different size (extra data directories, for example).
+$optSize = [BitConverter]::ToUInt16($bytes, $e + 20)
+$secOff = $e + 24 + $optSize
 function RvaToOff($rva) {
     for ($i = 0; $i -lt $numSections; $i++) {
         $o = $secOff + $i * 40
@@ -41,7 +45,10 @@ if ($numNames -gt 0 -and $null -eq $namesOff) {
     Write-Host "FAIL: export name table RVA 0x$($namesRva.ToString('X')) is outside every section"
     exit 1
 }
-$bad = @("CoreExecute","CoreStart","CoreStop","CoreFetch","CoreSetTrace","CoreLastError","CoreClearLastError","CoreExecStats","CoreSymbolState","CoreImportState","CoreAcqStats","CoreLoadStats","CoreExecTelemetry","CoreStrStats")
+# Every Core* export the launcher can resolve has to be in this list. A name that is missing
+# here would be allowed to survive the shuffle in the clear, which is exactly the fingerprint
+# this check exists to prevent.
+$bad = @("CoreExecute","CoreStart","CoreStop","CoreFetch","CoreSetTrace","CoreLastError","CoreClearLastError","CoreExecStats","CoreSymbolState","CoreImportState","CoreAcqStats","CoreLoadStats","CoreExecTelemetry","CoreStrStats","CoreAbiVersion")
 $found = @()
 for ($i = 0; $i -lt $numNames; $i++) {
     $nrva = [BitConverter]::ToUInt32($bytes, $namesOff + $i * 4)

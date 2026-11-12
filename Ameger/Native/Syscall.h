@@ -4,7 +4,12 @@
 
 #include "NT/Windows11.h"
 
-constexpr DWORD ScHash(const char * s)
+// The syscall names are hashed rather than stored, so the names themselves never have to exist
+// in the binary. The hash is computed by a consteval call on purpose: a plain runtime call would
+// need the address of the stringified name, which forces that name into .rdata - exactly the
+// signature this table exists to avoid. A consteval call is evaluated at compile time, so the
+// literal is never emitted.
+consteval DWORD ScHash(const char * s)
 {
 	DWORD h = 0x811C9DC5u;
 	while (*s)
@@ -541,7 +546,7 @@ __forceinline NTSTATUS ScNtMapViewOfSection(HANDLE SectionHandle, HANDLE Process
 
 	// Track B step 6: per-arg logging immediately before the syscall.
 	// Log both the pointer AND the pointed-to value for ViewSize / SectionOffset.
-	LOG(1, "[+] ScNtMapViewOfSection args: hSection=0x%08X hProc=0x%08X pBase=0x%08X ZeroBits=0x%08X CommitSize=0x%08X pOffset=0x%08X (val=%d) pViewSize=0x%08X (val=0x%08X) Inherit=0x%08X AllocType=0x%08X Win32Protect=0x%08X\n",
+	LOG(1, XOR_STR_A("[+] ScNtMapViewOfSection args: hSection=0x%08X hProc=0x%08X pBase=0x%08X ZeroBits=0x%08X CommitSize=0x%08X pOffset=0x%08X (val=%d) pViewSize=0x%08X (val=0x%08X) Inherit=0x%08X AllocType=0x%08X Win32Protect=0x%08X\n").get(),
 		static_cast<unsigned>(reinterpret_cast<uintptr_t>(SectionHandle) & 0xFFFFFFFF),
 		static_cast<unsigned>(reinterpret_cast<uintptr_t>(ProcessHandle) & 0xFFFFFFFF),
 		static_cast<unsigned>(reinterpret_cast<uintptr_t>(BaseAddress) & 0xFFFFFFFF),

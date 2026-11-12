@@ -12,11 +12,11 @@ DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 
 	if (!print)
 	{
-		LOG(0, "Removed Print Callback\n");
+		LOG(0, XOR_STR_A("Removed Print Callback\n").get());
 	}
 	else
 	{
-		LOG(0, "Set Print Callback\n");
+		LOG(0, XOR_STR_A("Set Print Callback\n").get());
 	}
 
 	return INJ_ERR_SUCCESS;

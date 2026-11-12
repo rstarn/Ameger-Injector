@@ -522,6 +522,47 @@ namespace PE_IMAGE
 			{
 				return FILE_ERR_INVALID_PE_LAYOUT;
 			}
+
+			// The fields inside the TLS directory are VIRTUAL ADDRESSES, not RVAs: the raw data
+			// range, the index slot and the callback array. The manual mapper writes through the
+			// index slot and walks the callback array inside the target, so an image that points
+			// them outside itself would make the mapper write to an address of the target's
+			// choosing. They are checked against the image here.
+			const ULONGLONG image_base = nt_headers.OptionalHeader.ImageBase;
+			const ULONGLONG image_end = image_base + size_of_image;
+			const IMAGE_TLS_DIRECTORY & tls_dir = *reinterpret_cast<const IMAGE_TLS_DIRECTORY *>(tls_mapping.Data);
+
+			const auto va_in_image = [image_base, image_end](ULONGLONG va) -> bool
+			{
+				return va == 0 || (va >= image_base && va < image_end);
+			};
+
+			if (!va_in_image(tls_dir.StartAddressOfRawData) ||
+				!va_in_image(tls_dir.EndAddressOfRawData) ||
+				!va_in_image(tls_dir.AddressOfIndex) ||
+				!va_in_image(tls_dir.AddressOfCallBacks))
+			{
+				return FILE_ERR_INVALID_PE_LAYOUT;
+			}
+
+			if (tls_dir.StartAddressOfRawData)
+			{
+				if (tls_dir.EndAddressOfRawData < tls_dir.StartAddressOfRawData)
+				{
+					return FILE_ERR_INVALID_PE_LAYOUT;
+				}
+			}
+			else if (tls_dir.EndAddressOfRawData)
+			{
+				return FILE_ERR_INVALID_PE_LAYOUT;
+			}
+
+			// The loader zero-fills this much extra space per thread. A huge value would ask the
+			// target for an absurd TLS block.
+			if (tls_dir.SizeOfZeroFill > 0x10000)
+			{
+				return FILE_ERR_INVALID_PE_LAYOUT;
+			}
 		}
 
 		if (options.RequireExports && !ValidateExports(view))

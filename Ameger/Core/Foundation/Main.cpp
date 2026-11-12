@@ -92,7 +92,7 @@ std::wstring g_SymbolCacheRoot;
 		}
 		catch (...)
 		{
-			LOG(0, "SymbolWorkerEntry: Unhandled Exception\n");
+			LOG(0, XOR_STR_A("SymbolWorkerEntry: Unhandled Exception\n").get());
 			result = SYMBOL_ERR_DOWNLOAD_FAILED;
 		}
 
@@ -117,7 +117,7 @@ std::wstring g_SymbolCacheRoot;
 		}
 		catch (...)
 		{
-			LOG(0, "ImportWorkerEntry: Unhandled Exception\n");
+			LOG(0, XOR_STR_A("ImportWorkerEntry: Unhandled Exception\n").get());
 			result = INJ_ERR_UNHANDLED_EXCEPTION;
 		}
 
@@ -187,7 +187,7 @@ DWORD __stdcall InitializeRuntime()
 
 	if (!GetOwnModulePathW(g_RootPathW))
 	{
-		LOG(0, "Couldn't Resolve Own Module Path (Unicode)\n");
+		LOG(0, XOR_STR_A("Couldn't Resolve Own Module Path (Unicode)\n").get());
 
 		return RuntimeInitializationFailed(INJ_ERR_CANT_GET_MODULE_PATH);
 	}
@@ -198,7 +198,7 @@ DWORD __stdcall InitializeRuntime()
 	g_hInterruptImport = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	if (!g_hRunningEvent || !g_hInterruptEvent || !g_hInterruptedEvent || !g_hInterruptImport)
 	{
-		LOG(0, "Failed To Create Synchronization Events = %08X\n", GetLastError());
+		LOG(0, XOR_STR_A("Failed To Create Synchronization Events = %08X\n").get(), GetLastError());
 
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_EXT);
 	}
@@ -206,7 +206,7 @@ DWORD __stdcall InitializeRuntime()
 	wchar_t * windows_directory = nullptr;
 	if (_wdupenv_s(&windows_directory, nullptr, XOR_STR_W(L"WINDIR").get()) || !windows_directory)
 	{
-		LOG(0, "Couldn't Resolve %%WINDIR%%\n");
+		LOG(0, XOR_STR_A("Couldn't Resolve %%WINDIR%%\n").get());
 		return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 	}
 
@@ -224,7 +224,7 @@ DWORD __stdcall InitializeRuntime()
 
 		if (!CreateDirectoryW(symbol_cache_root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 		{
-			LOG(0, "Couldn't Create The Fallback Symbol Cache Directory = %08X\n", GetLastError());
+			LOG(0, XOR_STR_A("Couldn't Create The Fallback Symbol Cache Directory = %08X\n").get(), GetLastError());
 			return RuntimeInitializationFailed(INJ_ERR_CANT_GET_TEMP_DIR);
 		}
 	}
@@ -248,12 +248,12 @@ DWORD __stdcall InitializeRuntime()
 		if (!sym_started)
 			delete sym_params;
 
-		LOG(0, "Runtime Initialization Failed While Launching Worker Threads\n");
+		LOG(0, XOR_STR_A("Runtime Initialization Failed While Launching Worker Threads\n").get());
 		return RuntimeInitializationFailed(INJ_ERR_OUT_OF_MEMORY_NEW);
 	}
 
 	InterlockedExchange(&g_RuntimeInitializationState, RUNTIME_STATE_READY);
-	LOG(0, "Runtime Initialization Started\n");
+	LOG(0, XOR_STR_A("Runtime Initialization Started\n").get());
 
 	return INJ_ERR_SUCCESS;
 }

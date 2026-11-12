@@ -167,6 +167,32 @@ try {
         [Array]::Copy($enc, 0, $bytes, $ent.Offset, $enc.Length)
         $bytes[$ent.Offset + $ent.Length] = 0
     }
+
+    # The export directory also carries a MODULE NAME (IMAGE_EXPORT_DIRECTORY.Name). For a
+    # DLL that is the original file name - for the runtime that is the tool's own name, which
+    # is a fingerprint all by itself. It is overwritten in place with a random alphanumeric
+    # string of the SAME length, so no offset in the image shifts and nothing that resolves
+    # the exports (the launcher resolves them by name through the export map) is affected.
+    $modNameRva = [BitConverter]::ToUInt32($bytes, $eo + 12)
+    if ($modNameRva -ne 0) {
+        $mo = Convert-RvaToOffset $bytes $secBase $nsec $modNameRva
+        if ($mo -ge 0 -and $mo -lt $bytes.Length) {
+            $mlen = 0
+            while (($mo + $mlen) -lt $bytes.Length -and $bytes[$mo + $mlen] -ne 0) { $mlen++ }
+            if ($mlen -gt 0 -and ($mo + $mlen) -lt $bytes.Length) {
+                $modTail = New-Object 'char[]' $mlen
+                for ($k = 0; $k -lt $mlen; $k++) {
+                    $rng.GetBytes($oneByte)
+                    $modTail[$k] = $alnum[$oneByte[0] % $alnum.Length]
+                }
+                $modText = (-join $modTail)
+                if (-not $modText.ToLowerInvariant().StartsWith("core")) {
+                    $modEnc = [Text.Encoding]::ASCII.GetBytes($modText)
+                    [Array]::Copy($modEnc, 0, $bytes, $mo, $modEnc.Length)
+                }
+            }
+        }
+    }
 } finally {
     $rng.Dispose()
 }
@@ -228,6 +254,18 @@ for ($i = 0; $i -lt $entries.Count; $i++) {
 
     $vord = [BitConverter]::ToUInt16($v, $vaoOff + 2 * $i)
     if ($vord -ne $ent.Ordinal) { Fail ("Ordinal Index Changed At Slot " + $i) }
+
+    $vModNameRva = [BitConverter]::ToUInt32($v, $veo + 12)
+    if ($vModNameRva -ne 0) {
+        $vMo = Convert-RvaToOffset $v $vsecBase $vnsec $vModNameRva
+        if ($vMo -ge 0 -and $vMo -lt $v.Length) {
+            $vMlen = 0
+            while (($vMo + $vMlen) -lt $v.Length -and $v[$vMo + $vMlen] -ne 0) { $vMlen++ }
+            $vModName = [Text.Encoding]::ASCII.GetString($v, $vMo, $vMlen)
+            if ($vModName.ToLowerInvariant().StartsWith("core")) { Fail ("Export Module Name Still Looks Canonical: " + $vModName) }
+            if ($vModName -match '[\\/]') { Fail ("Export Module Name Still Carries A Path: " + $vModName) }
+        }
+    }
     $funcIdx = [int]$vord
     if ($funcIdx -lt 0 -or $funcIdx -ge $nFunc) { Fail ("Ordinal Index " + $vord + " Outside The Function Table") }
     $funcRva = [BitConverter]::ToUInt32($v, $vafOff + 4 * $funcIdx)

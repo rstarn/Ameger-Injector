@@ -45,7 +45,7 @@ namespace
 						stats.ProbeMethod = (flags & INJ_SKIP_SPONSOR_ROUNDTRIP) ? 0 : 3;
 						stats.FailCode = INJ_ERR_SUCCESS;
 						RecordHijackOutcome(stats, false);
-						LOG(0, "Acquired Target Process Handle From Sponsor\n");
+						LOG(0, XOR_STR_A("Acquired Target Process Handle From Sponsor\n").get());
 
 						return INJ_ERR_SUCCESS;
 					}
@@ -56,7 +56,7 @@ namespace
 					}
 				}
 
-				LOG(0, "Sponsor Handle Failed Validation\n");
+				LOG(0, XOR_STR_A("Sponsor Handle Failed Validation\n").get());
 			}
 
 			if (!(flags & INJ_NO_DONOR_SCAN))
@@ -74,12 +74,12 @@ namespace
 				{
 					out.reset(hijacked);
 					RecordHijackOutcome(stats, false);
-					LOG(0, "Acquired Target Process Handle Via Acquisition\n");
+					LOG(0, XOR_STR_A("Acquired Target Process Handle Via Acquisition\n").get());
 
 					return INJ_ERR_SUCCESS;
 				}
 
-				LOG(0, "Handle Acquisition Found No Donor = %08X\n", hijack_ret);
+				LOG(0, XOR_STR_A("Handle Acquisition Found No Donor = %08X\n").get(), hijack_ret);
 				stats.FailCode = hijack_ret;
 			}
 			else if (stats.FailCode == INJ_ERR_SUCCESS)
@@ -92,12 +92,12 @@ namespace
 
 			if (!AllowDirectHandleFallback())
 			{
-				LOG(0, "Handle Acquisition Found No Donor; Refusing (No Direct Fallback)\n");
+				LOG(0, XOR_STR_A("Handle Acquisition Found No Donor; Refusing (No Direct Fallback)\n").get());
 				INIT_ERROR_DATA(error_data, stats.FailCode ? stats.FailCode : static_cast<DWORD>(INJ_ERR_HANDLE_HIJACK_FAILED));
 				return INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 
-			LOG(0, "Handle Acquisition Found No Donor; Direct Fallback Enabled By INJ_ALLOW_DIRECT_FALLBACK\n");
+			LOG(0, XOR_STR_A("Handle Acquisition Found No Donor; Direct Fallback Enabled By INJ_ALLOW_DIRECT_FALLBACK\n").get());
 		}
 
 		out.reset(ScOpenProcess(pid, access_mask));
@@ -178,7 +178,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 	if (!pData)
 	{
-		LOG(0, "pData Is Invalid\n");
+		LOG(0, XOR_STR_A("pData Is Invalid\n").get());
 
 		return INJ_ERR_NO_DATA;
 	}
@@ -189,21 +189,21 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 	if (WaitForSingleObject(g_hRunningEvent, 0) == WAIT_OBJECT_0)
 	{
-		LOG(0, "Different Operation In Progress. Wait For The Other Operation To Finish First.\n");
+		LOG(0, XOR_STR_A("Different Operation In Progress. Wait For The Other Operation To Finish First.\n").get());
 
 		return INJ_ERR_ALREADY_RUNNING;
 	}
 
 	if (!pData->RawData)
 	{
-		LOG(0, "No Raw Data\n");
+		LOG(0, XOR_STR_A("No Raw Data\n").get());
 
 		return INJ_ERR_NO_RAW_DATA;
 	}
 
 	if (pData->RawSize < sizeof(IMAGE_DOS_HEADER) || pData->RawSize > PE_IMAGE::MAX_IMAGE_SIZE)
 	{
-		LOG(0, "In-Memory Payload Size Out Of Range = %08X\n", pData->RawSize);
+		LOG(0, XOR_STR_A("In-Memory Payload Size Out Of Range = %08X\n").get(), pData->RawSize);
 
 		return FILE_ERR_INVALID_FILE_SIZE;
 	}
@@ -211,7 +211,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	InjectionGateGuard injection_guard;
 	if (!injection_guard)
 	{
-		LOG(0, "Different Operation In Progress. Wait For The Other Operation To Finish First.\n");
+		LOG(0, XOR_STR_A("Different Operation In Progress. Wait For The Other Operation To Finish First.\n").get());
 
 		return INJ_ERR_ALREADY_RUNNING;
 	}
@@ -231,7 +231,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	RetVal = GetImportState();
 	if (RetVal != INJ_ERR_SUCCESS)
 	{
-		LOG(0, "Resolving Imports Failed = %08X\n", RetVal);
+		LOG(0, XOR_STR_A("Resolving Imports Failed = %08X\n").get(), RetVal);
 
 		error_data = import_handler_error_data;
 
@@ -245,7 +245,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(0, "Invalid Process Identifier Specified\n");
+		LOG(0, XOR_STR_A("Invalid Process Identifier Specified\n").get());
 
 		return InitErrorStruct(Data, -1, INJ_ERR_INVALID_PID, error_data);
 	}
@@ -266,7 +266,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 			INIT_ERROR_DATA(error_data, GetLastError());
 		}
 
-		LOG(0, "OpenTargetProcess Failed = %08X\n", (DWORD)error_data.AdvErrorCode);
+		LOG(0, XOR_STR_A("OpenTargetProcess Failed = %08X\n").get(), (DWORD)error_data.AdvErrorCode);
 
 		return InitErrorStruct(Data, -1, OpenRet, error_data);
 	}
@@ -276,19 +276,19 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		INIT_ERROR_DATA(error_data, GetLastError());
 
-		LOG(0, "Invalid Process Handle = %08X\n", (DWORD)error_data.AdvErrorCode);
+		LOG(0, XOR_STR_A("Invalid Process Handle = %08X\n").get(), (DWORD)error_data.AdvErrorCode);
 
 		return InitErrorStruct(Data, -1, INJ_ERR_INVALID_PROC_HANDLE, error_data);
 	}
 
-	LOG(0, "Attached To Target Process\n");
+	LOG(0, XOR_STR_A("Attached To Target Process\n").get());
 
 	wchar_t szExePath[MAX_PATH * 2]{ 0 };
 	if (!ScGetProcessImageName(hTargetProc, szExePath, static_cast<DWORD>(sizeof(szExePath) / sizeof(szExePath[0]))))
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(0, "Could Not Resolve The Target Image Path\n");
+		LOG(0, XOR_STR_A("Could Not Resolve The Target Image Path\n").get());
 
 		return InitErrorStruct(Data, -1, INJ_ERR_CANT_GET_EXE_FILENAME, error_data);
 	}
@@ -300,16 +300,16 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		INIT_ERROR_DATA(error_data, INJ_ERR_ADVANCED_NOT_DEFINED);
 
-		LOG(0, "Failed To Extract EXE Name From Path\n");
+		LOG(0, XOR_STR_A("Failed To Extract EXE Name From Path\n").get());
 
 		return InitErrorStruct(Data, -1, INJ_ERR_INVALID_EXE_PATH, error_data);
 	}
 
 	Data.TargetProcessExeFileName = ExePath.substr(ExeNamePos + 1);
 
-	LOG(0, "Target Process Name = %ls\n", Data.TargetProcessExeFileName.c_str());
+	LOG(0, XOR_STR_A("Target Process Name = %ls\n").get(), Data.TargetProcessExeFileName.c_str());
 
-	LOG(0, "Validating Specified File\n");
+	LOG(0, XOR_STR_A("Validating Specified File\n").get());
 
 	DWORD FileErr = FILE_ERR_SUCCESS;
 	DWORD wow_error = ERROR_SUCCESS;
@@ -318,7 +318,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		INIT_ERROR_DATA(error_data, wow_error != ERROR_SUCCESS ? wow_error : static_cast<DWORD>(INJ_ERR_ADVANCED_NOT_DEFINED));
 
-		LOG(0, "32-Bit Targets Not Supported In This x64-Only Build\n");
+		LOG(0, XOR_STR_A("32-Bit Targets Not Supported In This x64-Only Build\n").get());
 
 		return InitErrorStruct(Data, false, INJ_ERR_PLATFORM_MISMATCH, error_data);
 	}
@@ -328,12 +328,12 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 	{
 		INIT_ERROR_DATA(error_data, FileErr);
 
-		LOG(0, "Invalid File Specified\n");
+		LOG(0, XOR_STR_A("Invalid File Specified\n").get());
 
 		return InitErrorStruct(Data, native_target, FileErr, error_data);
 	}
 
-	LOG(0, "File Validated And Prepared For Load\n");
+	LOG(0, XOR_STR_A("File Validated And Prepared For Load\n").get());
 
 	HINSTANCE hOut = NULL;
 
@@ -343,7 +343,7 @@ static DWORD Memory_InjectBody(MEMORY_INJECTIONDATA * pData)
 
 	RetVal = MMAP_NATIVE::ManualMap(Source, hTargetProc, Data.Flags, hOut, Data.Timeout, Data.hThreadHandleValue, Data.TargetTid, error_data);
 
-	LOG(0, "Load Finished\n");
+	LOG(0, XOR_STR_A("Load Finished\n").get());
 
 	pData->hDllOut = hOut;
 
@@ -411,18 +411,18 @@ DWORD __stdcall GetSymbolState()
 		DWORD sym_ret = sym_ntdll_native_ret.Result;
 		if (sym_ret != SYMBOL_ERR_SUCCESS)
 		{
-			LOG(0, "Native Symbol Loading Failed = %08X\n", sym_ret);
+			LOG(0, XOR_STR_A("Native Symbol Loading Failed = %08X\n").get(), sym_ret);
 
 			return sym_ret;
 		}
 
-		LOG(0, "All Symbols Loaded\n");
+		LOG(0, XOR_STR_A("All Symbols Loaded\n").get());
 
 		return SYMBOL_ERR_SUCCESS;
 	}
 	catch (...)
 	{
-		LOG(0, "Native Symbol Loading Threw An Exception\n");
+		LOG(0, XOR_STR_A("Native Symbol Loading Threw An Exception\n").get());
 
 		return SYMBOL_ERR_DOWNLOAD_FAILED;
 	}
@@ -450,18 +450,18 @@ DWORD __stdcall GetImportState()
 		DWORD imp_ret = import_handler_ret.Result;
 		if (imp_ret != INJ_ERR_SUCCESS)
 		{
-			LOG(0, "Import Handler (Native) Failed = %08X\n", imp_ret);
+			LOG(0, XOR_STR_A("Import Handler (Native) Failed = %08X\n").get(), imp_ret);
 
 			return imp_ret;
 		}
 
-		LOG(0, "Import Handler Finished\n");
+		LOG(0, XOR_STR_A("Import Handler Finished\n").get());
 
 		return INJ_ERR_SUCCESS;
 	}
 	catch (...)
 	{
-		LOG(0, "Import Handler Threw An Exception\n");
+		LOG(0, XOR_STR_A("Import Handler Threw An Exception\n").get());
 
 		return INJ_ERR_IMPORT_HANDLER_NOT_DONE;
 	}

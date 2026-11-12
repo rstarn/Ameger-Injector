@@ -205,26 +205,32 @@ using f_NtProtectVirtualMemory = NTSTATUS (__stdcall *)
 	ULONG	*	OldAccess
 );
 
+// These match the real ntdll entry points exactly. The prototypes that used to live here had
+// the wrong arity (8 and 6 parameters), so a caller using them would have read the wrong
+// registers. The manual mapper resolves the same two exports and now shares these types.
 using f_NtCreateSection = NTSTATUS (__stdcall *)
 (
 	PHANDLE			SectionHandle,
 	ACCESS_MASK		DesiredAccess,
 	OBJECT_ATTRIBUTES *	ObjectAttributes,
-	LARGE_INTEGER		*	SectionSize,
-	ULONG				PageProtection,
-	ULONG				AllocationAttributes,
-	UNICODE_STRING		*	FileName,
-	LARGE_INTEGER		*	MaximumSize
+	PLARGE_INTEGER	MaximumSize,
+	ULONG			SectionPageProtection,
+	ULONG			AllocationAttributes,
+	HANDLE			FileHandle
 );
 
 using f_NtMapViewOfSection = NTSTATUS (__stdcall *)
 (
 	HANDLE			SectionHandle,
+	HANDLE			ProcessHandle,
 	PVOID			*	BaseAddress,
-	SIZE_T			*	ViewSize,
-	ULONG_PTR		Alignment,
-	SIZE_T			*	Offset,
-	PVOID			InheritFlags
+	ULONG_PTR		ZeroBits,
+	SIZE_T			CommitSize,
+	PLARGE_INTEGER	SectionOffset,
+	PSIZE_T			ViewSize,
+	ULONG			InheritDisposition,
+	ULONG			AllocationType,
+	ULONG			Win32Protect
 );
 
 using f_NtUnmapViewOfSection = NTSTATUS (__stdcall *)

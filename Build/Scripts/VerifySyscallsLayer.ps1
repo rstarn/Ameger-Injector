@@ -131,17 +131,71 @@ if ($Check -eq "Payload") {
 
 
 
-    $hostMapNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Host Map: Image Mapped")
-    $stageNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Shell Stages:")
-    $eventNeedle = [int[]][Text.Encoding]::ASCII.GetBytes("Completion Event")
-    $hostMap = Get-ByteMatches $data $hostMapNeedle
-    $stages = Get-ByteMatches $data $stageNeedle
-    $events = Get-ByteMatches $data $eventNeedle
-    if (($hostMap -lt 1) -or ($stages -lt 1) -or ($events -lt 1)) {
-        Write-Fail ("A6 Host-Mapped Shell Markers Missing (HostMap = " + $hostMap + " | Stages = " + $stages + " | Completion = " + $events + ")")
+    # The diagnostic strings are encrypted at their call sites (XOR_STR_A), so the cleartext
+    # markers must NOT appear in the image any more. This check used to require them to be
+    # PRESENT, which both pinned the tool's fingerprint into the shipped binary and broke as
+    # soon as the runtime strings were encrypted. Absence is now the requirement.
+    $plainMarkers = @(
+        "Host Map: Image Mapped",
+        "Shell Stages:",
+        "Completion Event",
+        "ResolveImports Called",
+        "Stub Pool Built:",
+        "ntdll Base:",
+        "InLoadOrder",
+        "InMemoryOrder",
+        "InInitializationOrder",
+        "NtCreateSection",
+        "NtMapViewOfSection",
+        "NtUnmapViewOfSection",
+        "NtAllocateVirtualMemory",
+        "NtProtectVirtualMemory",
+        "NtWriteVirtualMemory",
+        "NtReadVirtualMemory",
+        "NtSuspendThread",
+        "NtResumeThread",
+        "NtGetContextThread",
+        "NtSetContextThread",
+        "NtQueryInformationProcess",
+        "NtQueryInformationThread",
+        "NtDuplicateObject",
+        "lsass.exe",
+        "csrss.exe",
+        "winlogon.exe",
+        "services.exe",
+        "SecurityHealthService.exe",
+        "MsMpEng.exe",
+        "fontdrvhost.exe",
+        "wmiprvse.exe",
+        "MEM_COMMIT",
+        "PAGE_EXECUTE_READWRITE"
+    )
+
+    $leaked = @()
+    foreach ($marker in $plainMarkers) {
+        $needle = [int[]][Text.Encoding]::ASCII.GetBytes($marker)
+        $hits = Get-ByteMatches $data $needle
+        if ($hits -gt 0) {
+            $leaked += ("'" + $marker + "' x" + $hits)
+        }
+    }
+
+    $wideLeaked = @()
+    foreach ($marker in @("ntdll.dll", "lsass.exe", "msvcr100.dll", "d3dx11_43.dll", "winmmbase.dll", "dxva2.dll")) {
+        $needle = [int[]][Text.Encoding]::Unicode.GetBytes($marker)
+        $hits = Get-ByteMatches $data $needle
+        if ($hits -gt 0) {
+            $wideLeaked += ("'" + $marker + "' x" + $hits)
+        }
+    }
+
+    if ($leaked.Count -gt 0 -or $wideLeaked.Count -gt 0) {
+        Write-Fail ("Cleartext Diagnostic Markers Present In The Runtime Image (These Are Directly Scannable In The Target):")
+        foreach ($item in $leaked) { Write-Host ("      ASCII  " + $item) }
+        foreach ($item in $wideLeaked) { Write-Host ("      UTF-16 " + $item) }
         exit 1
     }
-    Write-Ok ("A6 Host-Mapped Shell Present (HostMap = " + $hostMap + " | Stages = " + $stages + " | Completion = " + $events + ")")
+    Write-Ok ("Cleartext Diagnostic Markers Absent (" + $plainMarkers.Count + " ASCII / 6 UTF-16 Markers Checked)")
 }
 
 if ($Check -eq "Stealth") {
