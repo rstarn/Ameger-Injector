@@ -3728,6 +3728,9 @@ namespace stealth
         (void)survey_pid; (void)buffers;
 
 #if !AMEGER_ENABLE_LDR_SPLICE
+        (void)process;
+        (void)hRemoteBase;
+        (void)inconclusive;
         LOG(0, L"  %ls[*]%ls Ldr Walk: Payload present in 0 Of 3 Lists (splicing disabled by design, AMEGER_ENABLE_LDR_SPLICE=0).\n",
             kDim, kReset);
         LOG(0, L"  %ls[*]%ls Residual: the mapped image is VAD-visible as a committed, executable, MEM_MAPPED region with no loader entry. This is inherent to manual mapping and not user-mode fixable at this layer.\n",
