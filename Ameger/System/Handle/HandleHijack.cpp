@@ -457,7 +457,7 @@ namespace
 
 			LOG(1, XOR_STR_A("ProbeVmOperation: Release Failed Three Times; Page Retained In Target\n").get());
 
-			return true;
+			return false;
 	}
 
 	bool VerifyProcessDonor(HANDLE Candidate, DWORD TargetPid)

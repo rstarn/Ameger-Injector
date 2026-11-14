@@ -1,6 +1,13 @@
 
 #include "Core/Utility/Header/PrecompiledHeader.h"
 
+// LDR splicing is disabled by design. See OPTION C in the mapping notes: the spliced
+// entry cannot be made size-honest or image-backed, so it introduces an LDR inconsistency
+// on top of the unavoidable MEM_MAPPED VAD region. The map remains fully functional without it.
+#ifndef AMEGER_ENABLE_LDR_SPLICE
+#define AMEGER_ENABLE_LDR_SPLICE 0
+#endif
+
 #include <TlHelp32.h>
 #include <intrin.h>
 
@@ -186,9 +193,8 @@ namespace
 			return false;
 		}
 
+		// Bulk read 1: remote PEB region (to obtain PPEB_LDR_DATA) and PPEB_LDR_DATA itself.
 		PEB_LDR_DATA * ldr = nullptr;
-
-
 		if (!ReadProcessMemory(hTargetProc, ReCa<BYTE *>(basic.pPEB) + peb_ldr_offset, &ldr, sizeof(void *), nullptr) || !ldr)
 		{
 			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader Pointer Could Not Be Read (PEB = %p | Offset = %08X)\n").get(),
@@ -196,52 +202,152 @@ namespace
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
-		LIST_ENTRY head{ };
-		if (!ReadProcessMemory(hTargetProc, &ldr->InLoadOrderModuleListHead, &head, sizeof(head), nullptr))
+		PEB_LDR_DATA ldr_data{ };
+		if (!ReadProcessMemory(hTargetProc, ldr, &ldr_data, sizeof(ldr_data), nullptr))
 		{
-			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader List Head Could Not Be Read (Ldr = %p)\n").get(), ldr);
+			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader Data Could Not Be Read (Ldr = %p)\n").get(), ldr);
 			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 		}
 
-
-
 		const LIST_ENTRY * head_address = &ldr->InLoadOrderModuleListHead;
-		LIST_ENTRY * current = head.Flink;
+		LIST_ENTRY * current = ldr_data.InLoadOrderModuleListHead.Flink;
+		if (!current || current == head_address)
+		{
+			LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: The Loader List Is Empty (Ldr = %p)\n").get(), ldr);
+			return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
+		}
+
+		// Bulk read 2 (+ optional 3rd): read a large contiguous chunk containing loader list entries
+		// and walk it locally to minimize RPM traffic.
+		struct BulkBuffer
+		{
+			std::vector<BYTE> data;
+			ULONG_PTR remote_base = 0;
+
+			bool contains(ULONG_PTR addr, SIZE_T size) const
+			{
+				return remote_base != 0 && addr >= remote_base && size <= data.size() && (addr - remote_base) <= (data.size() - size);
+			}
+
+			bool read_bytes(ULONG_PTR addr, void * out, SIZE_T size) const
+			{
+				if (!contains(addr, size))
+				{
+					return false;
+				}
+				memcpy(out, data.data() + (addr - remote_base), size);
+				return true;
+			}
+		};
+
+		auto load_chunk = [&](ULONG_PTR addr_hint, BulkBuffer & out) -> bool
+		{
+			const SIZE_T kChunkSize = 0x10000; // 64 KB
+			const ULONG_PTR base = addr_hint & ~(static_cast<ULONG_PTR>(0xFFF));
+			const ULONG_PTR start = base > 0x4000 ? (base - 0x4000) : base;
+			out.remote_base = start;
+			out.data.assign(kChunkSize, 0);
+			SIZE_T bytes_read = 0;
+			if (!ReadProcessMemory(hTargetProc, ReCa<LPCVOID>(start), out.data.data(), out.data.size(), &bytes_read) || bytes_read == 0)
+			{
+				out.remote_base = 0;
+				out.data.clear();
+				return false;
+			}
+			out.data.resize(bytes_read);
+			return true;
+		};
+
+		BulkBuffer chunks[2];
+		int chunk_count = 0;
+		auto ensure_mapped = [&](ULONG_PTR addr, SIZE_T size, const BulkBuffer *& buf_out) -> bool
+		{
+			for (int i = 0; i < chunk_count; ++i)
+			{
+				if (chunks[i].contains(addr, size))
+				{
+					buf_out = &chunks[i];
+					return true;
+				}
+			}
+
+			if (chunk_count < 2)
+			{
+				if (load_chunk(addr, chunks[chunk_count]))
+				{
+					buf_out = &chunks[chunk_count++];
+					return buf_out->contains(addr, size);
+				}
+				return false;
+			}
+
+			// Reuse the second slot for out-of-window addresses to keep RPMs bounded.
+			if (load_chunk(addr, chunks[1]))
+			{
+				buf_out = &chunks[1];
+				return buf_out->contains(addr, size);
+			}
+			return false;
+		};
+
+		// Seed with a chunk around the list head / first entry.
+		const ULONG_PTR head_addr = ReCa<ULONG_PTR>(head_address);
+		const ULONG_PTR seed_addr = (head_addr < ReCa<ULONG_PTR>(current)) ? head_addr : ReCa<ULONG_PTR>(current);
+		{
+			const BulkBuffer * seeded = nullptr;
+			ensure_mapped(seed_addr, sizeof(LIST_ENTRY), seeded);
+		}
+
+		const size_t ntdll_name_chars = NtdllModuleName().size();
 		ULONG depth = 0;
 
 		for (; current && current != head_address && depth < 4096; ++depth)
 		{
-			LIST_ENTRY link{ };
-			if (!ReadProcessMemory(hTargetProc, current, &link, sizeof(link), nullptr))
+			const ULONG_PTR link_addr = ReCa<ULONG_PTR>(current);
+			const ULONG_PTR entry_addr = link_addr - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
+
+			const BulkBuffer * link_buf = nullptr;
+			const BulkBuffer * entry_buf = nullptr;
+			if (!ensure_mapped(link_addr, sizeof(LIST_ENTRY), link_buf) ||
+				!ensure_mapped(entry_addr + ldr_name_offset, sizeof(UNICODE_STRING), entry_buf) ||
+				!ensure_mapped(entry_addr + ldr_base_offset, sizeof(ULONG_PTR), entry_buf))
 			{
-				LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: A Loader List Link Could Not Be Read (Depth = %lu | Address = %p)\n").get(),
+				LOG(1, XOR_STR_A("ResolveRemoteNtdllBase: Bulk Read Miss (Depth = %lu | Address = %p)\n").get(),
 					static_cast<unsigned long>(depth), current);
 				return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
 			}
 
-
-
-			const BYTE * entry = ReCa<const BYTE *>(current) - offsetof(LDR_DATA_TABLE_ENTRY_WIN11, InLoadOrderLinks);
-
+			LIST_ENTRY link{ };
 			UNICODE_STRING name{ };
-			// The name length is compared against the encrypted name's length, so the comparison
-			// never needs the cleartext either.
-			const size_t ntdll_name_chars = NtdllModuleName().size();
-			if (ReadProcessMemory(hTargetProc, entry + ldr_name_offset, &name, sizeof(name), nullptr) &&
-				name.Length == ntdll_name_chars * sizeof(wchar_t) && name.szBuffer)
+			if (!link_buf->read_bytes(link_addr, &link, sizeof(link)) ||
+				!entry_buf->read_bytes(entry_addr + ldr_name_offset, &name, sizeof(name)))
+			{
+				return ResolveRemoteNtdllBaseFromModuleList(ScGetProcessId(hTargetProc), base_out);
+			}
+
+			if (name.Length == ntdll_name_chars * sizeof(wchar_t) && name.szBuffer)
 			{
 				wchar_t buffer[16]{ 0 };
-				if (ReadProcessMemory(hTargetProc, name.szBuffer, buffer, (ntdll_name_chars + 1) * sizeof(wchar_t), nullptr) &&
+				const SIZE_T name_bytes = (ntdll_name_chars + 1) * sizeof(wchar_t);
+				const BulkBuffer * name_buf = nullptr;
+				if (ensure_mapped(ReCa<ULONG_PTR>(name.szBuffer), name_bytes, name_buf) &&
+					name_buf->read_bytes(ReCa<ULONG_PTR>(name.szBuffer), buffer, name_bytes) &&
 					_wcsicmp(buffer, NtdllModuleName().c_str()) == 0)
 				{
 					ULONG_PTR base = 0;
-					if (!ReadProcessMemory(hTargetProc, entry + ldr_base_offset, &base, sizeof(base), nullptr))
+					const BulkBuffer * base_buf = entry_buf;
+					if (!base_buf->contains(entry_addr + ldr_base_offset, sizeof(base)))
+					{
+						base_buf = nullptr;
+						ensure_mapped(entry_addr + ldr_base_offset, sizeof(base), base_buf);
+					}
+
+					if (!base_buf || !base_buf->read_bytes(entry_addr + ldr_base_offset, &base, sizeof(base)))
 					{
 						return false;
 					}
 
 					base_out = base;
-
 					return base_out != 0;
 				}
 			}
@@ -368,36 +474,57 @@ namespace
 		}
 
 		std::wstring selected_name;
-		// The spoof names are held as encrypted literals and copied into std::wstring, so the
-		// cleartext never sits in .rdata and the array entries stay valid past the statement.
-		const std::wstring candidates[] =
+		// Choose a plausible modern spoof name that is not already loaded in the target.
+		// Avoid anachronistic runtimes and randomize selection for better stealth/legitimacy.
+		std::vector<std::wstring> candidates =
 		{
-			std::wstring(XOR_STR_W(L"msvcr100.dll").get()),
-			std::wstring(XOR_STR_W(L"d3dx11_43.dll").get()),
-			std::wstring(XOR_STR_W(L"winmmbase.dll").get()),
-			std::wstring(XOR_STR_W(L"dxva2.dll").get()),
+			std::wstring(XOR_STR_W(L"vcruntime140.dll").get()),
+			std::wstring(XOR_STR_W(L"vcruntime140_1.dll").get()),
+			std::wstring(XOR_STR_W(L"msvcp140.dll").get()),
+			std::wstring(XOR_STR_W(L"concrt140.dll").get()),
+			std::wstring(XOR_STR_W(L"d3dcompiler_47.dll").get()),
+			std::wstring(XOR_STR_W(L"dxgi.dll").get()),
+			std::wstring(XOR_STR_W(L"d3d11.dll").get()),
+			std::wstring(XOR_STR_W(L"d2d1.dll").get()),
+			std::wstring(XOR_STR_W(L"dwrite.dll").get()),
+			std::wstring(XOR_STR_W(L"dcomp.dll").get()),
+			std::wstring(XOR_STR_W(L"UIAutomationCore.dll").get()),
+			std::wstring(XOR_STR_W(L"TextInputFramework.dll").get()),
+			std::wstring(XOR_STR_W(L"CoreMessaging.dll").get()),
+			std::wstring(XOR_STR_W(L"WinTypes.dll").get()),
+			std::wstring(XOR_STR_W(L"windows.storage.dll").get()),
+			std::wstring(XOR_STR_W(L"directmanipulation.dll").get()),
 		};
+
+		{
+			unsigned int seed = static_cast<unsigned int>(image_base ^ (image_size * 0x9E3779B1u) ^ GetTickCount());
+			for (size_t i = candidates.size(); i > 1; --i)
+			{
+				seed = seed * 1664525u + 1013904223u;
+				const size_t j = static_cast<size_t>(seed % i);
+				std::swap(candidates[i - 1], candidates[j]);
+			}
+		}
+
 		for (const auto & cand : candidates)
 		{
 			std::wstring lc(cand);
 			for (auto & c : lc) if (c >= L'A' && c <= L'Z') c = c - L'A' + L'a';
 			bool found = false;
-			for (auto & ln : loaded_names) if (ln == lc) { found = true; break; }
-			if (!found) { selected_name = cand; break; }
+			for (const auto & ln : loaded_names)
+			{
+				if (ln == lc) { found = true; break; }
+			}
+			if (!found)
+			{
+				selected_name = cand;
+				break;
+			}
 		}
 		if (selected_name.empty())
 		{
-			// The hex alphabet is a fingerprint on its own, so it is decrypted into a local.
-			wchar_t hex[17]{};
-			{
-				const auto h = XOR_STR_W(L"0123456789abcdef");
-				memcpy(hex, h.get(), sizeof(wchar_t) * 17);
-			}
-			unsigned int seed = static_cast<unsigned int>(image_base ^ 0xA5A5A5A5u);
-			wchar_t buf[16]{};
-			for (int i = 0; i < 8; ++i) { seed = seed * 1103515245u + 12345u; buf[i] = hex[(seed >> 16) & 0xF]; }
-			buf[8] = L'.'; buf[9] = L'd'; buf[10] = L'l'; buf[11] = L'l';
-			selected_name = buf;
+			LOG(1, XOR_STR_A("[LdrSplice] No Plausible Unused Spoof Name Available; Skipping Ldr Splice\n").get());
+			return false;
 		}
 
 		LOG(1, XOR_STR_A("[LdrSplice] Selected spoof name: %ls (Not present in target)\n").get(), selected_name.c_str());
@@ -408,12 +535,20 @@ namespace
 			const auto prefix = XOR_STR_W(L"\\Windows\\System32\\");
 			full_name = std::wstring(prefix.get()) + selected_name;
 		}
-		const USHORT name_length = static_cast<USHORT>(full_name.size() * sizeof(wchar_t));
 
-		UNICODE_STRING name_us{};
-		name_us.Length = name_length;
-		name_us.MaxLength = name_length + sizeof(wchar_t);
-		name_us.szBuffer = ReCa<PWSTR>(name_address);
+		const size_t base_name_offset_chars = full_name.size() - selected_name.size();
+		const USHORT full_name_bytes = static_cast<USHORT>(full_name.size() * sizeof(wchar_t));
+		const USHORT base_name_bytes = static_cast<USHORT>(selected_name.size() * sizeof(wchar_t));
+
+		UNICODE_STRING full_name_us{};
+		full_name_us.Length = full_name_bytes;
+		full_name_us.MaxLength = full_name_bytes + sizeof(wchar_t);
+		full_name_us.szBuffer = ReCa<PWSTR>(name_address);
+
+		UNICODE_STRING base_name_us{};
+		base_name_us.Length = base_name_bytes;
+		base_name_us.MaxLength = base_name_bytes + sizeof(wchar_t);
+		base_name_us.szBuffer = ReCa<PWSTR>(name_address + base_name_offset_chars * sizeof(wchar_t));
 
 		wchar_t name_buffer[128]{};
 		memcpy(name_buffer, full_name.c_str(), (full_name.size() + 1) * sizeof(wchar_t));
@@ -480,8 +615,8 @@ namespace
 		*(ULONG_PTR *)(ReCa<BYTE *>(&entry_bytes) + offsetof(LDR_DATA_TABLE_ENTRY_WIN11, DdagNode)) =
 			ddag_address;
 
-		memcpy(entry_bytes + ldr_full_name_offset, &name_us, sizeof(name_us));
-		memcpy(entry_bytes + ldr_base_name_offset, &name_us, sizeof(name_us));
+		memcpy(entry_bytes + ldr_full_name_offset, &full_name_us, sizeof(full_name_us));
+		memcpy(entry_bytes + ldr_base_name_offset, &base_name_us, sizeof(base_name_us));
 
 		for (auto & head : heads)
 		{
@@ -852,20 +987,30 @@ namespace
 		LOG(1, XOR_STR_A("Host Map: Image Mapped As SEC_COMMIT Section View At %p\n").get(), remote_base);
 
 
-		// The target's memory is a view of a section this process created, and a section view
-		// cannot be released from outside the target: both NtFreeVirtualMemory(MEM_RELEASE)
-		// and VirtualFreeEx(MEM_RELEASE) are refused for it (ERROR_INVALID_PARAMETER, measured
-		// on this build), so whatever fails from here on stays mapped in the target for good.
-		// Anything that fails therefore has to leave nothing behind in the target: the region
-		// is scrubbed and the leftover reservation is reported instead of silently ignored.
+		// Anything that fails after the target view is mapped must leave no footprint in the
+		// target. Scrub the region contents, then unmap the section view before returning.
 		bool image_committed = false;
 		auto residue_guard = MakeScopeExit([&]() noexcept {
 			if (image_committed || !remote_base)
 			{
 				return;
 			}
+
 			ScrubRemoteRegion(hTargetProc, remote_base, size_of_image, kScrubChunk);
-			LOG(1, XOR_STR_A("[Host Map] [!] The Load Failed After The Target Was Mapped: The Target Region Was Zeroed, But A Section View Cannot Be Released From Outside The Target, So An Empty Reservation Remains.\n").get());
+
+			if (section_mapped)
+			{
+				const auto pNtUnmapViewOfSection = NtdllProc<f_NtUnmapViewOfSection>(XOR_STR_A("NtUnmapViewOfSection").get());
+				if (pNtUnmapViewOfSection)
+				{
+					const NTSTATUS unmap_status = pNtUnmapViewOfSection(hTargetProc, remote_base);
+					if (NT_FAIL(unmap_status))
+					{
+						LOG(1, XOR_STR_A("[Host Map] [!] Failed To Unmap Section View After Error (Status = %08X | Base = %p)\n").get(),
+							static_cast<unsigned>(unmap_status), remote_base);
+					}
+				}
+			}
 		});
 
 
@@ -1023,6 +1168,9 @@ namespace
 DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc, DWORD Flags, HINSTANCE & hOut, DWORD Timeout, ULONG_PTR SponsorThread, DWORD SponsorTid, ERROR_DATA & error_data)
 {
 	LOG(1, XOR_STR_A("Begin In-Memory Load\n").get());
+#if !AMEGER_ENABLE_LDR_SPLICE
+	LOG(1, XOR_STR_A("[ManualMap] LDR splicing disabled (AMEGER_ENABLE_LDR_SPLICE=0).\n").get());
+#endif
 
 	const DWORD os_build = GetOSBuildVersion();
 	WINDOWS_LAYOUT_FAMILY layout_family = WINDOWS_LAYOUT_FAMILY::Windows11_21H2;
@@ -1521,15 +1669,15 @@ DWORD MMAP_NATIVE::ManualMap(const INJECTION_SOURCE & Source, HANDLE hTargetProc
 	image_guard.release();
 	remote_event_owned = false;
 
-	// Vector 11: splice the payload into PEB->Ldr as a synthetic system-DLL entry only AFTER the
-	// shell has completed. LdrpHandleTlsData (invoked by the shell) expects the module to be absent
-	// from the loader list while its TLS data is built; linking it before the shell makes TLS fail
-	// with STATUS_INVALID_IMAGE_FORMAT (C000004E). A failed splice is logged but no longer aborts an
-	// already-successful load.
+	// LDR splicing is disabled by design. See OPTION C in the mapping notes: the spliced
+	// entry cannot be made size-honest or image-backed, so it introduces an LDR inconsistency
+	// on top of the unavoidable MEM_MAPPED VAD region. The map remains fully functional without it.
+#if AMEGER_ENABLE_LDR_SPLICE
 	if (!HostLinkLdrEntry(hTargetProc, ReCa<ULONG_PTR>(data.pImageBase), data.CachedSizeOfImage, data.CachedEntryPoint))
 	{
 		LOG(1, XOR_STR_A("[LdrSplice] Host-Side Ldr Link Failed After Successful Shell; Continuing Without Loader Visibility\n").get());
 	}
+#endif
 
 	LOG(1, XOR_STR_A("Fetching Routine Data\n").get());
 

@@ -28,10 +28,11 @@ SR_SAVED_STACKLIMIT EQU 112
 ;; routine and everything it calls run here.
 ;; Guard page sits between the state page and the shell stack, so an overflow
 ;; faults on PAGE_NOACCESS instead of overwriting the state page.
+;; Reduced from 1 MB to 128 KB to improve reliability on 32-bit and memory-constrained targets.
 SR_SHELL_STACK_BASE EQU 8192
-SR_SHELL_STACK_SIZE EQU 1048576
+SR_SHELL_STACK_SIZE EQU 131072
 ;; 16-byte aligned top, minus a 64-byte slot for the caller's shadow space.
-SR_SHELL_STACK_TOP EQU 1056704
+SR_SHELL_STACK_TOP EQU 139200
 
 ;; XCR0 components this stub is allowed to request. Bit 0 = x87, bit 1 = SSE,
 ;; bit 2 = AVX (YMM). AVX-512 (bits 5-7) is deliberately excluded: its XSAVE image

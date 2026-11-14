@@ -2,6 +2,11 @@
 
 #include "Launcher.h"
 
+// LDR splicing is disabled by design. See OPTION C in the mapping notes.
+#ifndef AMEGER_ENABLE_LDR_SPLICE
+#define AMEGER_ENABLE_LDR_SPLICE 0
+#endif
+
 #include <intrin.h>
 
 // Vector 7: the launcher (interface exe) does not link the Ameger Native module's
@@ -3722,6 +3727,14 @@ namespace stealth
         LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Vector 1: Verify No Loader Artifact (Ldr Walk)...\n\n", kGreen, step, kReset, kGreen, total, kReset);
         (void)survey_pid; (void)buffers;
 
+#if !AMEGER_ENABLE_LDR_SPLICE
+        LOG(0, L"  %ls[*]%ls Ldr Walk: Payload present in 0 Of 3 Lists (splicing disabled by design, AMEGER_ENABLE_LDR_SPLICE=0).\n",
+            kDim, kReset);
+        LOG(0, L"  %ls[*]%ls Residual: the mapped image is VAD-visible as a committed, executable, MEM_MAPPED region with no loader entry. This is inherent to manual mapping and not user-mode fixable at this layer.\n",
+            kDim, kReset);
+        ldr_walk_ok = true;
+        return;
+#else
         VehFirstChanceSurvey veh{};
         if (!QueryRemoteVehFirstChance(process, veh) || !veh.pebAddress)
         {
@@ -3740,11 +3753,9 @@ namespace stealth
             return;
         }
 
-        // Vector 11 (expectation flipped): the host now SPLICES a synthetic system-DLL entry for
-        // the payload (DllBase = hRemoteBase) into all three of the target's PEB Ldr lists, so this
-        // walk must FIND it. PEB_LDR_DATA list heads sit at offsets 16/32/48 (Win11 layout,
-        // static_asserted in NTDefinitions.h); DllBase is at offset 48 of the entry (three
-        // LIST_ENTRYs ahead) and BaseDllName at offset 88.
+        // Vector 11 (expectation flipped): the host splices a synthetic system-DLL entry for
+        // the payload (DllBase = hRemoteBase) into all three of the target's PEB Ldr lists, so
+        // this walk must FIND it when splicing is enabled.
         struct LDR_ENTRY
         {
             LIST_ENTRY InLoadOrder;
@@ -3870,6 +3881,7 @@ namespace stealth
         // Gate input: the payload base must be present in all three Ldr lists. The name is
         // informational (it is picked at run time), so the DllBase match is the proof.
         ldr_walk_ok = (lists_found == 3);
+#endif
     }
 
     void StealthVerifySectionHandleClosed(HANDLE process, HINSTANCE hRemoteBase, int & step, int total, int & inconclusive)

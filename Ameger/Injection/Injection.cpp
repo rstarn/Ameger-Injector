@@ -55,8 +55,14 @@ namespace
 						CloseHandle(duplicated);
 					}
 				}
-
-				LOG(0, XOR_STR_A("Sponsor Handle Failed Validation\n").get());
+				else
+				{
+					LOG(0, XOR_STR_A("Sponsor Handle Failed Validation\n").get());
+					if (sponsor && sponsor != INVALID_HANDLE_VALUE)
+					{
+						CloseHandle(sponsor);
+					}
+				}
 			}
 
 			if (!(flags & INJ_NO_DONOR_SCAN))

@@ -5541,6 +5541,24 @@ DWORD BuildFlags(const WizardConfig & config)
             wx_violated ? L"Violated" : L"Enforced");
 
         row(L"Verification Gate......... ", stealth_gate_ok);
+#if !defined(AMEGER_ENABLE_LDR_SPLICE) || (AMEGER_ENABLE_LDR_SPLICE == 0)
+        if (stealth_gate_ok)
+        {
+            const int caveats = inconclusive_checks + 1;
+            LOG(0, L"Pass (With %d Caveat(s))\n", caveats);
+            LOG(0, L"  Caveat: LDR splicing disabled by design (AMEGER_ENABLE_LDR_SPLICE=0).\n");
+            if (inconclusive_checks > 0)
+            {
+                LOG(0, L"  The Gate Found No Posture Defect, But %d Check(s) Could Not Run, So Their\n", inconclusive_checks);
+                LOG(0, L"  Verdict Is Unknown. The Steps That Reported \"[!]\" Are The Ones That Did Not Run.\n");
+            }
+        }
+        else
+        {
+            LOG(0, L"Fail\n");
+            LOG(0, L"  Caveat: LDR splicing disabled by design (AMEGER_ENABLE_LDR_SPLICE=0).\n");
+        }
+#else
         if (stealth_gate_ok && inconclusive_checks > 0)
         {
             LOG(0, L"Pass (With %d Caveat(s))\n", inconclusive_checks);
@@ -5551,6 +5569,7 @@ DWORD BuildFlags(const WizardConfig & config)
         {
             LOG(0, L"%s\n", stealth_gate_ok ? L"Pass" : L"Fail");
         }
+#endif
 
 
 

@@ -41,10 +41,11 @@ using f_Routine			= DWORD(__fastcall *)(void * pArg);
 
 
 
+// Reduced from 1 MB to 128 KB to improve reliability on 32-bit and memory-constrained targets.
 #define SR_SHELL_STACK_BASE 0x2000
-#define SR_SHELL_STACK_SIZE 0x100000
+#define SR_SHELL_STACK_SIZE 0x20000
 
-#define SR_SHELL_STACK_TOP 0x101FC0
+#define SR_SHELL_STACK_TOP 0x21FC0
 
 
 
