@@ -160,7 +160,7 @@ DWORD SYMBOL_PARSER::GetSymbolAddress(const char * szSymbolName, DWORD & RvaOut)
 
 	RvaOut = static_cast<DWORD>(si->Address - si->ModBase);
 
-	LOG(2, XOR_STR_A("SymbolParser: RVA = %08X -> %s\n").get(), RvaOut, szSymbolName);
+	DIAG(2, XOR_STR_A("SymbolParser: RVA = %08X -> %s\n").get(), RvaOut, szSymbolName);
 
 	return SYMBOL_ERR_SUCCESS;
 }

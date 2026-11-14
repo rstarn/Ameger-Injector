@@ -31,7 +31,7 @@ DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print)
 		UNREFERENCED_PARAMETER(pReserved);
 	}
 
-void custom_print(int indention_offset, const char * format, ...)
+static void CustomPrintFormatted(int indention_offset, const char * format, va_list args, bool diag)
 {
 	if (indention_offset < 0)
 	{
@@ -44,7 +44,8 @@ void custom_print(int indention_offset, const char * format, ...)
 	}
 
 	size_t size = 1024;
-	char * buffer = new(std::nothrow) char[size + static_cast<size_t>(indention_offset)]();
+	const size_t diag_prefix_len = diag ? 7 : 0; // "[DIAG] "
+	char * buffer = new(std::nothrow) char[size + static_cast<size_t>(indention_offset) + diag_prefix_len]();
 
 	if (!buffer)
 	{
@@ -52,6 +53,10 @@ void custom_print(int indention_offset, const char * format, ...)
 	}
 
 	memset(buffer, '\x20', indention_offset);
+	if (diag)
+	{
+		memcpy(buffer + indention_offset, "[DIAG] ", diag_prefix_len);
+	}
 
 	auto old = _set_thread_local_invalid_parameter_handler(ImTheTrashMan);
 
@@ -59,25 +64,25 @@ void custom_print(int indention_offset, const char * format, ...)
 
 	do
 	{
-		va_list args;
-		va_start(args, format);
+		va_list args_copy;
+		va_copy(args_copy, args);
 
 		int err = 0;
-		result = vsprintf_s(buffer + indention_offset, size, format, args);
+		result = vsprintf_s(buffer + indention_offset + diag_prefix_len, size, format, args_copy);
 
 		if (result <= 0)
 		{
 			err = errno;
 		}
 
-		va_end(args);
+		va_end(args_copy);
 
 		if (result < 0 && err == ERANGE)
 		{
 			delete[] buffer;
 
 			size += 1024;
-			buffer = new(std::nothrow) char[size + indention_offset]();
+			buffer = new(std::nothrow) char[size + indention_offset + diag_prefix_len]();
 
 			if (!buffer)
 			{
@@ -85,6 +90,10 @@ void custom_print(int indention_offset, const char * format, ...)
 			}
 
 			memset(buffer, '\x20', indention_offset);
+			if (diag)
+			{
+				memcpy(buffer + indention_offset, "[DIAG] ", diag_prefix_len);
+			}
 		}
 		else if (result < 0)
 		{
@@ -96,9 +105,6 @@ void custom_print(int indention_offset, const char * format, ...)
 
 	if (result > 0)
 	{
-
-
-
 		AcquireSRWLockExclusive(&g_print_lock);
 
 		if (f_raw_print_callback callback = g_print_raw_callback.load())
@@ -107,16 +113,20 @@ void custom_print(int indention_offset, const char * format, ...)
 		}
 		else
 		{
-			auto len = strlen(buffer);
-
-			if (len > 0)
+			// Diagnostic output is file/callback-routed by design; only interleave to console when requested.
+			if (!diag || AmegerDiagStreamEnabled())
 			{
-				if (buffer[len - 1] == '\n')
-				{
-					buffer[len - 1] = '\0';
-				}
+				auto len = strlen(buffer);
 
-				puts(buffer);
+				if (len > 0)
+				{
+					if (buffer[len - 1] == '\n')
+					{
+						buffer[len - 1] = '\0';
+					}
+
+					puts(buffer);
+				}
 			}
 		}
 
@@ -127,4 +137,20 @@ void custom_print(int indention_offset, const char * format, ...)
 	{
 		delete[] buffer;
 	}
+}
+
+void custom_print(int indention_offset, const char * format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	CustomPrintFormatted(indention_offset, format, args, false);
+	va_end(args);
+}
+
+void custom_diag_print(int indention_offset, const char * format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	CustomPrintFormatted(indention_offset, format, args, true);
+	va_end(args);
 }

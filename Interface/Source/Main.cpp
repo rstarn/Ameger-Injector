@@ -1038,6 +1038,51 @@ bool InterfaceConsolePresent();
         }
 
         const std::wstring line(clean.begin(), clean.end());
+
+        // Diagnostic stream routing (Ticket B): runtime DIAG lines are prefixed with [DIAG].
+        // They are written to <transcript>_diag.log and excluded from the operational transcript.
+        // Console/callback interleaving is gated by AMEGER_DIAG_STREAM=1.
+        {
+            size_t diag_pos = line.find(L"[DIAG]");
+            if (diag_pos != std::wstring::npos && diag_pos <= 16)
+            {
+                bool only_ws = true;
+                for (size_t i = 0; i < diag_pos; ++i)
+                {
+                    if (line[i] != L' ' && line[i] != L'\t')
+                    {
+                        only_ws = false;
+                        break;
+                    }
+                }
+                if (only_ws)
+                {
+                    std::wstring diag_line = line;
+                    diag_line.push_back(L'\n');
+                    ameger_ui_log::AppendDiag(diag_line.c_str());
+
+                    static const bool diag_stream = []() -> bool
+                    {
+                        wchar_t buffer[8] = {};
+                        const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_DIAG_STREAM").get(), buffer, 4);
+                        return got == 1 && buffer[0] == L'1';
+                    }();
+                    if (diag_stream)
+                    {
+                        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+                        DWORD mode = 0;
+                        if (output && output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode))
+                        {
+                            fputws(line.c_str(), stdout);
+                            fputws(L"\n", stdout);
+                            fflush(stdout);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
         std::string plain;
         plain.reserve(line.size());
         for (const wchar_t ch : line)

@@ -58,7 +58,9 @@ namespace ameger_ui_log
 {
     void AppendStripped(const wchar_t * text);
     void AppendClean(const wchar_t * text);
+    void AppendDiag(const wchar_t * text);
     std::wstring ResultLogPath();
+    std::wstring DiagLogPath();
     void ResetResultLog();
     bool BeginResultLog(const wchar_t * header);
     void FlushResultLog();

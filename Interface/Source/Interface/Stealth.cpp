@@ -4149,8 +4149,13 @@ namespace stealth
         const LONG sample_index = ExecTelemetry ? ExecTelemetry->SyscallSampleIndex : 0;
         if (sample_index == 0)
         {
+#if !defined(AMEGER_SYSCALL_TELEMETRY) || (AMEGER_SYSCALL_TELEMETRY == 0)
+            LOG(0, L"  %ls[*]%ls Syscall telemetry ring: writer not compiled in (AMEGER_SYSCALL_TELEMETRY=0)\n", kDim, kReset);
+            LOG(0, L"  [Telemetry] Ring header: write_count = 0 | last_ssn = 0x00 | ring_base = (target-unavailable)\n");
+#else
             LOG(0, L"  %ls[!]%ls No syscall samples recorded\n", kYellow, kReset);
             ++inconclusive; // COVERAGE GAP: the emitted stubs never fired a syscall before verification.
+#endif
             return;
         }
 

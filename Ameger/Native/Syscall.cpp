@@ -773,9 +773,9 @@ namespace
 
 		if (AmegerDiagEnabled())
 		{
-			SC_LOG_INFO(XOR_STR_A("[*] Stub Emit Check: emitted=%d bytes, SC_STUB_SIZE=%d, delta=%d").get(),
+			DIAG(1, XOR_STR_A("[*] Stub Emit Check: emitted=%d bytes, SC_STUB_SIZE=%d, delta=%d\n").get(),
 				kEmitted, static_cast<int>(SC_STUB_SIZE), static_cast<int>(SC_STUB_SIZE) - kEmitted);
-			SC_LOG_INFO(XOR_STR_A("[*] Stub Layout Check: insns=[4 5 10 5 10 4 5 3 6]=%d | Restore Gadget=[%d..%d) %d | Trampoline=[%d..%d) %d | Used=%d | Slack=%d").get(),
+			DIAG(1, XOR_STR_A("[*] Stub Layout Check: insns=[4 5 10 5 10 4 5 3 6]=%d | Restore Gadget=[%d..%d) %d | Trampoline=[%d..%d) %d | Used=%d | Slack=%d\n").get(),
 				kEmitted,
 				static_cast<int>(SC_STUB_RESTORE_OFFSET), static_cast<int>(SC_STUB_RESTORE_SIZE),
 				static_cast<int>(SC_SPOOF_RESTORE_GADGET_SIZE),
@@ -1082,7 +1082,8 @@ bool BuildPool()
 
 	g_SyscallPool.store(Pool, std::memory_order_release);
 
-	SC_LOG_OK(XOR_STR_A("[+] Stub Pool Built: %u/%zu Stubs At %p (RX)").get(), Written, kSyscallTableCount, Pool);
+	SC_LOG_OK(XOR_STR_A("[+] Stub Pool: %u entries, %d bytes each, %s").get(),
+		Written, static_cast<int>(SC_STUB_SIZE), (Written == kSyscallTableCount) ? "all emit OK" : "emit incomplete");
 	return true;
 }
 }

@@ -119,7 +119,7 @@ namespace
 		MEMORY_BASIC_INFORMATION mbi{ };
 		if (!VirtualQueryEx(hProcess, Address, &mbi, sizeof(mbi)))
 		{
-			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX query=fail err=%u\n").get(),
+			DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX query=fail err=%u\n").get(),
 				Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)), GetLastError());
 
 			return;
@@ -133,7 +133,7 @@ namespace
 		const bool executable = prot == PAGE_EXECUTE || prot == PAGE_EXECUTE_READ ||
 			prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
 
-		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX base=0x%llX size=0x%llX state=%s protect=%s(0x%X) commit=%d read=%d write=%d exec=%d\n").get(),
+		DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: region=%s addr=0x%llX base=0x%llX size=0x%llX state=%s protect=%s(0x%X) commit=%d read=%d write=%d exec=%d\n").get(),
 			Label, static_cast<unsigned long long>(ReCa<ULONG_PTR>(Address)),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(mbi.BaseAddress)),
 			static_cast<unsigned long long>(mbi.RegionSize),
@@ -151,7 +151,7 @@ namespace
 		const BOOL sig_ok = GetProcessMitigationPolicy(hProcess, ProcessSignaturePolicy, &sig, sizeof(sig));
 		const BOOL dyn_ok = GetProcessMitigationPolicy(hProcess, ProcessDynamicCodePolicy, &dyn, sizeof(dyn));
 
-		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: mitigations cfg_query=%d cfg_guard=%d cfg_strict=%d acg_query=%d acg_microsoft_signed_only=%d acg_store_signed_only=%d dyn_query=%d dynamic_code_prohibited=%d\n").get(),
+		DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: mitigations cfg_query=%d cfg_guard=%d cfg_strict=%d acg_query=%d acg_microsoft_signed_only=%d acg_store_signed_only=%d dyn_query=%d dynamic_code_prohibited=%d\n").get(),
 			cfg_ok ? 1 : 0, (cfg.Flags & 0x1) ? 1 : 0, (cfg.Flags & 0x4) ? 1 : 0,
 			sig_ok ? 1 : 0, (sig.Flags & 0x1) ? 1 : 0, (sig.Flags & 0x2) ? 1 : 0,
 			dyn_ok ? 1 : 0, (dyn.Flags & 0x1) ? 1 : 0);
@@ -1242,7 +1242,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			ProcessInformation diag_pi;
 			if (diag_pi.SetProcess(hTargetProc))
 			{
-				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_begin\n").get());
+				DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_begin\n").get());
 
 				do
 				{
@@ -1256,7 +1256,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					KWAIT_REASON diag_reason{ };
 					const bool diag_have = diag_pi.GetThreadState(diag_state, diag_reason);
 
-					LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor tid=0x%04X state=%d reason=%d safe=%d delay=%d\n").get(),
+					DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor tid=0x%04X state=%d reason=%d safe=%d delay=%d\n").get(),
 						diag_tid,
 						diag_have ? static_cast<int>(diag_state) : -1,
 						diag_have ? static_cast<int>(diag_reason) : -1,
@@ -1265,7 +1265,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 				}
 				while (diag_pi.NextThread());
 
-				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_end\n").get());
+				DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: donor_census_end\n").get());
 			}
 		}
 	}
@@ -1665,7 +1665,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 	if (AmegerDiagEnabled())
 	{
-		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_base=0x%llX state_page=0x%llX code_size=0x%llX staged=0x%llX return_target=0x%llX\n").get(),
+		DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_base=0x%llX state_page=0x%llX code_size=0x%llX staged=0x%llX return_target=0x%llX\n").get(),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pCode)),
 			static_cast<unsigned long long>(ReCa<ULONG_PTR>(pState)),
 			static_cast<unsigned long long>(code_size),
@@ -1694,7 +1694,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			}
 		}
 
-		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_readback ok=%d read=0x%llX expect=0x%llX match=%d first_diff=%lld\n").get(),
+		DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_readback ok=%d read=0x%llX expect=0x%llX match=%d first_diff=%lld\n").get(),
 			readback_ok ? 1 : 0,
 			static_cast<unsigned long long>(readback_size),
 			static_cast<unsigned long long>(staged.size()),
@@ -1706,7 +1706,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 			DWORD head[12] = { };
 			memcpy(head, readback.data(), sizeof(head));
 
-			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_bytes=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n").get(),
+			DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: stub_bytes=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n").get(),
 				head[0], head[1], head[2], head[3], head[4], head[5],
 				head[6], head[7], head[8], head[9], head[10], head[11]);
 		}
@@ -1730,7 +1730,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 		verify.ContextFlags = CONTEXT_CONTROL;
 		const NTSTATUS verify_status = ScNtGetContextThread(hThread, &verify);
 
-		LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: set_context status=0x%08X want_rip=0x%llX get_status=0x%08X rip_after=0x%llX stuck=%d\n").get(),
+		DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: set_context status=0x%08X want_rip=0x%llX get_status=0x%08X rip_after=0x%llX stuck=%d\n").get(),
 			static_cast<unsigned>(set_context_status),
 			static_cast<unsigned long long>(OldContext.Rip),
 			static_cast<unsigned>(verify_status),
@@ -1746,7 +1746,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 
 		if (AmegerDiagEnabled())
 		{
-			LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: resume status=0x%08X previous_suspend=%u\n").get(),
+			DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: resume status=0x%08X previous_suspend=%u\n").get(),
 				static_cast<unsigned>(resume_status), sr_resume);
 		}
 
@@ -2095,7 +2095,7 @@ static DWORD SR_HijackThreadOnce(HANDLE hTargetProc, f_Routine pRoutine, void * 
 					}
 				}
 
-				LOG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: pending t=%llu rip=0x%llX rip_at_stub=%d ctx_status=0x%08X thread_state=%d wait_reason=%d target_alive=%d exit=0x%08X\n").get(),
+				DIAG(1, XOR_STR_A("[ThreadHijack] [*] Hijack Diag: pending t=%llu rip=0x%llX rip_at_stub=%d ctx_status=0x%08X thread_state=%d wait_reason=%d target_alive=%d exit=0x%08X\n").get(),
 					static_cast<unsigned long long>(waited),
 					static_cast<unsigned long long>(live.Rip),
 					(NT_SUCCESS(live_context) && live.Rip == ReCa<ULONG_PTR>(pCode)) ? 1 : 0,

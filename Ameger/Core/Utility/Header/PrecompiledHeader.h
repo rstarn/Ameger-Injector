@@ -70,10 +70,14 @@ void custom_print(int indention_offset, const char * format, ...);
 
 DWORD __stdcall SetRawPrintCallback(f_raw_print_callback print);
 
+void custom_diag_print(int indention_offset, const char * format, ...);
+
 #ifdef AMEGER_KEEP_RUNTIME_LOGS
 #define LOG custom_print
+#define DIAG custom_diag_print
 #else
 #define LOG(...) ((void)0)
+#define DIAG(...) ((void)0)
 #endif
 
 // Diagnostics gate for the "[*] ... Diag" / "[*] Stub ... Check" trace lines. The launcher sets
@@ -86,6 +90,17 @@ inline bool AmegerDiagEnabled()
     {
         wchar_t buffer[8] = {};
         const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_DIAG").get(), buffer, 4);
+        return got == 1 && buffer[0] == L'1';
+    }();
+    return enabled;
+}
+
+inline bool AmegerDiagStreamEnabled()
+{
+    static const bool enabled = []() -> bool
+    {
+        wchar_t buffer[8] = {};
+        const DWORD got = GetEnvironmentVariableW(XOR_STR_W(L"AMEGER_DIAG_STREAM").get(), buffer, 4);
         return got == 1 && buffer[0] == L'1';
     }();
     return enabled;

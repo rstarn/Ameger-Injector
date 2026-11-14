@@ -93,6 +93,18 @@ static size_t & Written()
     return written;
 }
 
+static HANDLE & DiagFile()
+{
+    static HANDLE file = INVALID_HANDLE_VALUE;
+    return file;
+}
+
+static size_t & DiagWritten()
+{
+    static size_t written = 0;
+    return written;
+}
+
 static bool WriteUtf8(HANDLE file, const wchar_t * text, size_t chars)
 {
     if (file == INVALID_HANDLE_VALUE || !text || !chars)
@@ -137,6 +149,18 @@ static void CloseFile()
     }
     File() = INVALID_HANDLE_VALUE;
     Written() = 0;
+}
+
+static void CloseDiagFile()
+{
+    HANDLE file = DiagFile();
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+    DiagFile() = INVALID_HANDLE_VALUE;
+    DiagWritten() = 0;
 }
 
 void AppendClean(const wchar_t * text)
@@ -200,6 +224,77 @@ std::wstring ResultLogPath()
         return path;
     }
 
+std::wstring DiagLogPath()
+{
+    const std::wstring result = ResultLogPath();
+    if (result.empty())
+    {
+        return {};
+    }
+
+    const size_t dot = result.find_last_of(L'.');
+    const size_t slash = result.find_last_of(L"\\/");
+    if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
+    {
+        return result.substr(0, dot) + L"_diag" + result.substr(dot);
+    }
+
+    return result + L"_diag.log";
+}
+
+static bool EnsureDiagFileOpen()
+{
+    if (DiagFile() != INVALID_HANDLE_VALUE)
+    {
+        return true;
+    }
+
+    const std::wstring path = DiagLogPath();
+    if (path.empty())
+    {
+        return false;
+    }
+
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file, &size))
+    {
+        DiagWritten() = static_cast<size_t>(size.QuadPart);
+    }
+    else
+    {
+        DiagWritten() = 0;
+    }
+
+    DiagFile() = file;
+    return true;
+}
+
+void AppendDiag(const wchar_t * text)
+{
+    if (!text || !*text)
+    {
+        return;
+    }
+
+    AcquireSRWLockExclusive(&Lock());
+    if (EnsureDiagFileOpen())
+    {
+        const size_t chars = wcslen(text);
+        if (WriteUtf8(DiagFile(), text, chars))
+        {
+            DiagWritten() += chars;
+        }
+    }
+    ReleaseSRWLockExclusive(&Lock());
+}
+
 // Drops the buffered transcript text. Declared here because ResetResultLog/DiscardResultLog
 // need it before the definition further down in this namespace.
 void Clear();
@@ -207,6 +302,7 @@ void Clear();
 void ResetResultLog()
 {
     CloseFile();
+    CloseDiagFile();
     // The in-memory buffer has to be dropped as well. BeginResultLog appends the new header to
     // whatever is still in the buffer and then writes the whole buffer out, so a stale buffer
     // would splice the previous run's transcript into the new file.
@@ -215,6 +311,11 @@ void ResetResultLog()
     if (!path.empty())
     {
         DeleteFileW(path.c_str());
+    }
+    const std::wstring diag_path = DiagLogPath();
+    if (!diag_path.empty())
+    {
+        DeleteFileW(diag_path.c_str());
     }
 }
 
@@ -257,12 +358,18 @@ bool BeginResultLog(const wchar_t * header)
 void DiscardResultLog()
 {
     CloseFile();
+    CloseDiagFile();
     // Same reason as ResetResultLog: a stale buffer would be spliced into the next transcript.
     Clear();
     const std::wstring path = ResultLogPath();
     if (!path.empty())
     {
         DeleteFileW(path.c_str());
+    }
+    const std::wstring diag_path = DiagLogPath();
+    if (!diag_path.empty())
+    {
+        DeleteFileW(diag_path.c_str());
     }
 }
 
@@ -279,6 +386,10 @@ void FlushResultLog()
             WriteUtf8(File(), buf.data() + written, buf.size() - written);
             written = buf.size();
         }
+        if (DiagFile() != INVALID_HANDLE_VALUE)
+        {
+            FlushFileBuffers(DiagFile());
+        }
         ReleaseSRWLockExclusive(&Lock());
     }
 
@@ -289,6 +400,7 @@ void WriteResultLog()
     {
         FlushResultLog();
         CloseFile();
+        CloseDiagFile();
     }
 
 void Clear()

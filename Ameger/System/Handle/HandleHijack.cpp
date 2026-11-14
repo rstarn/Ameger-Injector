@@ -20,7 +20,8 @@ namespace
 	constexpr NTSTATUS kStatusInfoLengthMismatch = static_cast<NTSTATUS>(0xC0000004L);
 
 	constexpr size_t kInitialEnumBytes = 1 << 20;
-	constexpr size_t kMaxEnumBytes = 64ULL * 1024ULL * 1024ULL;
+	constexpr size_t kMaxHandleTableBytes = 64ULL * 1024ULL * 1024ULL;
+	constexpr unsigned kMaxEnumAttempts = 3;
 
 	constexpr size_t kMaxForeignOwners = 16;
 
@@ -195,15 +196,33 @@ namespace
 		bool Extended = true;
 	};
 
-	DWORD QueryHandleSnapshot(const NtdllHandles & Ntdll, ULONG InfoClass, bool Extended, EnumSnapshot & Out, NTSTATUS & LastStatus)
+	struct EnumQueryResult
 	{
-		size_t Size = kInitialEnumBytes;
-		LastStatus = 0;
+		DWORD Code = INJ_ERR_HANDLE_HIJACK_FAILED;
+		unsigned Attempts = 0;
+		bool UsedLegacyFallback = false;
+		const char * LayoutName = "EX";
+	};
 
-		for (;;)
+	DWORD QueryHandleSnapshot(const NtdllHandles & Ntdll, ULONG InfoClass, bool Extended, EnumSnapshot & Out, NTSTATUS & LastStatus, unsigned & AttemptsOut)
+	{
+		AttemptsOut = 0;
+		LastStatus = 0;
+		Out.Buffer.clear();
+		Out.Buffer.shrink_to_fit();
+
+		size_t Size = kInitialEnumBytes;
+		for (unsigned Attempt = 1; Attempt <= kMaxEnumAttempts; ++Attempt)
 		{
+			AttemptsOut = Attempt;
+			if (Size > kMaxHandleTableBytes)
+			{
+				return INJ_ERR_OUT_OF_MEMORY_EXT;
+			}
+
 			try
 			{
+				// Single allocation grown/retried in place.
 				Out.Buffer.resize(Size);
 			}
 			catch (...)
@@ -213,12 +232,17 @@ namespace
 
 			ULONG Returned = 0;
 			const NTSTATUS Status = Ntdll.NtQuerySystemInformation(InfoClass, Out.Buffer.data(),
-				static_cast<ULONG>(Size), &Returned);
+				static_cast<ULONG>(Out.Buffer.size()), &Returned);
 			LastStatus = Status;
 
 			if (Status == kStatusInfoLengthMismatch)
 			{
-				if (Size >= kMaxEnumBytes)
+				if (Attempt == kMaxEnumAttempts)
+				{
+					return INJ_ERR_HANDLE_HIJACK_FAILED;
+				}
+
+				if (Size >= kMaxHandleTableBytes)
 				{
 					return INJ_ERR_OUT_OF_MEMORY_EXT;
 				}
@@ -228,9 +252,9 @@ namespace
 				{
 					Next = Size * 2;
 				}
-				if (Next > kMaxEnumBytes)
+				if (Next > kMaxHandleTableBytes)
 				{
-					Next = kMaxEnumBytes;
+					Next = kMaxHandleTableBytes;
 				}
 
 				Size = Next;
@@ -242,25 +266,71 @@ namespace
 				return INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 
+			if (Returned > 0 && Returned < Out.Buffer.size())
+			{
+				Out.Buffer.resize(Returned);
+			}
+
 			Out.Extended = Extended;
 			return INJ_ERR_SUCCESS;
 		}
+
+		return INJ_ERR_HANDLE_HIJACK_FAILED;
 	}
 
-	DWORD QueryAnySnapshot(const NtdllHandles & Ntdll, EnumSnapshot & Out, NTSTATUS & LastStatus)
+	EnumQueryResult QueryAnySnapshot(const NtdllHandles & Ntdll, EnumSnapshot & Out, NTSTATUS & LastStatus)
 	{
-		DWORD Result = QueryHandleSnapshot(Ntdll, kSystemExtendedHandleInformation, true, Out, LastStatus);
-		if (Result == INJ_ERR_SUCCESS)
+		EnumQueryResult Result{};
+
+		const bool PreferEx = GetOSBuildVersion() >= 14393; // Windows 10 1607+
+		if (PreferEx)
 		{
+			Result.LayoutName = "EX";
+			unsigned Attempts = 0;
+			Result.Code = QueryHandleSnapshot(Ntdll, kSystemExtendedHandleInformation, true, Out, LastStatus, Attempts);
+			Result.Attempts = Attempts;
+
+			if (Result.Code == INJ_ERR_SUCCESS ||
+				Result.Code == INJ_ERR_OUT_OF_MEMORY_NEW ||
+				Result.Code == INJ_ERR_OUT_OF_MEMORY_EXT)
+			{
+				return Result;
+			}
+
+			// If EX enumeration could not complete (including 3-attempt mismatch), fall back to legacy.
+			unsigned LegacyAttempts = 0;
+			NTSTATUS LegacyStatus = 0;
+			EnumSnapshot LegacyOut;
+			const DWORD LegacyCode = QueryHandleSnapshot(Ntdll, kSystemHandleInformation, false, LegacyOut, LegacyStatus, LegacyAttempts);
+			if (LegacyCode == INJ_ERR_SUCCESS)
+			{
+				LOG(1, XOR_STR_A("[Handle] [*] Enumeration: EX layout failed (status 0x%08X, attempt %u of %u); fell back to legacy layout\n").get(),
+					static_cast<unsigned>(LastStatus), Attempts, kMaxEnumAttempts);
+				Out = std::move(LegacyOut);
+				LastStatus = LegacyStatus;
+				Result.Code = LegacyCode;
+				Result.Attempts = LegacyAttempts;
+				Result.UsedLegacyFallback = true;
+				Result.LayoutName = "legacy";
+				return Result;
+			}
+
+			if (LegacyCode == INJ_ERR_OUT_OF_MEMORY_NEW || LegacyCode == INJ_ERR_OUT_OF_MEMORY_EXT)
+			{
+				Result.Code = LegacyCode;
+				Result.Attempts = LegacyAttempts;
+				Result.UsedLegacyFallback = true;
+				Result.LayoutName = "legacy";
+			}
+
 			return Result;
 		}
 
-		if (Result == INJ_ERR_OUT_OF_MEMORY_NEW || Result == INJ_ERR_OUT_OF_MEMORY_EXT)
-		{
-			return Result;
-		}
-
-		return QueryHandleSnapshot(Ntdll, kSystemHandleInformation, false, Out, LastStatus);
+		Result.LayoutName = "legacy";
+		unsigned Attempts = 0;
+		Result.Code = QueryHandleSnapshot(Ntdll, kSystemHandleInformation, false, Out, LastStatus, Attempts);
+		Result.Attempts = Attempts;
+		return Result;
 	}
 
 	bool FindOwnEntryType(const EnumSnapshot & Snapshot, DWORD SelfPid, ULONG_PTR HandleValue, USHORT & TypeIndexOut)
@@ -1068,11 +1138,11 @@ namespace
 
 		EnumSnapshot Snap{ };
 		NTSTATUS SnapStatus = 0;
-		const DWORD SnapshotRet = QueryAnySnapshot(Ntdll, Snap, SnapStatus);
-		if (SnapshotRet != INJ_ERR_SUCCESS)
+		const EnumQueryResult Query = QueryAnySnapshot(Ntdll, Snap, SnapStatus);
+		if (Query.Code != INJ_ERR_SUCCESS)
 		{
 			Local.SnapStatus = static_cast<DWORD>(SnapStatus);
-			return Finish(SnapshotRet);
+			return Finish(Query.Code);
 		}
 
 		Local.SnapStatus = static_cast<DWORD>(SnapStatus);
@@ -1099,6 +1169,8 @@ namespace
 		Local.SnapshotBytes = static_cast<DWORD>(Snap.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snap.Buffer.size());
 		LOG(1, XOR_STR_A("[Handle] [*] Handle Table Census: %llu Bytes | Calibrated = %d | Type = %u\n").get(),
 			(unsigned long long)Snap.Buffer.size(), HaveType ? 1 : 0, (unsigned)WantedType);
+		LOG(1, XOR_STR_A("[Handle] [*] Enumeration: %s layout (single batched read, %llu bytes, attempt %u of %u)\n").get(),
+			Query.LayoutName, (unsigned long long)Snap.Buffer.size(), Query.Attempts ? Query.Attempts : 1u, kMaxEnumAttempts);
 
 		const DWORD ScanRet = ScanSnapshot(Ntdll, Snap, SelfPid, TargetPid, TargetTid, ThreadScan, WantedType, HaveType, DesiredAccess, TargetOwnerHandle, Out, Local);
 		if (Detail)
