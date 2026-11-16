@@ -21,6 +21,7 @@ namespace
 			stats.Source = static_cast<DWORD>(HijackSource::Scan);
 
 			HANDLE validated_sponsor_owner = nullptr;
+			bool donor_scan_failed = false;
 
 			if (sponsor_value)
 			{
@@ -87,6 +88,7 @@ namespace
 
 				LOG(0, XOR_STR_A("Handle Acquisition Found No Donor = %08X\n").get(), hijack_ret);
 				stats.FailCode = hijack_ret;
+				donor_scan_failed = hijack_ret == INJ_ERR_HANDLE_HIJACK_FAILED;
 			}
 			else if (stats.FailCode == INJ_ERR_SUCCESS)
 			{
@@ -95,6 +97,29 @@ namespace
 
 			stats.Source = static_cast<DWORD>(HijackSource::Scan);
 			RecordHijackOutcome(stats, false);
+
+			// Config gate honored: direct fallback only when explicitly permitted.
+			if (donor_scan_failed && AllowDirectHandleFallback())
+			{
+				LOG(1, XOR_STR_A("[Handle] [*] Donor scan exhausted; falling back to direct OpenProcess\n").get());
+				// Query right is required for the image-name verification.
+				HANDLE direct = ScOpenProcess(pid, access_mask | PROCESS_QUERY_LIMITED_INFORMATION);
+				if (direct && direct != INVALID_HANDLE_VALUE)
+				{
+					wchar_t buf[MAX_PATH] = {};
+					DWORD buf_size = MAX_PATH;
+					if (QueryFullProcessImageNameW(direct, 0, buf, &buf_size))
+					{
+						LOG(1, XOR_STR_A("[Handle] [+] Direct acquisition succeeded: PID = %u | Image = %ls\n").get(), pid, buf);
+						out.reset(direct);
+						return INJ_ERR_SUCCESS;
+					}
+					CloseHandle(direct);
+				}
+				LOG(1, XOR_STR_A("[Handle] [!] Direct acquisition also failed; refusing.\n").get());
+				INIT_ERROR_DATA(error_data, INJ_ERR_HANDLE_HIJACK_FAILED);
+				return INJ_ERR_HANDLE_HIJACK_FAILED;
+			}
 
 			if (!AllowDirectHandleFallback())
 			{

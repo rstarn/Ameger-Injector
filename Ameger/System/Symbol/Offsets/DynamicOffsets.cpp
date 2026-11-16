@@ -271,7 +271,8 @@ DWORD ResolveDynamicOffsets()
 	g_DynamicOffsets = tmp;
 
 	g_DynamicOffsetsReady.store(1, std::memory_order_release);
-	LOG(1, XOR_STR_A("DynamicOffsets Ready: T0 = 0x%X | T1 = 0x%X | P0 = 0x%X | K0 = 0x%X | L0 = 0x%X | Size = %lu | I0 = 0x%X | I1 = 0x%X\n").get(),
+	// Stable per OS build; the resolved-offset report is implementation detail, not operator state.
+	DIAG(1, XOR_STR_A("DynamicOffsets Ready: T0 = 0x%X | T1 = 0x%X | P0 = 0x%X | K0 = 0x%X | L0 = 0x%X | Size = %lu | I0 = 0x%X | I1 = 0x%X\n").get(),
 		tmp.TebSameTebFlags, tmp.TebLastErrorValue, tmp.PebLdr,
 		tmp.KuserCookie, tmp.LdrEntryDllBase, tmp.LdrEntrySize,
 		tmp.InvertedTableCount, tmp.InvertedTableEntries);

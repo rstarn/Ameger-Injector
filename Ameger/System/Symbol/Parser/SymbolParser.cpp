@@ -292,7 +292,8 @@ DWORD SYMBOL_PARSER::GetFieldOffset(const char * szTypeName, const char * szFiel
 					continue;
 				}
 				OffsetOut = field_offset;
-				LOG(2, XOR_STR_A("SymbolParser: %s::%s = 0x%X\n").get(), szTypeName, szFieldName, field_offset);
+				// Stable per OS build; implementation detail, so it belongs on the diagnostic stream.
+				DIAG(2, XOR_STR_A("SymbolParser: %s::%s = 0x%X\n").get(), szTypeName, szFieldName, field_offset);
 				result = SYMBOL_ERR_SUCCESS;
 				break;
 			}
@@ -328,7 +329,7 @@ DWORD SYMBOL_PARSER::GetFieldOffsetAny(const char * const * TypeNames, size_t Ty
 		if (GetFieldOffset(TypeNames[i], szFieldName, off) == SYMBOL_ERR_SUCCESS)
 		{
 			OffsetOut = off;
-			LOG(2, XOR_STR_A("SymbolParser: %s::%s Resolved Via %s\n").get(), TypeNames[i], szFieldName, TypeNames[i]);
+			DIAG(2, XOR_STR_A("SymbolParser: %s::%s Resolved Via %s\n").get(), TypeNames[i], szFieldName, TypeNames[i]);
 			return SYMBOL_ERR_SUCCESS;
 		}
 	}

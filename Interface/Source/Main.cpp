@@ -2,6 +2,8 @@
 
 #include "Launcher.h"
 
+#include <cmath>
+
 namespace
 {
 
@@ -681,9 +683,6 @@ static DWORD g_SpawnedChildExit = 0;
 
     // Defined below, next to the rest of the confirmation machinery.
 bool ConfirmOnParentConsole();
-// How long the parent waits for an answer at the confirmation prompt before it gives up and
-// cancels the run. The wait is bounded so an unattended run can never block for ever.
-constexpr ULONGLONG kConfirmationTimeoutMs = 180000ull;
 // Defined below with the rest of the configuration machinery. It is quiet: it only reads and
 // decrypts the deployed config, it never prints.
 bool LoadWizardConfig(WizardConfig & config, std::wstring & path, bool & invalid);
@@ -923,7 +922,9 @@ bool InterfaceConsolePresent();
     void StealthBeep(DWORD frequency, DWORD duration)
     {
         using BeepFn = BOOL (WINAPI *)(DWORD, DWORD);
+        using PlaySoundFn = BOOL (WINAPI *)(LPCWSTR, HMODULE, DWORD);
         static BeepFn beep = nullptr;
+        static PlaySoundFn play_sound = nullptr;
         static bool resolved = false;
         if (!resolved)
         {
@@ -935,7 +936,95 @@ bool InterfaceConsolePresent();
                 auto api_name = XOR_STR_A("Beep");
                 beep = ReCa<BeepFn>(GetProcAddress(mod, api_name.get()));
             }
+
+            auto winmm_name = XOR_STR_W(L"winmm.dll");
+            HMODULE winmm = GetModuleHandleW(winmm_name.get());
+            if (!winmm)
+            {
+                winmm = LoadLibraryW(winmm_name.get());
+            }
+            if (winmm)
+            {
+                auto api_name = XOR_STR_A("PlaySoundW");
+                play_sound = ReCa<PlaySoundFn>(GetProcAddress(winmm, api_name.get()));
+            }
         }
+
+        if (frequency < 37 || frequency > 32767 || !duration)
+        {
+            return;
+        }
+
+        if (play_sound)
+        {
+            // Beep is routed through the System Sounds stream, which can be muted on its own.
+            // A generated PCM tone plays on the app's audio session instead.
+            constexpr DWORD kSampleRate = 44100;
+            constexpr double kTwoPi = 6.283185307179586;
+            const DWORD sample_count = static_cast<DWORD>(
+                (static_cast<unsigned long long>(kSampleRate) * duration) / 1000ULL);
+            if (sample_count)
+            {
+                const DWORD data_size = sample_count * static_cast<DWORD>(sizeof(short));
+                std::vector<BYTE> wav(44ULL + data_size, 0);
+
+                const auto put16 = [&wav](size_t offset, WORD value)
+                {
+                    wav[offset] = static_cast<BYTE>(value & 0xFF);
+                    wav[offset + 1] = static_cast<BYTE>((value >> 8) & 0xFF);
+                };
+                const auto put32 = [&wav](size_t offset, DWORD value)
+                {
+                    wav[offset] = static_cast<BYTE>(value & 0xFF);
+                    wav[offset + 1] = static_cast<BYTE>((value >> 8) & 0xFF);
+                    wav[offset + 2] = static_cast<BYTE>((value >> 16) & 0xFF);
+                    wav[offset + 3] = static_cast<BYTE>((value >> 24) & 0xFF);
+                };
+
+                memcpy(wav.data(), "RIFF", 4);
+                put32(4, 36 + data_size);
+                memcpy(wav.data() + 8, "WAVEfmt ", 8);
+                put32(16, 16);
+                put16(20, 1);
+                put16(22, 1);
+                put32(24, kSampleRate);
+                put32(28, kSampleRate * 2);
+                put16(32, 2);
+                put16(34, 16);
+                memcpy(wav.data() + 36, "data", 4);
+                put32(40, data_size);
+
+                const size_t fade = std::min<size_t>(
+                    static_cast<size_t>(kSampleRate / 1000 * 4), sample_count / 4);
+                const double step = kTwoPi * static_cast<double>(frequency) / static_cast<double>(kSampleRate);
+                for (DWORD i = 0; i < sample_count; ++i)
+                {
+                    double envelope = 1.0;
+                    if (fade && i < fade)
+                    {
+                        envelope = static_cast<double>(i) / static_cast<double>(fade);
+                    }
+                    else if (fade && i + fade >= sample_count)
+                    {
+                        envelope = static_cast<double>(sample_count - i) / static_cast<double>(fade);
+                    }
+
+                    const double value = std::sin(step * static_cast<double>(i)) * envelope * 0.45;
+                    const WORD sample = static_cast<WORD>(static_cast<short>(value * 32767.0));
+                    const size_t offset = 44 + static_cast<size_t>(i) * sizeof(short);
+                    wav[offset] = static_cast<BYTE>(sample & 0xFF);
+                    wav[offset + 1] = static_cast<BYTE>(sample >> 8);
+                }
+
+                // Synchronous so a cancel beep is not cut off by process exit.
+                if (play_sound(ReCa<LPCWSTR>(wav.data()), nullptr,
+                    SND_MEMORY | SND_SYNC | SND_NODEFAULT))
+                {
+                    return;
+                }
+            }
+        }
+
         if (beep)
         {
             beep(frequency, duration);
@@ -1476,11 +1565,9 @@ bool InterfaceConsolePresent();
         fflush(stdout);
 
         // The console input buffer is read the same way the child's console branch reads it, so
-        // the operator's keypress is picked up exactly as it would have been. The wait is bounded
-        // so a run can never sit here for ever: if nobody answers, the run is cancelled rather
-        // than continuing unattended.
-        const ULONGLONG deadline = GetTickCount64() + kConfirmationTimeoutMs;
-
+        // the operator's keypress is picked up exactly as it would have been. The wait is
+        // unbounded: the run must never cancel merely because the operator was away from the
+        // keyboard, so it waits for HOME/END until an answer actually arrives.
         for (;;)
         {
             while (_kbhit())
@@ -1495,27 +1582,20 @@ bool InterfaceConsolePresent();
                     const int scan = _getch();
                     if (scan == 0x47)
                     {
-                        StealthBeep(1600, 70);
+                        StealthBeep(1600, 150);
                         return true;
                     }
                     if (scan == 0x4F)
                     {
-                        StealthBeep(320, 120);
+                        StealthBeep(320, 250);
                         return false;
                     }
                 }
                 else if (key == 'q' || key == 'Q' || key == 27)
                 {
-                    StealthBeep(320, 120);
+                    StealthBeep(320, 250);
                     return false;
                 }
-            }
-
-            if (GetTickCount64() >= deadline)
-            {
-                LOG(0, L"%ls[!]%ls No Answer At The Prompt Within %llu Seconds; Cancelling.\\n",
-                    kYellow, kReset, static_cast<unsigned long long>(kConfirmationTimeoutMs / 1000));
-                return false;
             }
 
             Sleep(25);
@@ -1590,18 +1670,18 @@ bool InterfaceConsolePresent();
                         const int scan = _getch();
                         if (scan == 0x47)
                         {
-                            StealthBeep(1600, 70);
+                            StealthBeep(1600, 150);
                             return ConfirmationResult::Proceed;
                         }
                         if (scan == 0x4F)
                         {
-                            StealthBeep(320, 120);
+                            StealthBeep(320, 250);
                             return ConfirmationResult::Cancelled;
                         }
                     }
                     else if (key == 'q' || key == 'Q' || key == 27)
                     {
-                        StealthBeep(320, 120);
+                        StealthBeep(320, 250);
                         return ConfirmationResult::Cancelled;
                     }
                 }
@@ -1616,9 +1696,8 @@ bool InterfaceConsolePresent();
 
         bool home_was_down = false;
         bool end_was_down = false;
-        // The wait is bounded: an unattended run must not sit here for ever waiting for a key
-        // that is never going to arrive.
-        const ULONGLONG deadline = GetTickCount64() + kConfirmationTimeoutMs;
+        // The wait is unbounded: the prompt belongs to a human, so the run must not cancel
+        // because the answer took longer than an arbitrary timer.
         for (;;)
         {
             const bool home_down = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
@@ -1626,11 +1705,11 @@ bool InterfaceConsolePresent();
 
             if (home_down && !home_was_down)
             {
-                StealthBeep(1600, 70);
+                StealthBeep(1600, 150);
             }
             if (end_down && !end_was_down)
             {
-                StealthBeep(320, 120);
+                StealthBeep(320, 250);
             }
             home_was_down = home_down;
             end_was_down = end_down;
@@ -1649,12 +1728,6 @@ bool InterfaceConsolePresent();
                 {
                     Sleep(10);
                 }
-                return ConfirmationResult::Cancelled;
-            }
-            if (GetTickCount64() >= deadline)
-            {
-                LOG(0, L"  %ls[!]%ls No Answer At The Prompt Within %llu Seconds; Cancelling.\n",
-                    kYellow, kReset, static_cast<unsigned long long>(kConfirmationTimeoutMs / 1000));
                 return ConfirmationResult::Cancelled;
             }
             Sleep(25);

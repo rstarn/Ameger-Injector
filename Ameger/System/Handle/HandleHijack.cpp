@@ -2,6 +2,7 @@
 
 #include <TlHelp32.h>
 
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -23,11 +24,12 @@ namespace
 	constexpr size_t kMaxHandleTableBytes = 64ULL * 1024ULL * 1024ULL;
 	constexpr unsigned kMaxEnumAttempts = 3;
 
-	constexpr size_t kMaxForeignOwners = 16;
+	// Owners are opened on demand with PROCESS_DUP_HANDLE; the cap only guards against a
+	// pathological process count. A low cap skipped service owners such as svchost.
+	constexpr size_t kMaxForeignOwners = 1024;
 
-
-
-	constexpr size_t kMaxDupAttempts = 4096;
+	// Duplication budget must cover every process handle on a large desktop.
+	constexpr size_t kMaxDupAttempts = 65536;
 
 	struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL
 	{
@@ -609,6 +611,13 @@ namespace
 					std::wstring(XOR_STR_W(L"fontdrvhost.exe").get()),
 					std::wstring(XOR_STR_W(L"spoolsv.exe").get()),
 					std::wstring(XOR_STR_W(L"wmiprvse.exe").get()),
+					// Vendor utilities that hold large process-handle tables for overlay/RGB
+					// telemetry. Their handles never verify as injection donors and otherwise
+					// dominate scan time.
+					std::wstring(XOR_STR_W(L"nvcontainer.exe").get()),
+					std::wstring(XOR_STR_W(L"ArmouryCrateControlInterface.exe").get()),
+					std::wstring(XOR_STR_W(L"AsusSoftwareManager.exe").get()),
+					std::wstring(XOR_STR_W(L"DAX3API.exe").get()),
 				};
 				for (const std::wstring & candidate : kDefaultExcluded)
 				{
@@ -775,6 +784,7 @@ namespace
 		size_t BlocklistedOwners = 0;
 
 		std::unordered_set<ULONG_PTR> WrongObjects;
+		std::unordered_map<DWORD, size_t> RejectedByOwner;
 		size_t Examined = 0;
 		size_t Duplicated = 0;
 		size_t DupDenied = 0;
@@ -786,6 +796,35 @@ namespace
 		DWORD FoundGranted = 0;
 		DWORD FoundDonorHandle = 0;
 		DWORD FoundNewHandle = 0;
+
+		const auto LogRejectionSummary = [&]()
+		{
+			if (RejectedByOwner.empty())
+			{
+				return;
+			}
+
+			std::vector<std::pair<DWORD, size_t>> Rows(RejectedByOwner.begin(), RejectedByOwner.end());
+			std::sort(Rows.begin(), Rows.end(),
+				[](const std::pair<DWORD, size_t> & Left, const std::pair<DWORD, size_t> & Right)
+				{
+					if (Left.second != Right.second)
+					{
+						return Left.second > Right.second;
+					}
+					return Left.first < Right.first;
+				});
+
+			for (const auto & Row : Rows)
+			{
+				const wchar_t * OwnerName = ImageIndex.Find(Row.first);
+				DIAG(1, XOR_STR_A(
+					"[Handle] [*] Verify rejected: owner = %u (%ls) | %llu handles\n").get(),
+					Row.first,
+					OwnerName ? OwnerName : L"<unknown>",
+					(unsigned long long)Row.second);
+			}
+		};
 
 		const auto TryCandidate = [&](DWORD OwnerPid, ULONG_PTR HandleValue, PVOID Object) -> bool
 		{
@@ -829,6 +868,7 @@ namespace
 				if (!Ok)
 				{
 					++VerifyRejected;
+					++RejectedByOwner[OwnerPid];
 					if (Object)
 					{
 						WrongObjects.insert(ReCa<ULONG_PTR>(Object));
@@ -856,16 +896,6 @@ namespace
 
 
 
-
-					if (OwnerPid != SelfPid)
-					{
-						const wchar_t * owner_name = ImageIndex.Find(OwnerPid);
-						if (Blocklist.Excludes(owner_name))
-						{
-							++BlocklistedOwners;
-							return false;
-						}
-					}
 
 					bool known = false;
 					size_t foreign_opened = 0;
@@ -921,6 +951,7 @@ namespace
 			if (!Ok)
 			{
 				++VerifyRejected;
+				++RejectedByOwner[OwnerPid];
 				if (Object)
 				{
 
@@ -956,6 +987,20 @@ namespace
 			const size_t Capacity = Header < Snapshot.Buffer.size()
 				? (Snapshot.Buffer.size() - Header) / sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL)
 				: 0;
+			// Diagnostic only: the snapshot trim must agree with the declared count.
+			const ULONG_PTR Declared = static_cast<ULONG_PTR>(Info->NumberOfHandles);
+			if (Declared != static_cast<ULONG_PTR>(Capacity))
+			{
+				LOG(1, XOR_STR_A(
+					"[Handle] [*] Snapshot consistency: NumberOfHandles = %llu"
+					" | Capacity = %llu | Header = %llu | BufferSize = %llu"
+					" | Layout = %s\n").get(),
+					(unsigned long long)Declared,
+					(unsigned long long)Capacity,
+					(unsigned long long)Header,
+					(unsigned long long)Snapshot.Buffer.size(),
+					Snapshot.Extended ? "EX" : "legacy");
+			}
 			if (Count > Capacity)
 			{
 				Count = Capacity;
@@ -982,6 +1027,20 @@ namespace
 			const size_t Capacity = Header < Snapshot.Buffer.size()
 				? (Snapshot.Buffer.size() - Header) / sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_LEGACY)
 				: 0;
+			// Diagnostic only: the snapshot trim must agree with the declared count.
+			const ULONG_PTR Declared = static_cast<ULONG_PTR>(Info->NumberOfHandles);
+			if (Declared != static_cast<ULONG_PTR>(Capacity))
+			{
+				LOG(1, XOR_STR_A(
+					"[Handle] [*] Snapshot consistency: NumberOfHandles = %llu"
+					" | Capacity = %llu | Header = %llu | BufferSize = %llu"
+					" | Layout = %s\n").get(),
+					(unsigned long long)Declared,
+					(unsigned long long)Capacity,
+					(unsigned long long)Header,
+					(unsigned long long)Snapshot.Buffer.size(),
+					Snapshot.Extended ? "EX" : "legacy");
+			}
 			if (Count > Capacity)
 			{
 				Count = Capacity;
@@ -1003,6 +1062,17 @@ namespace
 		}
 
 		Detail.TotalHandles = static_cast<DWORD>(TotalCount);
+
+		size_t ForeignCandidates = 0;
+		for (const auto & Entry : Candidates)
+		{
+			if (Entry.OwnerPid != SelfPid && Entry.OwnerPid != TargetPid)
+			{
+				++ForeignCandidates;
+			}
+		}
+		LOG(1, XOR_STR_A("[Handle] [*] Foreign-owned candidates: %llu\n").get(),
+			(unsigned long long)ForeignCandidates);
 
 		for (DWORD Pass = 0; Pass < 3 && !Out && !BudgetHit; ++Pass)
 		{
@@ -1030,6 +1100,13 @@ namespace
 					continue;
 				}
 
+				// Skip noise owners before they cost an open, a duplicate, and a verify.
+				if (Pass == 2 && Blocklist.Excludes(ImageIndex.Find(Entry.OwnerPid)))
+				{
+					++BlocklistedOwners;
+					continue;
+				}
+
 				++Examined;
 				if (TryCandidate(Entry.OwnerPid, Entry.HandleValue, Entry.Object))
 				{
@@ -1045,6 +1122,7 @@ namespace
 					Detail.Success = 1;
 					Detail.FailCode = INJ_ERR_SUCCESS;
 					Detail.SnapshotBytes = static_cast<DWORD>(Snapshot.Buffer.size() > 0xFFFFFFFF ? 0xFFFFFFFF : Snapshot.Buffer.size());
+					LogRejectionSummary();
 					LOG(1, XOR_STR_A("[Handle] [+] Donor Handle Acquired: Donor PID = %u | Donor Handle = 0x%08X\n").get(), FoundDonorPid, FoundDonorHandle);
 					LOG(1, XOR_STR_A("[Handle] [+] Duplicated Handle: Local = 0x%08X | Granted = 0x%08X\n").get(), FoundNewHandle, FoundGranted);
 					LOG(1, XOR_STR_A("[Handle] [*] Census: Total = %u | Examined = %llu | DupDenied = %llu | VerifyRejected = %llu | Owners = %llu | BudgetSkipped = %llu | Blocklisted = %llu\n").get(),
@@ -1059,12 +1137,19 @@ namespace
 			}
 		}
 
-		LOG(1, XOR_STR_A("HandleAcq: No Donor (Examined %llu, Duplicated %llu, Filtered %d, Budget Hit %d, Blocklisted %llu)\n").get(),
-			static_cast<unsigned long long>(Examined),
-			static_cast<unsigned long long>(Duplicated),
+		LogRejectionSummary();
+		LOG(1, XOR_STR_A(
+			"HandleAcq: No Donor (Total = %u | Examined %llu | Duplicated %llu"
+			" | VerifyRejected %llu | DupDenied %llu | Filtered %d"
+			" | Budget Hit %d | Blocklisted %llu)\n").get(),
+			Detail.TotalHandles,
+			(unsigned long long)Examined,
+			(unsigned long long)Duplicated,
+			(unsigned long long)VerifyRejected,
+			(unsigned long long)DupDenied,
 			HaveType ? 1 : 0,
 			BudgetHit ? 1 : 0,
-			static_cast<unsigned long long>(BlocklistedOwners));
+			(unsigned long long)BlocklistedOwners);
 
 		Detail.Examined = static_cast<DWORD>(Examined);
 		Detail.OwnersOpened = static_cast<DWORD>(Owners.size());
