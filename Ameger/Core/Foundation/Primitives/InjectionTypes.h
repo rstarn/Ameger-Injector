@@ -211,7 +211,9 @@ struct VERIFIABLE_EXEC_TELEMETRY
 
 	DWORD TlsLoaderEntryAbsent = 0;
 
-	DWORD Reserved = 0;
+	// Was Reserved. Non-zero means the shell set TLS up without any loader bookkeeping
+	// (no PEB bitmap bit, no TlsSlots owner change by LdrpHandleTlsData, no LdrpTlsList node).
+	DWORD TlsCustomMode = 0;
 
 
 
@@ -236,6 +238,12 @@ struct VERIFIABLE_EXEC_TELEMETRY
 
 
 
+	// Bit layout (no new fields — the block is size-pinned at 1840 bytes):
+	//   0x0F  count of OutputDebugString imports redirected to an ntdll ret
+	//   0x10  debug-print guard VEH installed (absorbed, removed on shell exit)
+	//   0x20  payload-exception VEH guard installed (INJ_MM_VEH_GUARD)
+	//   0x40  payload-exception VEH guard removed on shell exit
+	//   0x80  RtlAddFunctionTable succeeded but the RtlLookupFunctionEntry probe disagreed
 	DWORD DebugPrintVehInstalled = 0;
 
 	// Vector 7: live syscall-stack sampling ring, written by the emitted sampled stubs inside

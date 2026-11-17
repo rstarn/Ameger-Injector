@@ -257,6 +257,9 @@ namespace stealth
         kStealthVerifyGadgetValidity,
         kStealthVerifySpoofRandomization,
 
+        // Payload liveness: did DllMain's feature threads actually start inside the image?
+        kStealthVerifyPayloadThreads,
+
         kStealthStepCount
     };
 
@@ -2720,7 +2723,35 @@ namespace stealth
         return !buffers.pre_load_modules.empty();
     }
 
-
+    // A module that appeared during the load is benign when it resolves to a DLL under the
+    // system directory — those are exactly the graphics/input dependencies the payload's
+    // import table pulls in (d3dcompiler_47, xinput1_4, inputhost). Report them as expected
+    // imports rather than as a trap; only an unexpected, non-system module is a finding.
+    // Classify by the path recorded in the SURVEYED process's module list. Asking the
+    // launcher's loader (GetModuleHandleW/GetModuleFileNameW) about a module that was
+    // loaded only into the target always fails, which mislabels the payload's own
+    // System32 imports (XInput1_4.dll, D3DCOMPILER_47.dll, inputhost.dll) as traps.
+    static bool IsSystemDirectoryModule(const std::wstring & full)
+    {
+        if (full.empty())
+        {
+            return false;
+        }
+        wchar_t system_dir[MAX_PATH]{};
+        const UINT dir_len = GetSystemDirectoryW(system_dir, MAX_PATH);
+        if (!dir_len || dir_len >= MAX_PATH)
+        {
+            return false;
+        }
+        std::wstring prefix(system_dir);
+        if (prefix.back() != L'\\')
+        {
+            prefix += L'\\';
+        }
+        return full.size() > prefix.size() &&
+            _wcsnicmp(full.c_str(), prefix.c_str(), prefix.size()) == 0 &&
+            full.find(L'\\', prefix.size()) == std::wstring::npos;
+    }
 
 
 
@@ -3124,6 +3155,8 @@ namespace stealth
         bool & geometry_ok, int & inconclusive);
     void StealthVerifyGadgetValidity(StealthVerifierBuffers & buffers, int & step, int total);
     void StealthVerifySpoofRandomization(HANDLE process, HINSTANCE hRemoteBase, int & step, int total);
+    void StealthVerifyPayloadThreads(HANDLE process, HINSTANCE hRemoteBase, const BYTE * local_pe,
+        size_t local_pe_size, int & step, int total, int & inconclusive);
 
     bool DebugAndVerifyStealth(HANDLE process, HINSTANCE hRemoteBase, DWORD flags,
         const BYTE * local_pe, size_t local_pe_size, const HijackStats * ProcessHijack, const HijackStats * ThreadHijack,
@@ -3168,6 +3201,7 @@ namespace stealth
             isActive(INJ_MM_RUN_UNDER_LDR_LOCK),
             isActive(INJ_MM_CLEAN_DATA_DIR),
             isActive(INJ_MM_SET_PAGE_PROTECTIONS),
+            true,
             true,
             true,
             true,
@@ -3364,6 +3398,10 @@ namespace stealth
         {
             StealthVerifySpoofRandomization(process, hRemoteBase, step, total);
         }
+        if (step_enabled[kStealthVerifyPayloadThreads])
+        {
+            StealthVerifyPayloadThreads(process, hRemoteBase, local_pe, local_pe_size, step, total, inconclusive_checks);
+        }
 
         // The gate reflects the true security posture: it now also fails when the VAD census
         // sees the MEM_PRIVATE private-map fallback (Vector 1) or the payload base is missing
@@ -3429,6 +3467,7 @@ namespace stealth
                 }
                 SurveyModule module{};
                 module.name = entry.szModule;
+                module.path = entry.szExePath;
                 module.base = reinterpret_cast<ULONG_PTR>(entry.modBaseAddr);
                 module.size = static_cast<SIZE_T>(entry.modBaseSize);
                 out.push_back(module);
@@ -4577,6 +4616,219 @@ namespace stealth
         }
     }
 
+    // Read-only liveness check: enumerate the target's threads and count any whose start
+    // address falls inside the mapped image. Answers "did DllMain's feature threads spawn"
+    // without changing the payload, the exception posture, or any loader-visible state.
+    void StealthVerifyPayloadThreads(HANDLE process, HINSTANCE hRemoteBase, const BYTE * local_pe,
+        size_t local_pe_size, int & step, int total, int & inconclusive)
+    {
+        ++step;
+        LOG(0, L"\n\n[%ls%d%ls/%ls%d%ls] Payload Thread Census...\n\n", kGreen, step, kReset, kGreen, total, kReset);
+
+        DWORD image_size = 0;
+        if (local_pe && local_pe_size >= sizeof(IMAGE_DOS_HEADER))
+        {
+            const IMAGE_DOS_HEADER * dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(local_pe);
+            if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 &&
+                static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) <= local_pe_size)
+            {
+                const IMAGE_NT_HEADERS64 * nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>(local_pe + dos->e_lfanew);
+                if (nt->Signature == IMAGE_NT_SIGNATURE && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                {
+                    image_size = nt->OptionalHeader.SizeOfImage;
+                }
+            }
+        }
+
+        const DWORD pid = GetProcessId(process);
+        if (!pid || !hRemoteBase || !image_size)
+        {
+            LOG(0, L"  %ls[!]%ls Thread Census Unverifiable (Target Pid / Image Base / SizeOfImage Unavailable)\n", kYellow, kReset);
+            ++inconclusive;
+            return;
+        }
+
+        auto ntdll_name = XOR_STR_W(L"ntdll.dll");
+        HMODULE ntdll = GetModuleHandleW(ntdll_name.get());
+        auto api_name = XOR_STR_A("NtQueryInformationThread");
+        using QueryThreadFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        QueryThreadFn query = ntdll ? reinterpret_cast<QueryThreadFn>(GetProcAddress(ntdll, api_name.get())) : nullptr;
+        if (!query)
+        {
+            LOG(0, L"  %ls[!]%ls NtQueryInformationThread Unavailable; Thread Census Skipped\n", kYellow, kReset);
+            ++inconclusive;
+            return;
+        }
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid);
+        if (snap == INVALID_HANDLE_VALUE)
+        {
+            LOG(0, L"  %ls[!]%ls Thread Snapshot Failed; Census Skipped\n", kYellow, kReset);
+            ++inconclusive;
+            return;
+        }
+
+        // This payload starts a SUSPENDED thread at a legit-module address, then rewrites
+        // its RIP into the image with SetThreadContext. Start-address census cannot see it.
+        // The reliable signal is a stack return/frame pointer that lands inside the image.
+        // Query TEB (ThreadBasicInformation=0) -> TebBaseAddress -> TEB.StackBase/Limit,
+        // then scan that stack for ULONG_PTR values in [image base, +SizeOfImage).
+        // THREAD_BASIC_INFORMATION is EXACTLY 48 bytes on x64. NtQueryInformationThread
+        // requires the exact length for this class; passing a larger buffer fails every
+        // call with STATUS_INFO_LENGTH_MISMATCH (the Basic=all-fail signature).
+        // Offset 0x08 is TebBaseAddress: NTSTATUS(4)+pad(4)+PVOID(8)+CLIENT_ID(16)+...
+        using BasicInfo = struct { LONG ExitStatus; DWORD Pad; PVOID TebBaseAddress; BYTE Rest[0x30 - 0x10]; };
+        static_assert(sizeof(BasicInfo) == 48);
+
+        // The passed-in `process` handle is the donated/sponsor handle and may lack
+        // PROCESS_VM_READ (the verifier opens a separate read handle for exactly this reason).
+        // Open our own VM_READ handle for the stack reads.
+        HANDLE hRead = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!hRead)
+        {
+            LOG(0, L"  %ls[!]%ls VM_READ handle for stack census unavailable (0x%X) - INCONCLUSIVE.\n", kYellow, kReset, GetLastError());
+            ++inconclusive;
+            return;
+        }
+
+        const ULONG_PTR base = reinterpret_cast<ULONG_PTR>(hRemoteBase);
+        const ULONG_PTR image_end = base + image_size;
+        DWORD total_threads = 0, open_failed = 0, query_failed = 0, queried = 0;
+        DWORD stack_scanned = 0, active_threads = 0, hit_count = 0;
+        DWORD basic_failed = 0, teb_read_failed = 0, bounds_failed = 0, stack_read_failed = 0;
+        DWORD first_open_error = 0, first_query_status = 0, first_basic_status = 0;
+        struct ThreadHit { DWORD tid; ULONG_PTR rva; };
+        ThreadHit hits[8]{};
+
+        auto scan_stack = [&](HANDLE ht, DWORD tid) -> bool
+        {
+            BasicInfo bi{};
+            const LONG basic_status = query(ht, 0, &bi, sizeof(bi), nullptr);
+            if (basic_status != 0 || !bi.TebBaseAddress)
+            {
+                ++basic_failed;
+                if (!first_basic_status)
+                {
+                    first_basic_status = static_cast<DWORD>(basic_status ? basic_status : 0xC0000001);
+                }
+                return false;
+            }
+            // x64 TEB: StackBase @ +0x08, StackLimit @ +0x10
+            ULONG_PTR teb_fields[4]{};
+            SIZE_T got = 0;
+            if (!ReadProcessMemory(hRead, ReCa<LPCVOID>(ReCa<ULONG_PTR>(bi.TebBaseAddress) + 0x08), teb_fields, sizeof(teb_fields), &got) || got != sizeof(teb_fields))
+            {
+                ++teb_read_failed;
+                return false;
+            }
+            const ULONG_PTR stack_base = teb_fields[0];   // TEB+0x08
+            const ULONG_PTR stack_limit = teb_fields[1];  // TEB+0x10
+            if (!stack_base || !stack_limit || stack_base <= stack_limit || stack_base - stack_limit > (64u << 20))
+            {
+                ++bounds_failed;
+                return false;
+            }
+            ++stack_scanned;
+            const SIZE_T span = static_cast<SIZE_T>(stack_base - stack_limit);
+            std::vector<BYTE> buf(span);
+            if (!ReadProcessMemory(hRead, ReCa<LPCVOID>(stack_limit), buf.data(), span, &got) || got < sizeof(ULONG_PTR))
+            {
+                ++stack_read_failed;
+                return false;
+            }
+            for (SIZE_T off = 0; off + sizeof(ULONG_PTR) <= got; off += sizeof(ULONG_PTR))
+            {
+                ULONG_PTR value = 0;
+                memcpy(&value, buf.data() + off, sizeof(value));
+                if (value >= base && value < image_end)
+                {
+                    if (hit_count < 8)
+                    {
+                        hits[hit_count++] = { tid, value - base };
+                    }
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        THREADENTRY32 te{};
+        te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te))
+        {
+            do
+            {
+                if (te.th32OwnerProcessID != pid || !te.th32ThreadID)
+                {
+                    continue;
+                }
+                ++total_threads;
+                // ThreadBasicInformation (0) and ThreadQuerySetWin32StartAddress (9) both
+                // need THREAD_QUERY_INFORMATION, not THREAD_QUERY_LIMITED_INFORMATION.
+                HANDLE ht = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+                if (!ht)
+                {
+                    ++open_failed;
+                    if (!first_open_error)
+                    {
+                        first_open_error = GetLastError();
+                    }
+                    continue;
+                }
+                PVOID start = nullptr;
+                const LONG status = query(ht, 9, &start, sizeof(start), nullptr);
+                if (status == 0 && start)
+                {
+                    ++queried;
+                }
+                else if (!first_query_status)
+                {
+                    first_query_status = static_cast<DWORD>(status);
+                }
+                bool active = false;
+                if (te.th32ThreadID != GetCurrentThreadId())
+                {
+                    active = scan_stack(ht, te.th32ThreadID);
+                }
+                CloseHandle(ht);
+                if (active)
+                {
+                    ++active_threads;
+                }
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+        CloseHandle(hRead);
+
+        LOG(0, L"  %ls[*]%ls Target Threads............. %u Found | %u Start-Queried | %u Stack-Scanned | Open-Fail=%u (0x%X) | Query-Fail=%u (0x%X)\n",
+            kDim, kReset, total_threads, queried, stack_scanned, open_failed, first_open_error, query_failed, first_query_status);
+        LOG(0, L"  %ls[*]%ls Stack Failures............. Basic=%u (first=0x%X) TebRead=%u Bounds=%u StackRead=%u\n",
+            kDim, kReset, basic_failed, first_basic_status, teb_read_failed, bounds_failed, stack_read_failed);
+
+        if (stack_scanned == 0)
+        {
+            LOG(0, L"  %ls[!]%ls Census INCONCLUSIVE: no target thread stack could be read - NOT evidence of absent payload.\n", kYellow, kReset);
+            ++inconclusive;
+            return;
+        }
+        if (active_threads)
+        {
+            LOG(0, L"  %ls[+]%ls Payload LIVE............... %u Thread(s) Have Stack Frames Inside The Mapped Image:\n",
+                kGreen, kReset, active_threads);
+            for (DWORD i = 0; i < hit_count; ++i)
+            {
+                LOG(0, L"      TID %u  Frame = ImageBase + 0x%llX\n",
+                    hits[i].tid, static_cast<unsigned long long>(hits[i].rva));
+            }
+            LOG(0, L"  %ls[*]%ls Payload is executing. If aimbot/triggerbot are inert, the fault is inside the payload (offsets/signatures/hooks/config), not the injector.\n", kDim, kReset);
+        }
+        else
+        {
+            LOG(0, L"  %ls[!]%ls Payload LIVE............... 0 of %u scanned stacks reference the mapped image - payload appears NOT to be executing.\n", kYellow, kReset, stack_scanned);
+            LOG(0, L"  %ls[*]%ls Next: check whether the payload's suspended thread survived SetThreadContext, or whether its init aborted after DllMain.\n", kDim, kReset);
+        }
+    }
+
     inline LONG NTAPI VehProbeDummyHandler(EXCEPTION_POINTERS *)
     {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -5176,7 +5428,7 @@ namespace stealth
 
         if (!buffers.pre_load_modules.empty())
         {
-            std::vector<std::wstring> appeared;
+            std::vector<SurveyModule> appeared;
             for (const SurveyModule & module : survey_modules)
             {
                 bool known = false;
@@ -5190,7 +5442,7 @@ namespace stealth
                 }
                 if (!known)
                 {
-                    appeared.push_back(module.name);
+                    appeared.push_back(module);
                 }
             }
 
@@ -5208,14 +5460,53 @@ namespace stealth
                     {
                         joined += L", ";
                     }
-                    joined += appeared[i];
+                    joined += appeared[i].name;
                 }
                 if (appeared.size() > 8)
                 {
                     joined += L", ...";
                 }
-                LOG(0, L"  %ls[!]%ls Loader-List Delta.......... +%zu Module(s) Since Selection (Loaded By The Shell; Visible To A Module-List Diff): %ls\n",
-                    kYellow, kReset, appeared.size(), joined.c_str());
+                std::vector<std::wstring> expected, unexpected;
+                for (const SurveyModule & module : appeared)
+                {
+                    if (IsSystemDirectoryModule(module.path))
+                    {
+                        expected.push_back(module.name);
+                    }
+                    else
+                    {
+                        unexpected.push_back(module.name);
+                    }
+                }
+
+                if (!expected.empty())
+                {
+                    std::wstring names;
+                    for (size_t i = 0; i < expected.size(); ++i)
+                    {
+                        if (i)
+                        {
+                            names += L", ";
+                        }
+                        names += expected[i];
+                    }
+                    LOG(0, L"  %ls[+]%ls Loader-List Delta.......... +%zu Expected Import(s) From System32: %ls\n",
+                        kGreen, kReset, expected.size(), names.c_str());
+                }
+                if (!unexpected.empty())
+                {
+                    std::wstring names;
+                    for (size_t i = 0; i < unexpected.size() && i < 8; ++i)
+                    {
+                        if (i)
+                        {
+                            names += L", ";
+                        }
+                        names += unexpected[i];
+                    }
+                    LOG(0, L"  %ls[!]%ls Loader-List Delta.......... +%zu Unexpected Module(s) Since Selection: %ls\n",
+                        kYellow, kReset, unexpected.size(), names.c_str());
+                }
             }
         }
         else

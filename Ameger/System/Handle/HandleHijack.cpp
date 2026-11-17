@@ -1074,15 +1074,35 @@ namespace
 		LOG(1, XOR_STR_A("[Handle] [*] Foreign-owned candidates: %llu\n").get(),
 			(unsigned long long)ForeignCandidates);
 
-		for (DWORD Pass = 0; Pass < 3 && !Out && !BudgetHit; ++Pass)
+		// Prefer donors whose owner is an ordinary signed system process. Their handles are
+		// the least remarkable in a system handle-table scan, so a SET_CONTEXT handle that
+		// resolves to one of them attracts far less attention than one owned by a game-related
+		// or third-party process. The blocklist below still excludes the sensitive stores.
+		auto IsPreferredOwner = [&](DWORD OwnerPid) -> bool
+		{
+			if (OwnerPid == 0 || OwnerPid == 4)
+			{
+				return true;
+			}
+			const wchar_t * name = ImageIndex.Find(OwnerPid);
+			if (!name)
+			{
+				return false;
+			}
+			return _wcsicmp(name, L"svchost.exe") == 0 || _wcsicmp(name, L"explorer.exe") == 0;
+		};
+
+		for (DWORD Pass = 0; Pass < 4 && !Out && !BudgetHit; ++Pass)
 		{
 			for (const auto & Entry : Candidates)
 			{
 				const bool is_target = Entry.OwnerPid == TargetPid;
 				const bool is_self = Entry.OwnerPid == SelfPid;
+				const bool is_foreign = !is_self && !is_target;
 				const bool belongs = Pass == 0 ? is_target
 					: Pass == 1 ? (is_self && !is_target)
-					: (!is_self && !is_target);
+					: Pass == 2 ? (is_foreign && IsPreferredOwner(Entry.OwnerPid))
+					: (is_foreign && !IsPreferredOwner(Entry.OwnerPid));
 				if (!belongs)
 				{
 					continue;
@@ -1101,7 +1121,7 @@ namespace
 				}
 
 				// Skip noise owners before they cost an open, a duplicate, and a verify.
-				if (Pass == 2 && Blocklist.Excludes(ImageIndex.Find(Entry.OwnerPid)))
+				if (Pass >= 2 && Blocklist.Excludes(ImageIndex.Find(Entry.OwnerPid)))
 				{
 					++BlocklistedOwners;
 					continue;

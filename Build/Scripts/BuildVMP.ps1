@@ -33,8 +33,10 @@ if ($PackOnly) {
     } elseif ($rewritten -notmatch '<Procedures\s*/>') {
         $rewritten = [regex]::Replace($rewritten, '(<Protection\b[^>]*>)', ('$1' + "`r`n        <Procedures />"), 1)
     }
-    Write-Host 'KEPT='
-    Write-Host 'DROPPED='
+    # Names consumed by :prepare_project in ProtectDLL.bat / ProtectEXE.bat.
+    Write-Host 'VMP_KEEP='
+    Write-Host 'VMP_DROP='
+    Write-Host 'VMP_PACKONLY=1'
 }
 
 elseif ($Target -and (Test-Path -LiteralPath $Target)) {
@@ -119,13 +121,14 @@ elseif ($Target -and (Test-Path -LiteralPath $Target)) {
             $block = "<Procedures>`r`n            " + ($keepElems -join "`r`n            ") + "`r`n        </Procedures>"
             $rewritten = [regex]::Replace($rewritten, '(?s)<Procedures>.*?</Procedures>',
                 [System.Text.RegularExpressions.MatchEvaluator]{ param($mm) $block }, 1)
-            if ($dropNames.Count -gt 0) { Write-Host ("DROPPED=" + ($dropNames -join ',')) }
-            Write-Host ("KEPT=" + ($keepNames -join ','))
+            if ($dropNames.Count -gt 0) { Write-Host ("VMP_DROP=" + ($dropNames -join ',')) }
+            Write-Host ("VMP_KEEP=" + ($keepNames -join ','))
         }
     }
     catch {
 
         Write-Host ("  [!] Procedure Reconciliation Skipped (Target Parse Failed): " + $_.Exception.Message)
+        Write-Host 'VMP_RECON_FAILED=1'
     }
 }
 

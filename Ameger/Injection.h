@@ -37,7 +37,15 @@ struct MEMORY_INJECTIONDATA
 
 #define INJ_MM_RUN_UNDER_LDR_LOCK		0x01000000
 
+// Stealth flag: set up the payload's TLS by hand (TEB slot + image index only), never
+// touching the PEB TLS bitmap or LdrpTlsList. See MMI_HandleTLS in ManualMapping.cpp.
+#define INJ_MM_TLS_CUSTOM			0x02000000
+
 #define INJ_MM_MAP_FROM_MEMORY		0x04000000
+
+// Stealth flag: install a first-chance VEH in the shell that absorbs exceptions raised
+// from inside the mapped image before the target's Warden VEH sees them. Off by default.
+#define INJ_MM_VEH_GUARD			0x08000000
 
 using f_Memory_Inject = DWORD(__stdcall*)(MEMORY_INJECTIONDATA * pData);
 

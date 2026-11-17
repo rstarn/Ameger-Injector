@@ -2368,6 +2368,87 @@ LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POI
 
 	return EXCEPTION_CONTINUE_SEARCH;
 }
+
+// Optional payload-exception guard (INJ_MM_VEH_GUARD). Registered at the head of the
+// first-chance VEH list so it runs before Warden's handler. It absorbs only INT3/UD2 traps
+// raised from inside NO loaded module — the signature of the manually mapped payload,
+// which is VAD-visible but absent from PEB->Ldr. Access violations and other faults chain
+// out so a real crash is never masked. Incompatible with an LDR-spliced payload (it would
+// then appear in PEB->Ldr and every payload fault would be classified as a module fault).
+// Uses offsets already pinned by the
+// static_asserts in Windows11.h (DllBase 0x30, SizeOfImage 0x40) and NTDefinitions.h
+// (PEB::Ldr 0x18, PEB_LDR_DATA::InLoadOrder 0x10, TEB::PEB 0x60) so no runtime state,
+// globals, or host patching is needed — the shell is a verbatim copy of this code.
+static bool MMI_AddressInLoadedModule(ULONG_PTR Address)
+{
+	const ULONG_PTR teb = static_cast<ULONG_PTR>(__readgsqword(0x30));
+	if (!teb)
+	{
+		return false;
+	}
+	const ULONG_PTR peb = *ReCa<ULONG_PTR *>(teb + 0x60);
+	if (!peb)
+	{
+		return false;
+	}
+	const ULONG_PTR ldr = *ReCa<ULONG_PTR *>(peb + 0x18);
+	if (!ldr)
+	{
+		return false;
+	}
+
+	ULONG_PTR node = *ReCa<ULONG_PTR *>(ldr + 0x10); // InLoadOrderModuleListHead.Flink
+	const ULONG_PTR head = ldr + 0x10;
+	for (DWORD depth = 0; node && node != head && depth < 4096; ++depth)
+	{
+		const ULONG_PTR base = *ReCa<ULONG_PTR *>(node + 0x30);      // DllBase
+		const ULONG_PTR size = *ReCa<ULONG_PTR *>(node + 0x40) & 0xFFFFFFFFULL; // SizeOfImage
+		if (base && size && Address >= base && Address - base < size)
+		{
+			return true;
+		}
+		node = *ReCa<ULONG_PTR *>(node); // Flink
+	}
+	return false;
+}
+
+LONG __declspec(code_seg(".code$10")) __stdcall MMI_PayloadVeh(PEXCEPTION_POINTERS ExceptionInfo)
+{
+	EXCEPTION_RECORD * record = ExceptionInfo ? ExceptionInfo->ExceptionRecord : nullptr;
+	CONTEXT * context = ExceptionInfo ? ExceptionInfo->ContextRecord : nullptr;
+	if (!record || !context || (record->ExceptionFlags & EXCEPTION_NONCONTINUABLE))
+	{
+		return EXCEPTION_CONTINUE_SEARCH;
+	}
+
+	// Absorb only the deliberate traps used by VMProtect-style anti-debug (INT3 / UD2) that
+	// originate outside every loaded module. Returning CONTINUE_EXECUTION for an access
+	// violation would re-raise the same fault forever and hide a genuine payload crash.
+	const DWORD code = record->ExceptionCode;
+	if (code != static_cast<DWORD>(STATUS_BREAKPOINT) &&
+		code != static_cast<DWORD>(STATUS_PRIVILEGED_INSTRUCTION))
+	{
+		return EXCEPTION_CONTINUE_SEARCH;
+	}
+	if (MMI_AddressInLoadedModule(ReCa<ULONG_PTR>(record->ExceptionAddress)))
+	{
+		return EXCEPTION_CONTINUE_SEARCH; // real module fault — let the target handle it
+	}
+
+	// Step past the one/two-byte trap so execution can continue; without this the same
+	// instruction faults again on resume.
+#ifdef _WIN64
+	if (code == static_cast<DWORD>(STATUS_BREAKPOINT))
+	{
+		context->Rip += 1; // 0xCC
+	}
+	else
+	{
+		context->Rip += 2; // 0F 0B
+	}
+#endif
+	return EXCEPTION_CONTINUE_EXECUTION;
+}
 #define MM_SHELL_EXIT(Result) \
 	do { \
 		if (pData->DebugPrintVehHandle) \
@@ -2382,6 +2463,15 @@ LONG __declspec(code_seg(".code$10")) __stdcall MMI_DebugPrintVeh(PEXCEPTION_POI
 				pData->MapStats.RetainedAllocBase = ReCa<ULONG_PTR>(pData->pAllocationBase); \
 			} \
 			pData->DebugPrintVehHandle = nullptr; \
+		} \
+		if (pData->PayloadVehHandle) \
+		{ \
+			if (f->RtlRemoveVectoredExceptionHandler) \
+			{ \
+				f->RtlRemoveVectoredExceptionHandler(pData->PayloadVehHandle); \
+				pData->ExecTelemetry.DebugPrintVehInstalled |= 0x40u; \
+			} \
+			pData->PayloadVehHandle = nullptr; \
 		} \
 		if (pData->CompletionEvent) \
 		{ \
@@ -2462,6 +2552,25 @@ DWORD __declspec(code_seg(".code$01")) __stdcall ManualMapping_Shell(MANUAL_MAPP
 		{
 			pData->ExecTelemetry.DebugPrintVehInstalled |= 0x10u;
 		}
+
+#if AMEGER_ENABLE_LDR_SPLICE
+		// A spliced payload appears in PEB->Ldr, so MMI_PayloadVeh would classify every
+		// payload fault as a module fault and chain straight to Warden — the inverse of
+		// the guard's purpose. Never install both.
+		if (pData->Flags & INJ_MM_VEH_GUARD)
+		{
+			DIAG(1, XOR_STR_A("[ManualMap] VEH guard suppressed: LDR splicing is enabled.\n").get());
+		}
+#else
+		if (pData->Flags & INJ_MM_VEH_GUARD)
+		{
+			pData->PayloadVehHandle = f->RtlAddVectoredExceptionHandler(1, MMI_PayloadVeh);
+			if (pData->PayloadVehHandle)
+			{
+				pData->ExecTelemetry.DebugPrintVehInstalled |= 0x20u;
+			}
+		}
+#endif
 	}
 
 	MM_SHELL_STAGE(ImportStageCycles, f->MMIP_LoadImports(pData));
@@ -3123,8 +3232,11 @@ DWORD __declspec(code_seg(".code$09")) __stdcall MMI_EnableExceptions(MANUAL_MAP
 
 		if (!dynamic_ok)
 		{
-			pData->ntRet = STATUS_UNSUCCESSFUL;
-			return INJ_MM_ERR_ENABLING_SEH_FAILED;
+			// RtlAddFunctionTable already succeeded. A failed RtlLookupFunctionEntry probe
+			// does not prove the table is unusable: VMProtect-style exception directories
+			// can carry a first RUNTIME_FUNCTION the probe cannot resolve. Keep the table
+			// and record the disagreement rather than aborting an otherwise healthy load.
+			pData->ExecTelemetry.DebugPrintVehInstalled |= 0x80u;
 		}
 	}
 #endif
@@ -3266,6 +3378,84 @@ DWORD __declspec(code_seg(".code$0A")) __stdcall MMI_HandleTLS(MANUAL_MAPPING_DA
 		pData->NtOffsets.TebTlsSlots + 64 * sizeof(void *) <= 0x2000)
 	{
 		tls_slots = ReCa<ULONG_PTR *>(teb + pData->NtOffsets.TebTlsSlots);
+	}
+
+	// ---- custom TLS: no loader-visible bookkeeping -------------------------------------------
+	// The loader path below allocates a TLS index from the PEB bitmap, adds a node to
+	// LdrpTlsList, and leaves the PEB bit, TEB slot and index live. All three are enumerable
+	// by an in-process scanner that knows the loader layout. When requested, pick a free
+	// slot ourselves, install the block directly in the TEB slot table, and write only the
+	// image's AddressOfIndex word. The CRT/x64 TLS access path is GS-relative, so callbacks
+	// and thread-local variables still work; the loader never learns the image exists.
+	//
+	// IMPORTANT: this only populates the CURRENT thread's TEB slot. A multithreaded payload
+	// (Jlov.dll — aimbot/triggerbot run on their own threads) needs the loader's process-wide
+	// index, which gives every thread a valid block. Keep INJ_MM_TLS_CUSTOM clear for such
+	// payloads; this path is for single-threaded images only.
+	if ((pData->Flags & INJ_MM_TLS_CUSTOM) && tls_has_data && pTlsIndex &&
+		tls_bitmap && tls_slots)
+	{
+		DWORD chosen = 0xFFFFFFFFu;
+		for (DWORD bit = 0; bit < 64; ++bit)
+		{
+			const DWORD mask = 1u << (bit & 31);
+			if (!(tls_bitmap[bit >> 5] & mask) && tls_slots[bit] == 0)
+			{
+				chosen = bit;
+				break;
+			}
+		}
+
+		const ULONG_PTR raw_begin = static_cast<ULONG_PTR>(pTLS->StartAddressOfRawData);
+		const ULONG_PTR raw_end = static_cast<ULONG_PTR>(pTLS->EndAddressOfRawData);
+		const ULONG_PTR raw_len = raw_end > raw_begin ? raw_end - raw_begin : 0;
+		const ULONG_PTR block_size = raw_len + pTLS->SizeOfZeroFill;
+
+		if (chosen < 64 && raw_begin && raw_len &&
+			MMI_InImage(pData, ReCa<void *>(raw_begin), raw_len) &&
+			block_size && block_size <= 0x10000)
+		{
+			void * block = NewBytes(f, block_size); // zeroed, so the zero-fill tail is already correct
+			if (block)
+			{
+				f->memmove(block, ReCa<void *>(raw_begin), raw_len);
+				tls_slots[chosen] = ReCa<ULONG_PTR>(block);
+				*pTlsIndex = chosen;
+
+				// The dummy loader/DDAG nodes were never handed to the loader. Free them here
+				// and DO NOT fall through — the loader path below would use the freed pointers.
+				ScrubFreeObject(f, pDdagRaw, pDdagRaw ? ddag_size : 0);
+				ScrubFreeObject(f, pDummyLdrRaw, ldr_size);
+
+				pData->TlsDirectory   = pTLS;
+				pData->TlsDummyLdr    = nullptr;
+				pData->TlsDdagNode    = nullptr;
+				pData->TlsDummyLdrSize = 0;
+				pData->TlsDdagNodeSize = 0;
+				pData->CustomTlsBlock = block; // retained for process life; never freed by cleanup
+				pData->CustomTlsBlockSize = static_cast<DWORD>(block_size);
+				pData->TlsIndex       = chosen;
+				pData->TlsDataLive    = 1;
+
+				pData->ExecTelemetry.TlsHasData        = 1u;
+				pData->ExecTelemetry.TlsIndex          = chosen;
+				pData->ExecTelemetry.TlsCustomMode     = 1u;
+				pData->ExecTelemetry.TlsIndexRestored  = 1u; // no loader index consumed
+				pData->ExecTelemetry.TlsBitmapBitCleared = 1u; // bit was never set
+				pData->ExecTelemetry.TlsSlotCleared    = 1u;  // slot is ours, not the loader's
+				pData->ExecTelemetry.TlsLoaderEntryAbsent = 1u;
+
+				DIAG(1, XOR_STR_A("[ManualMap] [+] TLS Custom Mode Active: Slot = %u | Block = %p | Bytes = %u | No PEB Bit / No LdrpTlsList Node\n").get(),
+					chosen, block, static_cast<unsigned>(block_size));
+
+				return INJ_ERR_SUCCESS;
+			}
+		}
+
+		// Any prerequisite missing — fall through to the loader path, which is known to work.
+		// The dummy loader/DDAG nodes allocated above are OWNED by that path; do not free them
+		// here, or LdrpHandleTlsData below would be handed freed pointers.
+		DIAG(1, XOR_STR_A("[ManualMap] [*] TLS Custom prerequisites unavailable; using loader path\n").get());
 	}
 
 	ULONG lock_state = 0;
@@ -3611,6 +3801,7 @@ DWORD __declspec(code_seg(".code$0B")) __stdcall MMI_ExecuteDllMain(MANUAL_MAPPI
 	{
 
 		DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_DETACH, nullptr);
+		pData->DllMainDetachDone = 1;
 
 		if ((pData->Flags & INJ_MM_RUN_UNDER_LDR_LOCK) && locked)
 		{
@@ -4379,11 +4570,12 @@ DWORD __declspec(code_seg(".code$0E")) __stdcall MMI_CleanUp(MANUAL_MAPPING_DATA
 
 
 	if (pData->ExecTelemetry.DllMainResult && pData->ExecTelemetry.DllMainCyclesDelta != 0 &&
-		MMI_EntryPoint(pData))
+		MMI_EntryPoint(pData) && !pData->DllMainDetachDone)
 	{
 		MMI_SetExecProtections(pData, MM_EXEC_STATE_EXECUTE);
 		f_DLL_ENTRY_POINT DllMain = ReCa<f_DLL_ENTRY_POINT>(pData->pImageBase + MMI_EntryPoint(pData));
 		DllMain(ReCa<HINSTANCE>(pData->pImageBase), DLL_PROCESS_DETACH, nullptr);
+		pData->DllMainDetachDone = 1;
 	}
 
 	const bool leak_image_for_inverted = (pData->InvertedTableInstalled != 0);

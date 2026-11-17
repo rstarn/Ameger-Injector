@@ -2715,6 +2715,14 @@ wchar_t name[48]{};
             {
                 config.execute_tls = ParseConfigBool(value, config.execute_tls);
             }
+            else if (manual && EqualsNoCase(key, XOR_STR_W(L"TlsCustom").get()))
+            {
+                config.tls_custom = ParseConfigBool(value, config.tls_custom);
+            }
+            else if (manual && EqualsNoCase(key, XOR_STR_W(L"VEHGuard").get()))
+            {
+                config.veh_guard = ParseConfigBool(value, config.veh_guard);
+            }
             else if (manual && EqualsNoCase(key, XOR_STR_W(L"RunDLLMain").get()))
             {
                 config.run_dllmain = ParseConfigBool(value, config.run_dllmain);
@@ -3879,7 +3887,9 @@ wchar_t name[48]{};
             { INJ_MM_INIT_SECURITY_COOKIE, std::wstring(XOR_STR_W(L"INJ_MM_INIT_SECURITY_COOKIE").get()) },
             { INJ_MM_RUN_DLL_MAIN, std::wstring(XOR_STR_W(L"INJ_MM_RUN_DLL_MAIN").get()) },
             { INJ_MM_RUN_UNDER_LDR_LOCK, std::wstring(XOR_STR_W(L"INJ_MM_RUN_UNDER_LDR_LOCK").get()) },
+            { INJ_MM_TLS_CUSTOM, std::wstring(XOR_STR_W(L"INJ_MM_TLS_CUSTOM").get()) },
             { INJ_MM_MAP_FROM_MEMORY, std::wstring(XOR_STR_W(L"INJ_MM_MAP_FROM_MEMORY").get()) },
+            { INJ_MM_VEH_GUARD, std::wstring(XOR_STR_W(L"INJ_MM_VEH_GUARD").get()) },
         };
 
         LOG(0, L"  %ls[*]%ls Decoded Load Flags = 0x%08lX\n", kDim, kReset, static_cast<unsigned long>(flags));
@@ -3954,6 +3964,14 @@ DWORD BuildFlags(const WizardConfig & config)
         if (config.execute_tls)
         {
             flags |= INJ_MM_EXECUTE_TLS;
+            if (config.tls_custom)
+            {
+                flags |= INJ_MM_TLS_CUSTOM;
+            }
+        }
+        if (config.veh_guard)
+        {
+            flags |= INJ_MM_VEH_GUARD;
         }
         return flags;
     }
@@ -4794,130 +4812,24 @@ DWORD BuildFlags(const WizardConfig & config)
         Context.TargetName = target.name;
         Context.Verbose = config.verbose_trace && !config.quiet;
 
+        // No launcher-owned thread sponsor. Opening a THREAD_SET_CONTEXT handle from the
+        // launcher ties that handle to the random-named interface process in the system
+        // handle table — the clearest correlation an in-process Warden can make. The runtime
+        // acquires the thread handle through the donor scan instead (HijackThreadHandle),
+        // so the handle's owner resolves to a foreign process, not to us.
         HANDLE threadSponsorRaw = nullptr;
-        if (config.handle_hijacking)
-        {
-            Context.SponsorThreadAttempted = true;
-            DWORD thread_sponsor_err = ERROR_SUCCESS;
-            DWORD failed_sponsor_tid = 0;
-            for (int attempt = 0; attempt < 8 && !threadSponsorRaw; ++attempt)
-            {
-                if (attempt > 0)
-                {
-                    Sleep(20);
-                }
-
-                const DWORD victim_tid = PickHijackThreadTid(target.pid, failed_sponsor_tid);
-                if (!victim_tid)
-                {
-
-                    thread_sponsor_err = ERROR_NOT_FOUND;
-                    continue;
-                }
-
-                threadSponsorRaw = OpenThread(INJ_THREAD_HIJACK_ACCESS,
-                    FALSE, victim_tid);
-                if (!threadSponsorRaw)
-                {
-                    thread_sponsor_err = GetLastError();
-                    failed_sponsor_tid = victim_tid;
-                }
-            }
-
-            if (threadSponsorRaw)
-            {
-                Context.SponsorThreadOpened = true;
-                Context.SponsorThreadValue = ReCa<ULONG_PTR>(threadSponsorRaw);
-                Context.SponsorTid = GetThreadId(threadSponsorRaw);
-            }
-            else
-            {
-                LOG(0, L"  %ls[!]%ls Thread Sponsor Pre-Open Failed (0x%08X); Runtime Will Search.\n",
-                    kYellow, kReset, thread_sponsor_err);
-            }
-        }
         FileHandleGuard threadSponsorGuard(threadSponsorRaw);
 
         Trace::Begin(L"Pre-Open Donor Handles (Sponsor)");
         Trace::Note(L"Process Sponsor Handle = Not Obtained (Runtime Acquisition Only)");
-        if (threadSponsorRaw)
-        {
-            Trace::Note(L"Thread Sponsor Handle = 0x%08X (TID 0x%04lX)",
-                static_cast<unsigned>(ReCa<ULONG_PTR>(threadSponsorRaw)),
-                static_cast<unsigned long>(Context.SponsorTid));
-        }
-        else
-        {
-            Trace::Note(L"Thread Sponsor Handle = Not Obtained (Runtime Will Search)");
-        }
+        Trace::Note(L"Thread Sponsor Handle = Disabled (Donor-Only Acquisition)");
+        Trace::Note(L"Rationale = No Launcher-Owned THREAD_SET_CONTEXT Handle In System Handle Table");
         Trace::End();
 
+        // Opened only for the verification suite, after injection completes. The launcher must not
+        // hold a VM_READ handle to the target across the injection window.
         HANDLE targetHandle = nullptr;
-        {
-
-
-
-
-
-
-
-            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
-            if (targetHandle)
-            {
-                MEMORY_BASIC_INFORMATION probe{};
-                if (!VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
-                {
-                    CloseHandle(targetHandle);
-                    targetHandle = nullptr;
-                }
-            }
-            if (!targetHandle)
-            {
-                targetHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
-            }
-        }
         FileHandleGuard targetHandleGuard(targetHandle);
-        if (!targetHandle)
-        {
-            LOG(0, L"  %ls[!]%ls Could Not Open The Target For Read-Only Verification (0x%08X).\n",
-                kYellow, kReset, GetLastError());
-        }
-        else
-        {
-
-
-
-
-
-            ULONG granted = 0;
-            {
-                using NtQueryObjectFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-                HMODULE ntdll = GetModuleHandleW(XOR_STR_W(L"ntdll.dll").get());
-                auto query = ntdll ? ReCa<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject")) : nullptr;
-                if (query)
-                {
-
-
-
-
-                    ULONG basic[32]{};
-                    ULONG returned = 0;
-                    if (query(targetHandle, 0, basic, sizeof(basic), &returned) == 0 && returned >= sizeof(ULONG) * 2)
-                    {
-                        granted = basic[1];
-                    }
-                }
-            }
-            const bool granted_read = granted != 0;
-            const bool limited = !granted_read || (granted & PROCESS_QUERY_INFORMATION) == 0;
-            LOG(0, L"  %ls[+]%ls Verification Handle: Granted 0x%08lX (%ls) | Census %ls\n",
-                kGreen, kReset,
-                static_cast<unsigned long>(granted),
-                limited ? L"Query-Limited | VM Read" : L"Full Query | VM Read",
-                granted_read
-                    ? (limited ? L"Probe OK On The Limited Right" : L"Escalated After Limited-Right Refusal")
-                    : L"Probe OK; Mask Readback Failed");
-        }
 
         const DWORD flags = BuildFlags(config);
 
@@ -5124,6 +5036,29 @@ DWORD BuildFlags(const WizardConfig & config)
         // that never ran is not a posture defect), but they keep the verdict from being
         // reported as an unqualified Pass.
         int inconclusive_checks = 0;
+
+        // Reopen for verification only. Minimum exposure window for a launcher-owned handle.
+        {
+            targetHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            if (targetHandle)
+            {
+                MEMORY_BASIC_INFORMATION probe{};
+                if (!VirtualQueryEx(targetHandle, nullptr, &probe, sizeof(probe)))
+                {
+                    CloseHandle(targetHandle);
+                    targetHandle = nullptr;
+                }
+            }
+            if (!targetHandle)
+            {
+                targetHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, target.pid);
+            }
+            if (targetHandle)
+            {
+                targetHandleGuard.reset(targetHandle);
+            }
+        }
+
         Trace::Begin(L"Stealth Verification Suite");
         if (targetHandle)
         {
@@ -5453,7 +5388,12 @@ DWORD BuildFlags(const WizardConfig & config)
                  ExecTelemetry.TlsBitmapBitCleared != 0 &&
                  ExecTelemetry.TlsSlotCleared != 0);
             row(L"TLS Loader Residue........ ", tls_residue_ok);
-            if (ExecTelemetry.TlsHasData)
+            if (ExecTelemetry.TlsCustomMode)
+            {
+                LOG(0, L"Custom TLS: Slot %u Installed Directly In TEB | PEB Bitmap Bit Never Set | No LdrpTlsList Node | Index Word = %u\n",
+                    ExecTelemetry.TlsIndex, ExecTelemetry.TlsIndex);
+            }
+            else if (ExecTelemetry.TlsHasData)
             {
                 LOG(0, L"Retained By Design: Image Carries TLS Data | Index %u, PEB Bit, TEB Slot, And LdrpTlsList Entry Stay Live\n",
                     ExecTelemetry.TlsIndex);
@@ -5535,6 +5475,14 @@ DWORD BuildFlags(const WizardConfig & config)
                         ? L"VEH Installed For Dependency Debug-Print Exceptions (Absorbed, Removed On Exit)"
                         : L"Not Installed (Entry Points Unavailable - Dependency ODS Would Be Unhandled)",
                     ods_redirects);
+
+                const bool payload_veh = (ExecTelemetry.DebugPrintVehInstalled & 0x20u) != 0;
+                const bool payload_veh_removed = (ExecTelemetry.DebugPrintVehInstalled & 0x40u) != 0;
+                LOG(0, L"  %ls[%s]%ls Payload VEH Guard... Installed = %ls | Removed On Exit = %ls | Tradeoff: VEH Chain Entry (PEB ProcessUsingVEH) Vs In-Image Exception Coverage\n",
+                    payload_veh ? kGreen : kDim,
+                    payload_veh ? L"+" : L"*", kReset,
+                    payload_veh ? L"True" : L"False (Off By Default)",
+                    payload_veh_removed ? L"True" : L"N/A");
             }
         }
 

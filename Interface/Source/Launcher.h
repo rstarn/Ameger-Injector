@@ -244,6 +244,10 @@ struct WizardConfig
     bool delay_imports = true;
     bool clean_data = true;
     bool execute_tls = true;
+    // Default N: see the TlsCustom warning in Configuration.ini. Multithreaded payloads
+    // need the loader's process-wide TLS index, not a per-thread hand-rolled slot.
+    bool tls_custom = false;
+    bool veh_guard = false;
     int timeout = 60000;
 
 
@@ -406,6 +410,10 @@ void PrintHijackSummary(const wchar_t * Kind, const HijackStats * Stats);
 struct SurveyModule
 {
     std::wstring name;
+    // Full path from MODULEENTRY32W.szExePath in the SURVEYED process. Kept so a
+    // loader-list delta can be classified by real location instead of asking the
+    // launcher's loader about modules that only exist in the target.
+    std::wstring path;
     ULONG_PTR base = 0;
     SIZE_T size = 0;
 };

@@ -161,6 +161,15 @@ namespace MMAP_NATIVE
 
 
 		ALIGN PVOID		DebugPrintVehHandle = nullptr;
+
+		// First-chance VEH that absorbs exceptions raised inside the mapped image before
+		// the target's Warden VEH sees them. NULL unless INJ_MM_VEH_GUARD is set.
+		ALIGN PVOID		PayloadVehHandle = nullptr;
+
+		// Custom-TLS block (INJ_MM_TLS_CUSTOM). Kept distinct from TlsDummyLdr, which the
+		// loader path owns and the rewind logic frees.
+		ALIGN PVOID		CustomTlsBlock = nullptr;
+		ALIGN DWORD		CustomTlsBlockSize = 0;
  		ALIGN DWORD		Flags		= NULL;
 
 
@@ -172,6 +181,10 @@ namespace MMAP_NATIVE
  		ALIGN RUNTIME_FUNCTION	*	pDynamicFunctionTable	= nullptr;
 
  		ALIGN DWORD	InvertedTableInstalled = 0;
+
+		// Guard against a second DLL_PROCESS_DETACH: MMI_ExecuteDllMain issues one when
+		// DllMain returns FALSE, and MMI_CleanUp runs on the same failure path.
+		ALIGN DWORD DllMainDetachDone = 0;
 
 	ALIGN BYTE *	pAllocationBase	= nullptr;
 	ALIGN BYTE *	pImageBase		= nullptr;

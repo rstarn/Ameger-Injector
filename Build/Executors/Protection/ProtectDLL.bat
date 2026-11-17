@@ -145,6 +145,21 @@ if errorlevel 1 (
   goto :failure
 )
 :vmp_done
+rem Fail closed: a pack-only build leaves ManualEntry/EntryPoint unvirtualized. The mapper
+rem and the Jlov payload were adapted for a VM segment; shipping a packed-only image would
+rem silently weaken the build. Opt in explicitly with AMEGER_ALLOW_PACK_ONLY=1.
+if defined VMP_PACKONLY (
+  if /i not "%AMEGER_ALLOW_PACK_ONLY%"=="1" (
+    echo   %C_RED%Error: VMProtect fell back to pack-only; ManualEntry/EntryPoint were not virtualized.%C_RESET%
+    echo   %C_RED%       Fix the VMP project/target or set AMEGER_ALLOW_PACK_ONLY=1 to ship it anyway.%C_RESET%
+    goto :failure
+  )
+  echo   %C_YELLOW%[!]%C_RESET% AMEGER_ALLOW_PACK_ONLY=1: shipping an UNVIRTUALIZED payload.
+)
+if not defined VMP_KEEP (
+  echo   %C_RED%Error: No .vmp procedures were kept; nothing would be virtualized.%C_RESET%
+  goto :failure
+)
 call :validate_output
 if errorlevel 2 goto :fc_error
 if errorlevel 1 goto :output_invalid
@@ -270,12 +285,17 @@ set "PROJ_WORK=%WORK_DIR%\project.vmp"
 set "SEG_NAME="
 set "VMP_DROP="
 set "VMP_KEEP="
+set "VMP_PACKONLY="
+set "VMP_RECON_FAILED="
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BUILD_VMP_SCRIPT%" -Project "%VMP_PROJECT%" -Out "%PROJ_WORK%" -Target "%TARGET%" %~1`) do set "%%A=%%B"
 if not exist "%PROJ_WORK%" exit /b 1
 if not defined SEG_NAME exit /b 1
 if defined VMP_DROP (
   echo   %C_YELLOW%[!]%C_RESET% .vmp Procedure^(s^) Absent From Payload, Dropped: %C_YELLOW%%VMP_DROP%%C_RESET%
   echo   %C_YELLOW%      Virtualizing Only What The Payload Exposes: %VMP_KEEP%%C_RESET%
+)
+if defined VMP_RECON_FAILED (
+  echo   %C_YELLOW%[!]%C_RESET% Procedure Reconciliation Failed: Payload Exports Could Not Be Read.
 )
 exit /b 0
 
