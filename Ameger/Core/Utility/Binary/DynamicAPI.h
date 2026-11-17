@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <wininet.h>
 #include <DbgHelp.h>
+#include <string>
 #include <utility>
 #include "Core/Foundation/Primitives/KcStrings/Core/XorString.h"
 

@@ -5,7 +5,10 @@ $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $Path)) { Write-Host "MISSING"; exit 1 }
 $bytes = [IO.File]::ReadAllBytes($Path)
 $e = [BitConverter]::ToInt32($bytes, 0x3C)
+if ($e -le 0 -or ($e + 26) -gt $bytes.Length) { Write-Host "FAIL: bad e_lfanew"; exit 1 }
 $magic = [BitConverter]::ToUInt16($bytes, $e + 24)
+# The data-directory offsets below are PE32+ (0x70). Reject PE32 rather than read stale bytes.
+if ($magic -ne 0x20B) { Write-Host "FAIL: not a PE32+ image (magic 0x$($magic.ToString('X')))"; exit 1 }
 $optOff = $e + 24
 $numSections = [BitConverter]::ToUInt16($bytes, $e + 6)
 # The section table starts right after the optional header, whose size is recorded in the
