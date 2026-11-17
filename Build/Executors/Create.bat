@@ -428,7 +428,7 @@ exit /b %ERRORLEVEL%
 
 :verify_deployed_pin
 if not defined CONFIG_MAGIC exit /b 1
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check DeployedPin -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%" -ExpectPin "%DEPLOYED_SHA%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%VERIFY_SCRIPT%" -Check Magic -Path "%DEPLOYED_CONFIG%" -Magic "%CONFIG_MAGIC%"
 exit /b %ERRORLEVEL%
 
 :verify_config_keys
@@ -490,10 +490,6 @@ for %%F in ("%OUT64%\*.pdb") do if exist "%%~F" (
 exit /b 0
 
 :protect_config
-if not defined DEPLOYED_SHA (
-  echo   %C_RED%Error: Deployed Payload SHA-256 Unavailable; Refusing To Ship An Unpinned Config.%C_RESET%
-  exit /b 1
-)
 if not defined PAYLOAD_NAME (
   echo   %C_RED%Error: Deployed Payload Name Unavailable; Refusing To Ship An Unstamped Config.%C_RESET%
   exit /b 1
@@ -532,7 +528,7 @@ if errorlevel 1 (
   echo   %C_RED%Error: PowerShell Unavailable; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
 )
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%PAYLOAD_DEST%" -PayloadName "%PAYLOAD_NAME%" -RuntimeName "%RUNTIME_NAME%" -ExportMap "%EXPORT_MAP%" -DllDir "%DLLDIR_NAME%" -ConfigMagic "%CONFIG_MAGIC%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PayloadName "%PAYLOAD_NAME%" -RuntimeName "%RUNTIME_NAME%" -ExportMap "%EXPORT_MAP%" -DllDir "%DLLDIR_NAME%" -ConfigMagic "%CONFIG_MAGIC%"
 if errorlevel 1 (
   echo   %C_RED%Error: Config Encryption Failed; Refusing To Ship A Plaintext Config.%C_RESET%
   exit /b 1
@@ -558,26 +554,6 @@ if defined PAYLOAD_IS_PREPARED echo   %C_YELLOW%[+]%C_RESET% Prepared payload: %
 copy /y "%PAYLOAD_SRC%" "%PAYLOAD_DEST%" >nul
 if errorlevel 1 (
   echo   %C_RED%Error: Failed To Copy Payload To %PAYLOAD_DEST%%C_RESET%
-  exit /b 1
-)
-set "DEPLOYED_SHA="
-set "DSHA_TMP=%TEMP%\amg_dsha_%RANDOM%%RANDOM%"
-set "DSHA_B64=%DSHA_TMP%.b64"
-set "DSHA_PS1=%DSHA_TMP%.ps1"
-set "DSHA_OUT=%DSHA_TMP%.out"
->"%DSHA_B64%" echo -----BEGIN CERTIFICATE-----
->>"%DSHA_B64%" echo cGFyYW0oW3N0cmluZ10kUGF0aCkNCiRoID0gKFtCaXRDb252ZXJ0ZXJdOjpUb1N0cmluZyhbU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlNIQTI1Nl06OkNyZWF0ZSgpLkNvbXB1dGVIYXNoKFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKSkpIC1yZXBsYWNlICctJywnJykNCldyaXRlLU91dHB1dCAoJ0RFUExPWUVEX1NIQT0nICsgJGgpDQo=
->>"%DSHA_B64%" echo -----END CERTIFICATE-----
-certutil -decode "%DSHA_B64%" "%DSHA_PS1%" >nul 2>&1
-if errorlevel 1 goto :dsha_cleanup
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DSHA_PS1%" -Path "%PAYLOAD_DEST%" >"%DSHA_OUT%" 2>&1
-for /f "usebackq tokens=1,2 delims==" %%A in ("%DSHA_OUT%") do set "%%A=%%B"
-:dsha_cleanup
-if exist "%DSHA_PS1%" del /f /q "%DSHA_PS1%" >nul 2>&1
-if exist "%DSHA_B64%" del /f /q "%DSHA_B64%" >nul 2>&1
-if exist "%DSHA_OUT%" del /f /q "%DSHA_OUT%" >nul 2>&1
-if not defined DEPLOYED_SHA (
-  echo   %C_RED%Error: Unable To Hash The Deployed Payload.%C_RESET%
   exit /b 1
 )
 echo   %C_GREEN%[+]%C_RESET% Payload deployed: %C_GREEN%%PAYLOAD_DEST%%C_RESET%

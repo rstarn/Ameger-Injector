@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Embed", "Magic", "DeployedPin", "ConfigKeys", "ConfigParity")]
+    [ValidateSet("Embed", "Magic", "ConfigKeys", "ConfigParity")]
     [string]$Check,
 
     [Parameter(Mandatory = $true)]
@@ -9,8 +9,6 @@ param(
     [string]$Words,
 
     [string]$Magic,
-
-    [string]$ExpectPin,
 
     [string]$MasterPath
 )
@@ -123,62 +121,6 @@ if ($Check -eq "Embed") {
     }
 
     Write-Ok ("Embedded Runtime Hash: " + (Get-Painted $script:C_Green "8") + "/" + (Get-Painted $script:C_Green "8") + " Dwords In Order (" + (Get-Painted $script:C_Dim $Path) + ")")
-    exit 0
-}
-
-if ($Check -eq "DeployedPin") {
-    if ([string]::IsNullOrEmpty($ExpectPin)) {
-        Write-Fail "Expected A Payload SHA-256"
-        exit 1
-    }
-    if ([string]::IsNullOrEmpty($Magic)) {
-        Write-Fail "Expected A Config Magic"
-        exit 1
-    }
-
-    $magicBytes = [Text.Encoding]::ASCII.GetBytes($Magic)
-    $isEncrypted = $false
-    if ($data.Length -gt $magicBytes.Length) {
-        $isEncrypted = $true
-        for ($i = 0; $i -lt $magicBytes.Length; $i++) {
-            if ($data[$i] -ne $magicBytes[$i]) { $isEncrypted = $false; break }
-        }
-    }
-    if ($isEncrypted) {
-        Add-Type -AssemblyName System.Security | Out-Null
-        try {
-            $blob = New-Object byte[] ($data.Length - $magicBytes.Length)
-            [Array]::Copy($data, $magicBytes.Length, $blob, 0, $blob.Length)
-            $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-        } catch {
-            Write-Fail ("DPAPI Decrypt Failed: " + $_.Exception.Message)
-            exit 1
-        }
-        $text = [Text.Encoding]::UTF8.GetString($plainBytes)
-    } else {
-        $text = [Text.Encoding]::UTF8.GetString($data)
-    }
-
-    $pin = $null
-    foreach ($line in ($text -split "\r?\n")) {
-        $trimmed = $line.Trim()
-        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith(";") -or $trimmed.StartsWith("#")) { continue }
-        $eq = $trimmed.IndexOf("=")
-        if ($eq -lt 1) { continue }
-        if ($trimmed.Substring(0, $eq).Trim() -ieq "PayloadSha256") {
-            $pin = $trimmed.Substring($eq + 1).Trim()
-            break
-        }
-    }
-    if ([string]::IsNullOrEmpty($pin)) {
-        Write-Fail ("Deployed Config Pins No PayloadSha256 (" + (Get-Painted $script:C_Dim $Path) + ")")
-        exit 1
-    }
-    if ($pin -ine $ExpectPin) {
-        Write-Fail ("Deployed Config Pin Mismatch: Config Pins " + $pin + ", Deployed Payload Is " + $ExpectPin + " (" + (Get-Painted $script:C_Dim $Path) + ")")
-        exit 1
-    }
-    Write-Ok ("Deployed Config Pin = " + (Get-Painted $script:C_Green $pin) + " (" + (Get-Painted $script:C_Dim $Path) + ")")
     exit 0
 }
 

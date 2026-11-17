@@ -2,8 +2,6 @@ param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Destination,
 
-    [string]$PinPayload,
-
     [string]$PayloadName,
 
     [string]$RuntimeName,
@@ -117,12 +115,7 @@ function Set-IniKeys([string]$Text, $Pairs) {
 
     $anchor = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^\s*PayloadSha256\s*=') { $anchor = $i; break }
-    }
-    if ($anchor -lt 0) {
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i].Trim() -ieq "[General]") { $anchor = $i; break }
-        }
+        if ($lines[$i].Trim() -ieq "[General]") { $anchor = $i; break }
     }
     if ($anchor -lt 0) {
 
@@ -138,15 +131,6 @@ function Set-IniKeys([string]$Text, $Pairs) {
 }
 
 if (-not (Test-Path -LiteralPath $Source)) { Write-Host "ProtectConfig: Source Not Found: $Source"; exit 1 }
-
-$pinOverride = $null
-if (-not [string]::IsNullOrEmpty($PinPayload)) {
-    if (-not (Test-Path -LiteralPath $PinPayload)) {
-        Write-Host "ProtectConfig: Pin Payload Not Found: $PinPayload"
-        exit 1
-    }
-    $pinOverride = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($PinPayload))) -replace "-", "")
-}
 
 $hasNewKeys = (-not [string]::IsNullOrEmpty($PayloadName)) -or
               (-not [string]::IsNullOrEmpty($RuntimeName)) -or
@@ -164,10 +148,6 @@ if ($existing.Length -gt $magic.Length) {
     $isEncrypted = $same
 }
 if ($isEncrypted) {
-    if ($null -ne $pinOverride) {
-        Write-Host "ProtectConfig: Cannot Apply A Pin Override To An Already-Encrypted Source"
-        exit 1
-    }
     if ($hasNewKeys) {
         Write-Host "ProtectConfig: Cannot Inject Deployment Keys Into An Already-Encrypted Source"
         exit 1
@@ -179,16 +159,6 @@ if ($isEncrypted) {
 
 $text = [Text.Encoding]::UTF8.GetString($existing)
 $modified = $false
-
-if ($null -ne $pinOverride) {
-    if ($text -notmatch '(?m)^PayloadSha256\s*=.*$') {
-        Write-Host "ProtectConfig: Source Has No PayloadSha256 Line To Override"
-        exit 1
-    }
-    $text = [regex]::Replace($text, '(?m)^PayloadSha256\s*=.*$', 'PayloadSha256 = ' + $pinOverride)
-    $modified = $true
-    Write-Host ("ProtectConfig: PayloadSha256 = {0}" -f ("" + $pinOverride))
-}
 
 $preserved = $null
 if ((-not $hasNewKeys) -and (Test-Path -LiteralPath $Destination)) {

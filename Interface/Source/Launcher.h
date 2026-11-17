@@ -273,7 +273,6 @@ struct WizardConfig
     std::wstring test_target = std::wstring(XOR_STR_W(L"notepad.exe").get());
 
     std::wstring target_name;
-    std::wstring expected_payload_sha256;
 
     std::wstring payload_name;
     std::wstring runtime_name;

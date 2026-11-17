@@ -189,7 +189,7 @@ if /i "%AMEGER_ENCRYPT_CONFIG%"=="0" (
   goto :pin_error
 )
 if not exist "%DEPLOYED_CONFIG%" goto :pin_error
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%" -PinPayload "%TARGET%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CONFIG_SCRIPT%" -Source "%CONFIG_MASTER%" -Destination "%DEPLOYED_CONFIG%"
 if errorlevel 1 goto :pin_error
 echo   %C_GREEN%[+]%C_RESET% Config re-encrypted = %C_GREEN%%DEPLOYED_CONFIG%%C_RESET%
 call :verify_config_parity
@@ -627,7 +627,7 @@ goto :failure
 
 :pin_error
 echo   %C_RED%Error: Unable To Re-Encrypt The Deployed Release Config.%C_RESET%
-echo   %C_RED%       The launcher would reject the release (PayloadSha256 Is Empty Or The Config Is Unreadable).%C_RESET%
+echo   %C_RED%       The launcher would reject the release (The Config Is Unreadable).%C_RESET%
 goto :failure
 
 :cleanup_error

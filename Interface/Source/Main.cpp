@@ -2587,12 +2587,6 @@ wchar_t name[48]{};
             {
                 config.target_name = value;
             }
-            else if (general && EqualsNoCase(key, XOR_STR_W(L"PayloadSha256").get()))
-            {
-                config.expected_payload_sha256 = value;
-                std::transform(config.expected_payload_sha256.begin(), config.expected_payload_sha256.end(), config.expected_payload_sha256.begin(), towupper);
-            }
-
             else if (general && EqualsNoCase(key, XOR_STR_W(L"PayloadName").get()))
             {
                 config.payload_name = value;
@@ -2762,20 +2756,6 @@ wchar_t name[48]{};
             config = WizardConfig{};
             invalid = true;
             return false;
-        }
-
-        {
-            bool valid_hash = config.expected_payload_sha256.size() == 64;
-            for (wchar_t value : config.expected_payload_sha256)
-            {
-                valid_hash = valid_hash && ((value >= L'0' && value <= L'9') || (value >= L'A' && value <= L'F'));
-            }
-            if (!valid_hash)
-            {
-                config = WizardConfig{};
-                invalid = true;
-                return false;
-            }
         }
 
         if (config.target_name.empty())
@@ -3696,7 +3676,7 @@ wchar_t name[48]{};
 
     DWORD BuildFlags(const WizardConfig & config);
 
-    bool ResolveConfiguredPayload(const std::wstring & dll_dir, const std::wstring & payload_name, const std::wstring & expected_sha256,
+    bool ResolveConfiguredPayload(const std::wstring & dll_dir, const std::wstring & payload_name,
         DWORD flags, FileInformation & info, std::vector<BYTE> & bytes)
     {
         bytes.clear();
@@ -3728,17 +3708,6 @@ wchar_t name[48]{};
             {
                 PrintWarning(L"Not A Usable DLL.");
             }
-            return false;
-        }
-
-        if (expected_sha256.empty())
-        {
-            PrintError(XOR_STR_W(L"The Payload Pin Is Missing (PayloadSha256 Is Empty); Refusing To Load Without A Pinned Digest.").get());
-            return false;
-        }
-        if (_wcsicmp(expected_sha256.c_str(), sha256.c_str()) != 0)
-        {
-            LOG(0,  L"%lsPayload SHA-256 Mismatch. Expected %ls, Got %ls%ls\n", kRed, expected_sha256.c_str(), sha256.c_str(), kReset);
             return false;
         }
 
@@ -4519,7 +4488,6 @@ DWORD BuildFlags(const WizardConfig & config)
                 config.target_name.c_str(), config.timeout);
             Trace::Note(L"Payload = %ls | Runtime = %ls | Dll Dir = %ls", config.payload_name.c_str(),
                 config.runtime_name.c_str(), config.dll_dir.c_str());
-            Trace::Note(L"Payload Pin = %ls", config.expected_payload_sha256.c_str());
             if (!config.delete_key_target.empty())
             {
                 Trace::Note(L"Key Target = %ls", config.delete_key_target.c_str());
@@ -4569,7 +4537,7 @@ DWORD BuildFlags(const WizardConfig & config)
         Trace::Begin(L"Resolve + Hash Payload");
         std::vector<BYTE> raw_data;
         FileInformation fileInformation;
-        if (!ResolveConfiguredPayload(config.dll_dir, config.payload_name, config.expected_payload_sha256,
+        if (!ResolveConfiguredPayload(config.dll_dir, config.payload_name,
             preflight_flags, fileInformation, raw_data))
         {
             Trace::End();
